@@ -7,6 +7,7 @@
 #   tools/ci/nightly_checks.sh x86   on the x86 build box (nc-remote), in a tree with
 #                                    cargo: check.sh's full-only steps, host checkasm,
 #                                    the official decoder suites (native and WASM, the
+#                                    AOM Argon AV1 profile 0-2 sets natively; the
 #                                    WASM ones also in Chromium, Firefox and WebKit), the
 #                                    AV2 foreign streams, the real-use features, the C
 #                                    API against the CLI (capi_check.sh), the
@@ -99,6 +100,12 @@ x86_checks() {
     for suite in hevc av1 vp9 vvc; do
         check "conformance-$suite" env NANOCODEC="$bin" JOBS=8 "tools/ci/${suite}_conformance.sh"
     done
+    # AOM Argon AV1, profiles 0 to 2 without the stress sets (tools/dev/av1_argon.py;
+    # the fetch is incremental, about 2.3 GB on a fresh box), against aomdec: 123 s at
+    # 24 jobs once fetched (2026-11-27; the stress sets, --stress, took 14 minutes more).
+    check conformance-av1-argon bash -c 'python3 -I tools/dev/av1_argon.py "$1" --fetch &&
+        python3 -I tools/dev/av1_argon.py "$1" --bin "$2" --aomdec "$3" --jobs 24 --json "$4"' \
+        _ "$data/conformance/av1/argon" "$bin" "$anchors/aomdec" "$out/av1-argon.json"
     check av2-foreign env NC_AV2_FOREIGN="$data/work/av2-foreign" \
         cargo test -p nanocodec-cli --profile gate-test --test integration foreign_streams
     check foreign-encoders foreign_encoders

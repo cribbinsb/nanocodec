@@ -228,6 +228,28 @@ impl<const N: usize> Cdf<N> {
         self.count = mix(u32::from(self.count), u32::from(other.count)) as u8;
     }
 
+    /// Divide the probabilities and the symbol count by `1 << shift`,
+    /// keeping the adaptation rates: the first of the terms that average
+    /// several tiles' final models (dav2d `dav2d_cdf_shift`).
+    pub fn scale_down(&mut self, shift: u32) {
+        for value in &mut self.inverse[..N - 1] {
+            *value >>= shift;
+        }
+        self.count >>= shift;
+    }
+
+    /// Add `other`'s probabilities and symbol count divided by
+    /// `1 << shift` (each term rounded down), keeping this model's rates: a
+    /// further term of the tile average (dav2d
+    /// `dav2d_cdf_shift_accumulate`). The terms of at most `1 << shift`
+    /// models sum to at most the largest of them.
+    pub fn add_scaled(&mut self, other: &Self, shift: u32) {
+        for (value, &term) in self.inverse[..N - 1].iter_mut().zip(&other.inverse) {
+            *value += term >> shift;
+        }
+        self.count += other.count >> shift;
+    }
+
     /// Current inverse probabilities, including the final zero boundary.
     #[must_use]
     pub const fn inverse(&self) -> &[u16; N] {
@@ -1037,20 +1059,54 @@ impl SymbolReader<'_> {
         Err(DecodeError::Malformed("AV2 entropy symbol"))
     }
 
+    /// [`Self::read_valid`] of a two-symbol CDF, unrolled (decoding our
+    /// 1080p and 600k streams: -0.08 % and -0.11 % instructions).
+    #[inline]
+    fn read_two<const N: usize>(&mut self, cdf: &mut Cdf<N>) -> Result<usize> {
+        let range = self.range;
+        let value = self.value();
+        let first = range - scaled(cdf.inverse[0], range, 0, 2);
+        let second = range - scaled(cdf.inverse[1], range, 1, 2);
+        let symbol = if value < first {
+            self.range = first;
+            0
+        } else if value < second {
+            self.window -= u64::from(first) << VALUE_SHIFT;
+            self.range = second - first;
+            1
+        } else {
+            return Err(DecodeError::Malformed("AV2 entropy symbol"));
+        };
+        self.normalize()?;
+        cdf.adapt(symbol);
+        Ok(symbol)
+    }
+
     /// Four-level coefficient models often land in the first interval.
-    /// Keep that comparison and its fixed three-entry update inline.
+    /// Keep that comparison and its fixed three-entry update inline; the
+    /// other symbols are read out of line, so this path saves no
+    /// callee-saved registers (inside it, the seven pushes and pops the
+    /// other symbols' registers needed were a quarter of the instructions
+    /// of every four-symbol read).
     #[inline]
     fn read_four<const N: usize>(&mut self, cdf: &mut Cdf<N>) -> Result<usize> {
         let range = self.range;
-        let value = self.value();
         let first = range - scaled(cdf.inverse[0], range, 0, 4);
-        if value < first {
+        if self.value() < first {
             self.range = first;
             self.normalize()?;
             cdf.adapt(0);
             return Ok(0);
         }
+        self.read_four_above(cdf, first)
+    }
 
+    /// [`Self::read_four`] of a value at or above the first interval's
+    /// upper end `first`.
+    #[inline(never)]
+    fn read_four_above<const N: usize>(&mut self, cdf: &mut Cdf<N>, first: u32) -> Result<usize> {
+        let range = self.range;
+        let value = self.value();
         let second = range - scaled(cdf.inverse[1], range, 1, 4);
         let (symbol, lower, upper) = if value < second {
             (1, first, second)
@@ -1072,6 +1128,9 @@ impl SymbolReader<'_> {
     }
 
     fn symbol<const N: usize>(&mut self, cdf: &mut Cdf<N>) -> Result<usize> {
+        if N == 2 {
+            return self.read_two(cdf);
+        }
         if N == 4 {
             return self.read_four(cdf);
         }

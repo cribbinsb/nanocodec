@@ -1,7 +1,17 @@
-//! `residual_coding()` (H.265 §7.3.8.11) of Main-profile streams: last
-//! position, coded sub-block and significance flags, greater-1/2 flags,
-//! Rice/Exp-Golomb remainders (§9.3.3.11), sign data hiding and
-//! `transform_skip_flag`.
+//! `residual_coding()` (H.265 §7.3.8.11): last position, coded sub-block
+//! and significance flags, greater-1/2 flags, Rice/Exp-Golomb remainders
+//! (§9.3.3.11), sign data hiding and `transform_skip_flag`, with the range
+//! extension tools: transform skip beyond 4x4, `explicit_rdpcm_flag`, the
+//! single significance context of `transform_skip_context_enabled_flag`,
+//! persistent Rice adaptation (`StatCoeff`) and the bypass alignment of
+//! `cabac_bypass_alignment_enabled_flag`.
+//!
+//! The range extension tools are a second instance of the parser (`EXT`):
+//! streams without them run the version 1 code, unchanged. Levels are
+//! `i16` except with extended precision processing or samples deeper than
+//! 12 bits (a third instance storing `i32`, [`Level`]), where
+//! `CoeffMinY` reaches `−2^Max(15, BitDepth + 6)` and the remainders' prefix
+//! is limited (§9.3.3.11, `log2TransformRange`).
 //!
 //! The context selection of `sig_coeff_flag` and `coded_sub_block_flag` is
 //! the encoder's (`crate::residual`), which follows §9.3.4.2.4–5, tabulated
@@ -30,10 +40,9 @@ const MAX_RICE: u32 = 4;
 const RICE_PREFIX: u32 = 3;
 /// Longest Exp-Golomb suffix that keeps a level within 16 bits plus margin.
 const MAX_SUFFIX: u32 = 28;
-/// `CoeffMinY` magnitude for 8-bit video (§7.4.9.11).
-const MAX_MAGNITUDE: u32 = 1 << 15;
-/// Transform skip is allowed for 4x4 blocks only in version 1 (§7.3.8.11).
-const TRANSFORM_SKIP_LOG2: u8 = 2;
+/// `log2TransformRange` without extended precision processing
+/// (§7.4.9.11: `CoeffMinY = −2^15`).
+pub(super) const LOG2_TRANSFORM_RANGE: u32 = 15;
 
 /// `greater1Ctx` after a `coeff_abs_level_greater1_flag` of 0 (index 0) or
 /// 1 (index 1), by its value before (§9.3.4.2.6): a 1 ends the run at 0
@@ -48,53 +57,170 @@ pub(super) struct Options {
     pub luma: bool,
     /// `sign_data_hiding_enabled_flag && !cu_transquant_bypass_flag`.
     pub sign_hiding: bool,
-    /// `transform_skip_enabled_flag && !cu_transquant_bypass_flag`.
+    /// `transform_skip_flag` is coded: `transform_skip_enabled_flag`,
+    /// `!cu_transquant_bypass_flag` and `log2TrafoSize <=
+    /// Log2MaxTransformSkipSize`.
     pub transform_skip: bool,
 }
 
+/// The range extension tools of one block (§7.3.8.11).
+#[allow(clippy::struct_excessive_bools, reason = "one field per coding tool")]
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RangeOptions {
+    /// `cu_transquant_bypass_flag`.
+    pub bypass: bool,
+    /// `explicit_rdpcm_flag` may be coded: an inter block with
+    /// `explicit_rdpcm_enabled_flag`.
+    pub explicit_rdpcm: bool,
+    /// Transform skip would take implicit RDPCM (an intra block of mode 10
+    /// or 26 with `implicit_rdpcm_enabled_flag`), which turns sign hiding
+    /// off.
+    pub implicit_rdpcm: bool,
+    /// `transform_skip_context_enabled_flag`.
+    pub skip_context: bool,
+    /// `persistent_rice_adaptation_enabled_flag`.
+    pub persistent_rice: bool,
+    /// `cabac_bypass_alignment_enabled_flag`.
+    pub align: bool,
+    /// `extended_precision_processing_flag`: the remainders' prefix is
+    /// limited by `log2_range`.
+    pub limited_prefix: bool,
+    /// `log2TransformRange`: levels lie in `−2^log2_range..2^log2_range`.
+    pub log2_range: u32,
+}
+
+impl RangeOptions {
+    /// No range extension tool: what the version 1 instance stands for.
+    pub const NONE: Self = Self {
+        bypass: false,
+        explicit_rdpcm: false,
+        implicit_rdpcm: false,
+        skip_context: false,
+        persistent_rice: false,
+        align: false,
+        limited_prefix: false,
+        log2_range: LOG2_TRANSFORM_RANGE,
+    };
+}
+
+/// A transform coefficient level as the parser stores it: `i16` within
+/// version 1's `CoeffMinY..=CoeffMaxY`, `i32` for the extended range.
+pub(super) trait Level: Copy {
+    /// `level`, which the parser has checked against the range.
+    fn from_level(level: i32) -> Self;
+}
+
+impl Level for i16 {
+    #[inline]
+    fn from_level(level: i32) -> Self {
+        level as i16
+    }
+}
+
+impl Level for i32 {
+    #[inline]
+    fn from_level(level: i32) -> Self {
+        level
+    }
+}
+
+/// What `residual_coding()` coded besides the levels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Coded {
+    /// `transform_skip_flag`.
+    pub transform_skip: bool,
+    /// `explicit_rdpcm_flag` with `explicit_rdpcm_dir_flag` (true:
+    /// vertical), `None` when not coded or 0.
+    pub explicit_rdpcm: Option<bool>,
+}
+
+/// The significance contexts of transform-skip and lossless blocks with
+/// `transform_skip_context_enabled_flag`: one per component (§9.3.4.2.5).
+const SKIP_SIG_LUMA: [[[u8; SUB_BLOCK_COEFFS]; 4]; 2] =
+    [[[ctx::SIG_TRANSFORM_SKIP_LUMA as u8; SUB_BLOCK_COEFFS]; 4]; 2];
+const SKIP_SIG_CHROMA: [[[u8; SUB_BLOCK_COEFFS]; 4]; 2] =
+    [[[(ctx::SIG_CHROMA + ctx::SIG_TRANSFORM_SKIP_CHROMA) as u8; SUB_BLOCK_COEFFS]; 4]; 2];
+/// `StatCoeff` steps per Rice parameter (`cRiceParam = StatCoeff / 4`,
+/// §9.3.3.11).
+const RICE_STATISTIC_STEP: u8 = 4;
+
 /// Parse one transform block's levels into `levels` (raster, all zero on
-/// entry) and list the non-zero positions in `positions`. Returns
-/// `transform_skip_flag`.
+/// entry) and list the non-zero positions in `positions`. `EXT`: the
+/// stream uses range extension tools (`range`; unread without `EXT`).
 ///
 /// The parser is generic over the sample type `T` only so that each
 /// instance of the block decoder (`u8`, `u16`) calls its own copy: with one
 /// copy and two call sites LLVM stopped inlining it into the 8-bit block
 /// decoder, +0.85 % decode instructions on a 720p stream of ours
 /// (callgrind, 2026-11-15).
-pub(super) fn read<T: Pixel>(
+pub(super) fn read<T: Pixel, const EXT: bool, L: Level>(
     engine: &mut Engine<'_>,
     ctx: &mut Contexts,
     scan: &Scan,
-    options: Options,
-    levels: &mut [i16],
+    (options, range): (Options, &RangeOptions),
+    levels: &mut [L],
     positions: &mut Vec<u16>,
-) -> Result<bool, DecodeError> {
+) -> Result<Coded, DecodeError> {
     // The engine works on a local copy, written back at the end: its
     // range, window and counters then stay in registers through the
     // block's bins instead of going through memory at each one.
     let mut local = engine.clone();
-    let skip = read_levels::<T>(&mut local, ctx, scan, options, levels, positions)?;
+    let coded =
+        read_levels::<T, EXT, L>(&mut local, ctx, scan, (options, range), levels, positions)?;
     *engine = local;
-    Ok(skip)
+    Ok(coded)
 }
 
 /// [`read`] on the local engine.
-fn read_levels<T: Pixel>(
+fn read_levels<T: Pixel, const EXT: bool, L: Level>(
     e: &mut Engine<'_>,
     ctx: &mut Contexts,
     scan: &Scan,
-    options: Options,
-    levels: &mut [i16],
+    (options, range): (Options, &RangeOptions),
+    levels: &mut [L],
     positions: &mut Vec<u16>,
-) -> Result<bool, DecodeError> {
+) -> Result<Coded, DecodeError> {
     let luma = options.luma;
-    let skip = options.transform_skip
-        && scan.log2 == TRANSFORM_SKIP_LOG2
-        && e.bin(ctx.at(ctx::TRANSFORM_SKIP, usize::from(!luma)));
+    let component = usize::from(!luma);
+    let skip = options.transform_skip && e.bin(ctx.at(ctx::TRANSFORM_SKIP, component));
+    let mut parsed = Coded {
+        transform_skip: skip,
+        explicit_rdpcm: None,
+    };
+    // Untransformed residuals (transform skip or lossless).
+    let untransformed = EXT && (skip || range.bypass);
+    if EXT && range.explicit_rdpcm && untransformed && e.bin(ctx.at(ctx::EXPLICIT_RDPCM, component))
+    {
+        parsed.explicit_rdpcm = Some(e.bin(ctx.at(ctx::EXPLICIT_RDPCM_DIR, component)));
+    }
+    // §7.3.8.11: no sign hiding where RDPCM accumulates the residual.
+    let sign_hiding = options.sign_hiding
+        && !(EXT && (parsed.explicit_rdpcm.is_some() || (skip && range.implicit_rdpcm)));
     let side = 1usize << (scan.log2 - 2);
     let last = last_position::<T>(e, ctx, scan, luma)?;
     let last_group = last / SUB_BLOCK_COEFFS;
-    let sig_cases = sig_contexts(scan, luma);
+    let sig_cases = if EXT && range.skip_context && untransformed {
+        if luma {
+            &SKIP_SIG_LUMA
+        } else {
+            &SKIP_SIG_CHROMA
+        }
+    } else {
+        sig_contexts(scan, luma)
+    };
+    // StatCoeff's sbType (§9.3.3.11).
+    let statistic = 2 * component + usize::from(untransformed);
+    let rice = Rice {
+        persistent: EXT && range.persistent_rice,
+        statistic,
+        align: EXT && range.align,
+        limited_prefix: EXT && range.limited_prefix,
+        log2_range: if EXT {
+            range.log2_range
+        } else {
+            LOG2_TRANSFORM_RANGE
+        },
+    };
     let mut coded = [false; 64];
     let mut greater1_state = 1;
     for group in (0..=last_group).rev() {
@@ -143,25 +269,40 @@ fn read_levels<T: Pixel>(
         }
         let found = &found[..count];
         let hidden =
-            options.sign_hiding && usize::from(found[0] - found[count - 1]) > SIGN_HIDING_THRESHOLD;
+            sign_hiding && usize::from(found[0] - found[count - 1]) > SIGN_HIDING_THRESHOLD;
         let first = group * SUB_BLOCK_COEFFS;
-        sub_block_levels::<T, _>(
+        sub_block_levels::<T, EXT, _>(
             e,
             ctx,
             found,
-            group,
-            luma,
-            hidden,
+            (group, luma, hidden),
+            rice,
             &mut greater1_state,
             |index, level| {
                 let raster = scan.positions[first + usize::from(index)];
-                // In -2^15..2^15 - 1: `sub_block_levels` rejects the rest.
-                levels[raster] = level as i16;
+                // In the range: `sub_block_levels` rejects the rest.
+                levels[raster] = L::from_level(level);
                 positions.push(raster as u16);
             },
         )?;
     }
-    Ok(skip)
+    Ok(parsed)
+}
+
+/// How a block's remainders choose their Rice parameter (§9.3.3.11).
+#[derive(Debug, Clone, Copy)]
+struct Rice {
+    /// `persistent_rice_adaptation_enabled_flag`: each sub-block starts
+    /// from `StatCoeff[statistic] / 4` and the parameter is not capped.
+    persistent: bool,
+    /// `sbType`.
+    statistic: usize,
+    /// `cabac_bypass_alignment_enabled_flag`.
+    align: bool,
+    /// `extended_precision_processing_flag` (the prefix limit).
+    limited_prefix: bool,
+    /// `log2TransformRange`.
+    log2_range: u32,
 }
 
 /// `last_sig_coeff_{x,y}_{prefix,suffix}` as a scan position.
@@ -214,6 +355,30 @@ fn last_position<T: Pixel>(
     Ok(usize::from(scan.index_of[xy[1] * size + xy[0]]))
 }
 
+/// `coeff_abs_level_remaining` with Rice parameter `rice` and extended
+/// precision processing (§9.3.3.11): the unary prefix stops after `32 −
+/// log2TransformRange` ones, the longest taking `log2TransformRange`
+/// suffix bits.
+fn remaining_limited(e: &mut Engine<'_>, rice: u32, log2_range: u32) -> Result<u32, DecodeError> {
+    let longest = u32::BITS - log2_range;
+    let prefix = e.bypass_unary(longest);
+    if prefix < RICE_PREFIX {
+        return Ok((prefix << rice) + e.bypass_bits(rice));
+    }
+    let length = prefix - RICE_PREFIX;
+    let suffix = if prefix == longest {
+        log2_range
+            .checked_sub(rice)
+            .ok_or(DecodeError::Malformed("coefficient remainder"))?
+    } else {
+        length
+    };
+    if suffix + rice > MAX_SUFFIX + RICE_PREFIX {
+        return Err(DecodeError::Malformed("coefficient remainder suffix"));
+    }
+    Ok((((1 << length) - 1 + RICE_PREFIX) << rice) + e.bypass_bits(suffix + rice))
+}
+
 /// `coeff_abs_level_remaining` with Rice parameter `rice` (§9.3.3.11): a
 /// unary prefix, then the suffix bits in one bypass read.
 #[allow(
@@ -236,17 +401,38 @@ fn remaining<T: Pixel>(e: &mut Engine<'_>, rice: u32) -> Result<u32, DecodeError
     }
 }
 
+/// The update of `StatCoeff` by a sub-block's first remainder (§9.3.3.11),
+/// `initial` the Rice parameter it was coded with.
+fn update_statistic(statistic: &mut u8, remainder: u32, initial: u32) {
+    if remainder >= 3 << initial {
+        *statistic = statistic.saturating_add(1);
+    } else if 2 * remainder < 1 << initial && *statistic > 0 {
+        *statistic -= 1;
+    }
+}
+
+/// `escapeDataPresent` of a sub-block (§7.3.8.11) from its magnitudes after
+/// the greater-1/2 flags: a remainder follows, or a second greater-1 flag
+/// or the greater-2 flag was 1.
+fn escape_data_present(magnitude: &[u32], first_greater1: usize) -> bool {
+    let greater1 = magnitude[..magnitude.len().min(MAX_GREATER1)]
+        .iter()
+        .filter(|&&m| m > 1)
+        .count();
+    magnitude.len() > MAX_GREATER1
+        || greater1 > 1
+        || (first_greater1 != NO_GREATER1 && magnitude[first_greater1] > 2)
+}
+
 /// The levels of one sub-block's significant coefficients (scan indices
 /// `found` within the sub-block, highest first): greater-1/2 flags, signs,
 /// remainders.
-#[allow(clippy::too_many_arguments)]
-fn sub_block_levels<T: Pixel, F: FnMut(u8, i32)>(
+fn sub_block_levels<T: Pixel, const EXT: bool, F: FnMut(u8, i32)>(
     e: &mut Engine<'_>,
     ctx: &mut Contexts,
     found: &[u8],
-    group: usize,
-    luma: bool,
-    hidden: bool,
+    (group, luma, hidden): (usize, bool, bool),
+    rice_mode: Rice,
     greater1_state: &mut usize,
     mut store: F,
 ) -> Result<(), DecodeError> {
@@ -273,10 +459,23 @@ fn sub_block_levels<T: Pixel, F: FnMut(u8, i32)>(
         let base = if luma { 0 } else { ctx::GREATER2_CHROMA };
         magnitude[first_greater1] += u32::from(e.bin(ctx.at(ctx::GREATER2, base + set)));
     }
+    let remainders = first_greater1 != NO_GREATER1 || found.len() > MAX_GREATER1;
+    if EXT && rice_mode.align && escape_data_present(&magnitude[..found.len()], first_greater1) {
+        e.align_bypass();
+    }
     let signed = found.len() - usize::from(hidden);
     let signs = e.bypass_bits(signed as u32);
-    if first_greater1 != NO_GREATER1 || found.len() > MAX_GREATER1 {
-        let mut rice = 0;
+    if remainders {
+        let initial = if EXT && rice_mode.persistent {
+            u32::from(ctx.stat_coeff[rice_mode.statistic] / RICE_STATISTIC_STEP)
+        } else {
+            0
+        };
+        if initial > MAX_SUFFIX {
+            return Err(DecodeError::Malformed("StatCoeff"));
+        }
+        let mut rice = initial;
+        let mut first_remainder = EXT && rice_mode.persistent;
         for (i, m) in magnitude[..found.len()].iter_mut().enumerate() {
             // baseLevel at which a remainder follows (§7.3.8.11).
             let threshold = if i >= MAX_GREATER1 {
@@ -287,17 +486,48 @@ fn sub_block_levels<T: Pixel, F: FnMut(u8, i32)>(
                 2
             };
             if *m == threshold {
-                *m += remaining::<T>(e, rice)?;
+                let remainder = if EXT && rice_mode.limited_prefix {
+                    remaining_limited(e, rice, rice_mode.log2_range)?
+                } else {
+                    remaining::<T>(e, rice)?
+                };
+                // Extended remainders reach 2^31: saturate, the range check
+                // below rejects them.
+                *m = if EXT {
+                    m.saturating_add(remainder)
+                } else {
+                    *m + remainder
+                };
+                if first_remainder {
+                    update_statistic(&mut ctx.stat_coeff[rice_mode.statistic], remainder, initial);
+                    first_remainder = false;
+                }
                 if *m > 3 << rice {
-                    rice = (rice + 1).min(MAX_RICE);
+                    rice = if EXT && rice_mode.persistent {
+                        // Uncapped; a parameter beyond any level's bits is
+                        // malformed (and would overflow the shifts).
+                        if rice >= MAX_SUFFIX {
+                            return Err(DecodeError::Malformed("Rice parameter"));
+                        }
+                        rice + 1
+                    } else {
+                        (rice + 1).min(MAX_RICE)
+                    };
                 }
             }
         }
     }
+    // CoeffMinY..=CoeffMaxY (§7.4.9.11).
+    let max_magnitude = 1u32
+        << if EXT {
+            rice_mode.log2_range
+        } else {
+            LOG2_TRANSFORM_RANGE
+        };
     let mut sum = 0u32;
     for (i, &index) in found.iter().enumerate() {
         let m = magnitude[i];
-        if m > MAX_MAGNITUDE {
+        if m > max_magnitude {
             return Err(DecodeError::Malformed("coefficient magnitude"));
         }
         sum += m;
@@ -310,7 +540,7 @@ fn sub_block_levels<T: Pixel, F: FnMut(u8, i32)>(
         // Two's complement negation by mask: no branch on the sign.
         let mask = negative.wrapping_neg() as i32;
         let level = (m as i32 ^ mask) - mask;
-        if level == MAX_MAGNITUDE as i32 {
+        if level == max_magnitude as i32 {
             return Err(DecodeError::Malformed("coefficient magnitude"));
         }
         store(index, level);

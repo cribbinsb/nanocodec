@@ -56,6 +56,16 @@ def test_reclaimed_types_never_send_the_box_on_demand():
         == nc_remote.SPOT
 
 
+def test_reclaims_of_every_type_never_leave_the_fleet_empty():
+    """2026-11-27: c7i and c6i, the fleet's two types, were both reclaimed within the
+    window, and the build box could not launch until the window ran out."""
+    both = [box(t, "2026-11-20T09:40:00Z") for t in nc_remote.INSTANCE_TYPES]
+    plan = nc_remote.plan_market(both, NOW)
+    assert plan.market == nc_remote.SPOT and plan.types == nc_remote.INSTANCE_TYPES
+    assert "every type again" in plan.reason
+    assert nc_remote.RECLAIM_WINDOW <= datetime.timedelta(hours=1)
+
+
 class FakeEc2:
     """create_fleet's EC2 calls: two zones; each request answered from `capacity`
     (market -> types that launch)."""

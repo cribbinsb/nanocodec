@@ -1,4 +1,4 @@
-"""nceval.gpuscore and aws_measure's GPU path: the guards, the fallback, the encode rounds
+"""nceval.gpuscore and aws_measure's GPU path: the guards, the refusal, the encode rounds
 and a reclaim mid-round (nothing is rented, no GPU is used)."""
 import time
 import argparse
@@ -42,18 +42,18 @@ def rounds(tmp_path, run_round, gpu_check=lambda: None):
                                  run_round, gpu_check)
 
 
-def test_a_guard_failing_before_a_batch_falls_back_to_cpu_scoring(tmp_path):
+def test_a_guard_failing_before_a_batch_stops_the_run(tmp_path):
     encode = rounds(tmp_path, lambda argv: 0, gpu_check=lambda: "1000 MiB free")
     with pytest.raises(SystemExit) as stop:
         encode.ensure([1], lambda jobs: jobs)
-    assert stop.value.code == gpuscore.FALLBACK_EXIT
+    assert stop.value.code == gpuscore.UNAVAILABLE_EXIT
 
 
-def test_a_failed_round_falls_back_to_cpu_scoring(tmp_path):
+def test_a_failed_round_stops_the_run(tmp_path):
     encode = rounds(tmp_path, lambda argv: 1)
     with pytest.raises(SystemExit) as stop:
         encode.ensure([1], lambda jobs: jobs)
-    assert stop.value.code == gpuscore.FALLBACK_EXIT
+    assert stop.value.code == gpuscore.UNAVAILABLE_EXIT
 
 
 def test_one_round_per_batch_seeded_with_the_used_results(tmp_path):
@@ -103,6 +103,32 @@ def test_a_reclaim_mid_round_loses_only_the_points_in_flight(tmp_path):
     pull.refresh_have()
     assert have.read_text().split() == ["clip/fam/cbr300-a", "clip/fam/cbr600-b"]
     assert pull.remote(aws_measure.warm_layout("job")).endswith("/prebuilt")
+
+
+def test_a_truncated_stream_holds_its_point_back_for_a_new_encode(tmp_path):
+    """2026-11-27: anchor streams came back cut at 512-byte multiples and scored as decoder
+    mismatches. The box's `.done` records each file's size and SHA-256; a point whose stream
+    is not here whole is not complete on the PC, so the retry's box codes it again."""
+    back, target = tmp_path / "back" / aws_measure.PREBUILT / "0", tmp_path / "prebuilt"
+    for key in ("clip/fam/cbr566-a", "clip/fam/cbr849-b"):
+        base = back / key
+        base.parent.mkdir(parents=True, exist_ok=True)
+        Path(f"{base}.h264").write_bytes(bytes(range(256)) * 40)
+        Path(f"{base}.recon.txt").write_text("digests\n")
+        gpuscore.write_done(base, [".h264", ".recon.txt", ".rate.csv"])  # no rate log: left out
+    whole = Path(f"{back}/clip/fam/cbr566-a.h264").read_bytes()
+    Path(f"{back}/clip/fam/cbr849-b.h264").write_bytes(whole[:512 * 9])  # the cut copy
+    have = tmp_path / "have.txt"
+    have.write_text("")
+    pull = aws_measure.Pull([target], [have])
+    assert pull.merge(tmp_path / "back") == 1
+    assert gpuscore.done_keys(target) == ["clip/fam/cbr566-a"]
+    assert Path(f"{back}/clip/fam/cbr849-b.done").exists()  # held back, not lost
+    pull.refresh_have()
+    assert have.read_text().split() == ["clip/fam/cbr566-a"]  # the box codes b again
+    Path(f"{back}/clip/fam/cbr849-b.h264").write_bytes(whole)  # a later pull: whole
+    assert pull.merge(tmp_path / "back") == 1
+    assert gpuscore.done_keys(target) == ["clip/fam/cbr566-a", "clip/fam/cbr849-b"]
 
 
 def test_a_reclaimed_round_s_retry_skips_what_came_back(tmp_path, monkeypatch):
@@ -169,8 +195,8 @@ def test_every_runner_of_a_command_shares_one_rounds_instance(tmp_path, monkeypa
 
 def test_the_disk_budget_is_a_guard_before_every_round(tmp_path, monkeypatch):
     """2026-11-24: a quick's round encoded its points, then the run died on the work
-    directory's budget with no fallback. The budget is now checked before each batch
-    (so before its round) and fails over to the CPU path."""
+    directory's budget. The budget is now checked before each batch (so before its
+    round), and the run stops for aws_measure to refuse."""
     def over(work):
         raise gpuscore.DiskBudgetExceeded("work holds 111 GiB (budget 100 GiB)")
     monkeypatch.setattr(gpuscore, "check_disk", over)
@@ -181,11 +207,11 @@ def test_the_disk_budget_is_a_guard_before_every_round(tmp_path, monkeypatch):
     monkeypatch.setattr(gpuscore, "wait_for_gpu", lambda: None)
     with pytest.raises(SystemExit) as stop:
         encode.ensure([1], lambda jobs: jobs)
-    assert stop.value.code == gpuscore.FALLBACK_EXIT and rounds_run == []
+    assert stop.value.code == gpuscore.UNAVAILABLE_EXIT and rounds_run == []
     assert "111 GiB" in gpuscore.local_reason(tmp_path, lambda: None)
 
 
-def test_a_budget_hit_while_scoring_falls_back_instead_of_failing(tmp_path, monkeypatch):
+def test_a_budget_hit_while_scoring_stops_the_gpu_run(tmp_path, monkeypatch):
     from nceval import realuse
     runner = realuse.Runner.__new__(realuse.Runner)
     runner.cached_only, runner.skip_missing, runner.skipped = False, False, 0
@@ -200,7 +226,7 @@ def test_a_budget_hit_while_scoring_falls_back_instead_of_failing(tmp_path, monk
     bench = type("B", (), {"cached": lambda self, p: True, "has_prebuilt": lambda self, p: True})()
     with pytest.raises(SystemExit) as stop:
         runner.run_jobs([(bench, point)])
-    assert stop.value.code == gpuscore.FALLBACK_EXIT
+    assert stop.value.code == gpuscore.UNAVAILABLE_EXIT
     runner.rounds = None  # outside GPU scoring the budget still fails the run
     with pytest.raises(gpuscore.DiskBudgetExceeded):
         runner.run_jobs([(bench, point)])
@@ -229,22 +255,21 @@ def entry_env(tmp_path, index):
 def test_a_batch_runs_side_by_side_and_records_each_status(tmp_path):
     spec = [{"argv": [sys.executable, "-c", f"import sys; sys.exit({code})"],
              "env": entry_env(tmp_path, code), "status": str(tmp_path / f"s{code}")}
-            for code in (0, gpuscore.FALLBACK_EXIT)]
+            for code in (0, gpuscore.UNAVAILABLE_EXIT)]
     (tmp_path / "batch.json").write_text(json.dumps(spec))
     gpuscore.run_batch(tmp_path / "batch.json", lambda argv: 0)
     assert (tmp_path / "s0").read_text().strip() == "0"
-    assert (tmp_path / f"s{gpuscore.FALLBACK_EXIT}").read_text().strip() == "75"
+    assert (tmp_path / f"s{gpuscore.UNAVAILABLE_EXIT}").read_text().strip() == "75"
 
 
 def test_which_commands_take_the_gpu_path():
     quick = ["python3", "-m", "nceval.quick", "--json", "x"]
     screen = ["python3", "-m", "nceval.screen", "--codec", "h264", "--json", "x"]
     fixedqp = ["python3", "-m", "nceval.fixedqp", "gap", "--json", "x"]
-    assert aws_measure.gpu_scored([quick], "auto", False)
-    assert aws_measure.gpu_scored([screen], "auto", False)
-    assert aws_measure.gpu_scored([screen], "gpu", False)
-    assert not aws_measure.gpu_scored([fixedqp], "gpu", False)
-    assert aws_measure.gpu_scored([screen, screen], "auto", True) == aws_measure.GPU_DEFAULT_BATCH
+    assert aws_measure.gpu_scored([quick])
+    assert aws_measure.gpu_scored([screen])
+    assert aws_measure.gpu_scored([screen, screen])
+    assert not aws_measure.gpu_scored([fixedqp])
 
 
 def test_points_of_one_clip_window_in_flight_share_its_frames(tmp_path):
@@ -296,11 +321,8 @@ def test_each_command_gets_an_equal_share_of_the_workers():
 def test_fixedqp_ab_takes_the_gpu_path_but_gap_and_cost_stay_on_boxes():
     ab = ["python3", "-m", "nceval.fixedqp", "ab", "--codec", "av1", "--json", "x"]
     gap = ["python3", "-m", "nceval.fixedqp", "gap", "--codec", "av1", "--json", "x"]
-    assert aws_measure.gpu_scored([ab], "gpu", False)
-    assert not aws_measure.gpu_scored([gap], "gpu", False)
-    assert not aws_measure.gpu_scored([gap], "auto", False)
-    assert aws_measure.gpu_scored([ab], "auto", False) == \
-        (("nceval.fixedqp", "ab") in aws_measure.GPU_DEFAULT_COMMANDS)
+    assert aws_measure.gpu_scored([ab])
+    assert not aws_measure.gpu_scored([gap])
 
 
 def test_an_encode_round_of_our_encoder_may_go_to_an_arm_box_whatever_its_module():
@@ -336,7 +358,7 @@ def test_a_prefetch_round_respects_the_guards_and_imports_probes(tmp_path):
     blocked = rounds(tmp_path, calls.append, gpu_check=lambda: "1000 MiB free")
     with pytest.raises(SystemExit) as stop:
         blocked.prefetch()
-    assert stop.value.code == gpuscore.FALLBACK_EXIT and len(calls) == 1
+    assert stop.value.code == gpuscore.UNAVAILABLE_EXIT and len(calls) == 1
 
 
 def test_a_command_starts_only_with_memory_headroom_in_the_slice():
@@ -349,7 +371,7 @@ def test_a_command_starts_only_with_memory_headroom_in_the_slice():
     assert gpuscore.memory_reason(1, lambda: None) is None  # no slice yet: nothing in it
 
 
-def test_a_full_slice_sends_the_command_to_cpu_scoring(tmp_path, monkeypatch):
+def test_a_full_slice_reports_why_the_gpu_cannot_score(tmp_path, monkeypatch):
     monkeypatch.setattr(gpuscore, "queue_dir", lambda: tmp_path / "queue")
     monkeypatch.setattr(gpuscore, "memory_reason", lambda n: "no room")
     monkeypatch.setattr(gpuscore, "local_reason", lambda *a: None)
@@ -516,20 +538,49 @@ def test_stop_if_idle_stops_only_a_box_with_no_job(tmp_path, monkeypatch):
     assert not aws_warm.stop_if_idle("i-gone")
 
 
-def test_a_fallback_is_loud_with_its_cost_and_refused_past_the_budget(monkeypatch, capsys):
-    monkeypatch.setattr(aws_measure, "planned_rounds_usd", lambda commands: 0.02)
-    monkeypatch.setattr(aws_measure, "planned_cpu_usd", lambda commands: 0.21)
-    commands = [["python3", "-m", "nceval.quick", "--json", f"o{i}"] for i in range(6)]
-    args = argparse.Namespace(budget=4.0)
-    aws_measure.announce_fallback(args, commands, "disk floor: 195 GiB free")
-    err = capsys.readouterr().err
-    assert "scored on CPU because: disk floor" in err and "(+$0.190)" in err
-    with pytest.raises(SystemExit, match="passes --budget"):
-        aws_measure.announce_fallback(argparse.Namespace(budget=0.1), commands, "queue wait")
+QUICK = ["python3", "-m", "nceval.quick", "--json", "x"]
 
 
-def test_a_fallen_back_command_writes_why(tmp_path, monkeypatch):
-    monkeypatch.setenv(gpuscore.FALLBACK_REASON_ENV, str(tmp_path / "why.txt"))
+def refusing_args():
+    return argparse.Namespace(command=QUICK, batch=None, dry_run=False)
+
+
+@pytest.mark.parametrize("reason, fix", [
+    ("disk floor: 195 GiB free, under the 200 GiB floor", "free disk"),
+    ("GPU memory: nvidia-smi reports none", "free GPU memory"),
+    ("queue wait: the GPU scoring service was full for 10 min", "--gpu-wait"),
+    ("encode round 1 failed (status 1)", "kept for the retry"),
+])
+def test_a_measurement_the_gpu_cannot_score_is_refused_never_scored_on_a_box(
+        monkeypatch, reason, fix):
+    """Owner, 2026-11-27: a quick went to cloud CPU scoring unnoticed when the PC's free
+    disk reached diskguard's floor. Now the measurement is refused, saying what is wrong
+    and how to fix it, and no box is rented to score it."""
+    monkeypatch.setattr(aws_measure, "gpu_score", lambda args, commands: [reason])
+
+    def no_box(*args, **kwargs):
+        raise AssertionError("a box was planned for scoring")
+    monkeypatch.setattr(aws_measure, "plan", no_box)
+    with pytest.raises(SystemExit) as stop:
+        aws_measure.measure(refusing_args())
+    message = str(stop.value.code)
+    assert message.startswith("0 of 1 command(s) scored") and "refused" in message
+    assert reason in message and fix in message and "Nothing was scored on a cloud CPU" in message
+
+
+def test_a_batch_mixing_gpu_and_box_only_commands_is_refused():
+    gap = ["python3", "-m", "nceval.fixedqp", "gap", "--json", "y"]
+    with pytest.raises(SystemExit, match="split it into two batches"):
+        aws_measure.gpu_scored([QUICK, gap])
+
+
+def test_there_is_no_cpu_scoring_choice_left():
+    assert not hasattr(aws_measure, "SCORE_CHOICES")
+    assert not hasattr(aws_measure, "cpu_rest")
+
+
+def test_a_stopped_command_writes_why(tmp_path, monkeypatch):
+    monkeypatch.setenv(gpuscore.UNAVAILABLE_REASON_ENV, str(tmp_path / "why.txt"))
     with pytest.raises(SystemExit):
         raise gpuscore.GpuUnavailable("disk floor: 195 GiB free")
     assert (tmp_path / "why.txt").read_text().strip() == "disk floor: 195 GiB free"

@@ -97,7 +97,7 @@ pub(crate) unsafe fn row_16<const P: usize>(src: *const u8, taps: &[__m256i; P])
 /// H.264 window uses a byte insert to load the final sample.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn short_row<const P: usize, const N: usize>(src: *const u8) -> __m128i {
+pub(super) unsafe fn short_row<const P: usize, const N: usize>(src: *const u8) -> __m128i {
     let bytes = span(N, P);
     // SAFETY: the caller provides `bytes` readable bytes.
     unsafe {

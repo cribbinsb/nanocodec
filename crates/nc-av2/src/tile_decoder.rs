@@ -30,7 +30,7 @@ use crate::tx_size::TxSize;
 use crate::tx_type::TxSetMode;
 use crate::{coeff, motion, prediction, transform};
 use nc_common::decode::{DecodeError, Result};
-use nc_common::{Picture, PictureRecycler, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, Picture, PictureRecycler, PlaneIndex, PlaneView, PlaneViewMut, Sample};
 use nc_dsp::intra_prediction::av2::Av2IntraEdges;
 use nc_dsp::{BlockSize, Dsp, Residual16};
 
@@ -156,19 +156,22 @@ struct TileDecoder<'r> {
 /// Decoding writes every sample of the reconstruction before reading it
 /// (blocks tile the picture; prediction reads only decoded neighbours), so
 /// a reused picture's stale samples never reach the output.
+///
+/// The general decoder keeps one of its sample type (`T`); only the 8-bit
+/// one decodes subset frames.
 #[derive(Debug)]
-pub(crate) struct Workspace {
+pub(crate) struct Workspace<T: Sample = u8> {
     dsp: Dsp,
-    pub(crate) pictures: PictureRecycler,
-    cdef_source: cdef::PictureFilterScratch,
-    ccso_source: CcsoSource,
+    pub(crate) pictures: PictureRecycler<T>,
+    cdef_source: cdef::PictureFilterScratch<T>,
+    ccso_source: CcsoSource<T>,
     deblock_map: deblock::EdgeMap,
     /// The decoder's analysis, collected only when enabled.
     #[cfg(feature = "analysis")]
     pub(crate) stats: Option<nc_common::stream_stats::StreamStats>,
 }
 
-impl Default for Workspace {
+impl<T: Sample> Default for Workspace<T> {
     fn default() -> Self {
         Self {
             dsp: Dsp::new(),
@@ -182,7 +185,7 @@ impl Default for Workspace {
     }
 }
 
-impl Workspace {
+impl<T: Sample> Workspace<T> {
     /// Kernels selected for this decoder.
     pub(crate) fn dsp(&self) -> &Dsp {
         &self.dsp
@@ -192,12 +195,33 @@ impl Workspace {
     /// buffers and CCSO's deblocked luma.
     pub(crate) fn filter_parts(
         &mut self,
-    ) -> (&Dsp, &mut cdef::PictureFilterScratch, &mut CcsoSource) {
+    ) -> (&Dsp, &mut cdef::PictureFilterScratch<T>, &mut CcsoSource<T>) {
         (&self.dsp, &mut self.cdef_source, &mut self.ccso_source)
     }
 
+    /// A fresh workspace of samples `U` for the next sequence, taking over
+    /// the analysis.
+    #[cfg_attr(
+        not(feature = "analysis"),
+        allow(clippy::unused_self, reason = "only the analysis moves over")
+    )]
+    pub(crate) fn successor<U: Sample>(&mut self) -> Workspace<U> {
+        Workspace {
+            #[cfg(feature = "analysis")]
+            stats: self.stats.take(),
+            ..Workspace::default()
+        }
+    }
+
+    /// This workspace as the subset tile decoder takes it: itself in the
+    /// 8-bit general decoder, `None` in a deeper one (whose frames never
+    /// take the subset path).
+    pub(crate) fn as_eight(&mut self) -> Option<&mut Workspace> {
+        (self as &mut dyn std::any::Any).downcast_mut()
+    }
+
     /// Keep a picture nothing else holds for a later reconstruction.
-    pub(crate) fn release(&mut self, picture: std::rc::Rc<Picture>) {
+    pub(crate) fn release(&mut self, picture: std::rc::Rc<Picture<T>>) {
         if let Ok(picture) = std::rc::Rc::try_unwrap(picture) {
             self.pictures.give(picture);
         }
@@ -232,11 +256,15 @@ fn prepare_references(state: &mut BlockState, reference: Option<InterReference<'
 }
 
 /// Decode one tile of a key (`reference` is `None`) or inter picture and
-/// apply its in-loop filters (deblocking, then CDEF). An adapting tile
+/// apply its in-loop filters in order. An adapting tile
 /// starts from `inherited` models (cross-frame context) or the defaults,
 /// and its final models are returned with the picture.
 /// # Errors
 /// Rejects syntax outside the subset and malformed or truncated data.
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the tile decode and filter order together"
+)]
 pub(crate) fn decode(
     data: &[u8],
     (width, height): (usize, usize),
@@ -332,7 +360,7 @@ pub(crate) fn decode(
         &mut decoder.recon,
         |x, y| cdef::skipped_or_set(blocks, passes_over, (x, y)),
         params.cdef,
-        &decoder.dsp,
+        decoder.dsp.at(BitDepth::EIGHT),
         &mut work.cdef_source,
     );
     if params.ccso.is_on() {
@@ -340,7 +368,8 @@ pub(crate) fn decode(
             &mut decoder.recon,
             &work.ccso_source,
             &params.ccso,
-            ccso::UNIT,
+            (ccso::UNIT, BitDepth::EIGHT),
+            &decoder.dsp,
             |plane, x, y| decoder.ccso_flags.get(plane, x, y),
         );
     }
@@ -701,7 +730,9 @@ impl TileDecoder<'_> {
                     is_inter,
                     u_coded,
                 )?;
-                let tx_type = coeff::read_typed(
+                // `levels` is all zero between blocks: each coded block
+                // clears it after its inverse below.
+                let block = coeff::read_typed(
                     reader,
                     levels,
                     tx,
@@ -709,7 +740,7 @@ impl TileDecoder<'_> {
                     self.qindex,
                     (self.tx_set, self.level_coding),
                 )?;
-                let coded = levels.iter().any(|&c| c != 0);
+                let coded = block.eob > 0;
                 if coded {
                     if matches!(source, Source::Inter) {
                         load(
@@ -723,11 +754,12 @@ impl TileDecoder<'_> {
                     }
                     let output = inverse(
                         &self.dsp,
-                        (tx, tx_type),
+                        (tx, block),
                         (levels, self.level_coding == LevelCoding::Tcq && plane == 0),
                         self.plane_qindex.of(index),
                         &mut self.residual[..area],
                     )?;
+                    levels.fill(0);
                     // Into the picture, or for a transform crossing the
                     // picture edge aside, of which the part inside is kept.
                     let side = tx.width();
@@ -766,7 +798,8 @@ impl TileDecoder<'_> {
                         predicted,
                     );
                 }
-                self.state.update_coeff_context(plane, position, tx, levels);
+                self.state
+                    .set_coeff_context(plane, position, tx, block.context);
                 if plane == 1 {
                     u_coded = coded;
                 }
@@ -949,8 +982,8 @@ fn block_view(
 #[inline(always)]
 fn inverse<'a>(
     dsp: &Dsp,
-    (tx, tx_type): (TxSize, crate::tx_type::TxType),
-    (levels, tcq): (&mut [i32], bool),
+    (tx, block): (TxSize, coeff::ReadBlock),
+    (levels, tcq): (&[i32], bool),
     qindex: crate::transform::Qindices,
     residual: &'a mut [i16],
 ) -> Result<Residual16<'a>> {
@@ -959,7 +992,7 @@ fn inverse<'a>(
     } else {
         Dequantizer::Plain
     };
-    let eob = coeff::end_of_block(dsp, &levels[..tx.coded_len()], tx);
+    let (tx_type, eob) = (block.tx_type, block.eob);
     if let Some(constant) =
         transform::dc_only_residual((tx, tx_type), (levels, eob, dequantizer), qindex)
     {

@@ -1,11 +1,12 @@
 //! The complete AV2 sequence header (`sequence_header_obu`), every field of
-//! AVM v1.0.0, for 8-bit 4:2:0 streams.
+//! AVM v1.0.0, for 4:2:0 and monochrome (4:0:0) streams.
 //!
 //! Field order follows dav2d `obu.c` `parse_seq_hdr` and AVM
 //! `av2_read_sequence_header_obu` with its `read_sequence_*_group_tool_flags`
 //! groups. [`crate::sequence`] is the encoder's subset of the same syntax.
 use super::bits::{flag, signed, uniform};
 use super::tiles::{self, TileGeometry, TileLayout};
+use nc_common::BitDepth;
 use nc_common::decode::{BitReader, DecodeError, Result};
 
 /// Most segments of a frame with `enable_ext_seg` (AVM `MAX_SEGMENTS`).
@@ -367,6 +368,13 @@ pub struct SequenceHeader {
     pub high_tier: bool,
     /// `still_picture`.
     pub still_picture: bool,
+    /// Monochrome (4:0:0, `chroma_format_idc` 1): one plane coded, and
+    /// every chroma field of the headers left out (dav2d
+    /// `DAV2D_PIXEL_LAYOUT_I400`).
+    pub monochrome: bool,
+    /// The sample depth as dav2d numbers it (`hbd`): 0 for 8 bits, 1 for
+    /// 10, 2 for 12 (`bit_depth_idc` 1, 0, 2).
+    pub high_bit_depth: u8,
     /// The layer configuration record the sequence follows (`seq_lcr_id`).
     pub layer_config_id: u8,
     /// Highest temporal and embedded layers, with each layer's dependency
@@ -374,8 +382,8 @@ pub struct SequenceHeader {
     pub max_temporal_layer: u8,
     /// `max_mlayer_id`.
     pub max_embedded_layer: u8,
-    /// Temporal layers' masks.
-    pub temporal_dependencies: [u8; 4],
+    /// Temporal layers' masks, per embedded layer.
+    pub temporal_dependencies: [[u8; 4]; 8],
     /// Embedded layers' masks.
     pub embedded_dependencies: [u8; 8],
     /// Frames are output in coded order (`monotonic_output_order_flag`).
@@ -435,16 +443,58 @@ pub struct DecoderModel {
 
 /// Highest profile index of AVM v1.0.0.
 const MAX_PROFILE: u32 = 4;
-/// `chroma_format_idc` of 4:2:0 and `bit_depth_idc` of eight bits.
+/// `chroma_format_idc` of 4:2:0 and of monochrome (dav2d `dav2d_layouts`).
 const CHROMA_FORMAT_420: u32 = 0;
-const BIT_DEPTH_EIGHT: u32 = 1;
+const CHROMA_FORMAT_400: u32 = 1;
+/// Largest `bit_depth_idc` (12 bits).
+const MAX_BIT_DEPTH_IDC: u32 = 2;
+/// `bit_depth_idc` of eight bits, which swaps with ten's (0) in
+/// `high_bit_depth` order.
+const BIT_DEPTH_IDC_EIGHT: u32 = 1;
+/// Bits added per `high_bit_depth` step.
+const BITS_PER_DEPTH_STEP: u32 = 2;
+/// Largest quantizer index at 8 bits (`MAXQ_8_BITS`), and the indices
+/// each `high_bit_depth` step adds (dav2d `255 + 48 * hbd`).
+const MAX_QINDEX_EIGHT: u16 = 255;
+const QINDEX_PER_DEPTH_STEP: u16 = 48;
+
+impl SequenceHeader {
+    /// The planes coded: luma alone in monochrome, else three (dav2d
+    /// `n_planes`).
+    #[must_use]
+    pub fn planes(&self) -> usize {
+        if self.monochrome { 1 } else { 3 }
+    }
+
+    /// The sample bit depth.
+    #[must_use]
+    pub fn depth(&self) -> BitDepth {
+        BitDepth::new(BitDepth::EIGHT.bits() + BITS_PER_DEPTH_STEP * u32::from(self.high_bit_depth))
+            .expect("AV2 depths are 8, 10 or 12 bits")
+    }
+
+    /// The largest quantizer index (dav2d `qmax`).
+    #[must_use]
+    pub fn max_qindex(&self) -> u16 {
+        MAX_QINDEX_EIGHT + self.qindex_depth_offset()
+    }
+
+    /// The quantizer indices the depth adds to the 8-bit range: each two
+    /// bits double the steps, 24 indices per doubling (dav2d `48 * hbd`).
+    #[must_use]
+    pub fn qindex_depth_offset(&self) -> u16 {
+        QINDEX_PER_DEPTH_STEP * u16::from(self.high_bit_depth)
+    }
+}
+/// The error of a chroma format outside the decoder (4:4:4 and 4:2:2).
+pub const UNSUPPORTED_CHROMA_FORMAT: &str = "AV2 chroma format other than 4:2:0 and 4:0:0";
 /// Levels from which the sequence codes a tier.
 const FIRST_TIERED_LEVEL: u8 = 4;
 
 /// Parse a sequence-header payload.
 /// # Errors
-/// Truncation, field values outside AVM v1.0.0, and formats other than
-/// 8-bit 4:2:0 ([`DecodeError::Unsupported`]).
+/// Truncation, field values outside AVM v1.0.0, and chroma formats other
+/// than 4:2:0 and 4:0:0 ([`DecodeError::Unsupported`]).
 pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
     let bits = &mut BitReader::new(payload);
     let id = bits.read_uvlc()?;
@@ -458,19 +508,27 @@ pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
     let single_picture = bits.read_bit()?;
     let level = bits.read_bits(5)? as u8;
     let high_tier = level >= FIRST_TIERED_LEVEL && !single_picture && bits.read_bit()?;
-    if bits.read_uvlc()? != CHROMA_FORMAT_420 {
-        return Err(DecodeError::Unsupported("AV2 chroma format other than 420"));
+    let monochrome = monochrome(bits)?;
+    let depth_idc = bits.read_uvlc()?;
+    if depth_idc > MAX_BIT_DEPTH_IDC {
+        return Err(DecodeError::Malformed("AV2 bit depth"));
     }
-    if bits.read_uvlc()? != BIT_DEPTH_EIGHT {
-        return Err(DecodeError::Unsupported("AV2 bit depth other than eight"));
-    }
+    // dav2d `hbd`: `bit_depth_idc` 0 and 1 swap so the value counts steps
+    // of two bits above eight.
+    let high_bit_depth = match depth_idc {
+        0 => 1,
+        BIT_DEPTH_IDC_EIGHT => 0,
+        other => other,
+    } as u8;
     let mut header = SequenceHeader {
         id: id as u8,
         profile: profile as u8,
         single_picture,
         level,
         high_tier,
+        monochrome,
         still_picture: single_picture,
+        high_bit_depth,
         monotonic_output: single_picture,
         // Single pictures choose the screen-content tools per frame.
         screen_content_tools: Tri::Adaptive,
@@ -482,6 +540,15 @@ pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
         header.still_picture = bits.read_bit()?;
         header.max_temporal_layer = bits.read_bits(2)? as u8;
         header.max_embedded_layer = bits.read_bits(3)? as u8;
+        if header.max_embedded_layer > 0 {
+            // `seq_max_mlayer_cnt_minus_1`, in ceil(log2(layers)) bits
+            // (AVM `read_sequence_header_obu`): a level limit only.
+            let layers = u32::from(header.max_embedded_layer) + 1;
+            let count = bits.read_bits(layers.next_power_of_two().ilog2())?;
+            if count >= layers {
+                return Err(DecodeError::Malformed("AV2 embedded layer count"));
+            }
+        }
         header.monotonic_output = bits.read_bit()?;
     }
     header.width_bits = bits.read_bits(4)? as u8 + 1;
@@ -500,9 +567,9 @@ pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
         timing(bits, &mut header)?;
     }
     layer_dependencies(bits, &mut header)?;
-    header.partition = partition(bits, single_picture)?;
+    header.partition = partition(bits, single_picture, monochrome)?;
     header.segmentation = segmentation(bits)?;
-    header.intra = intra(bits)?;
+    header.intra = intra(bits, monochrome)?;
     if !single_picture {
         inter_prediction(bits, &mut header.inter)?;
     }
@@ -514,8 +581,8 @@ pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
             header.force_integer_mv = tri(bits)?;
         }
     }
-    header.transform = transform(bits, single_picture)?;
-    header.quant = quant(bits)?;
+    header.transform = transform(bits, single_picture, monochrome)?;
+    header.quant = quant(bits, monochrome)?;
     header.filters = filters(bits, single_picture, header.partition.superblock_log2)?;
     if bits.read_bit()? {
         header.tile_layout_fixed = !bits.read_bit()?;
@@ -531,6 +598,15 @@ pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
     header.film_grain = bits.read_bit()?;
     extension_and_trailing_bits(bits, payload)?;
     Ok(header)
+}
+
+/// `chroma_format_idc`: whether the sequence is monochrome (else 4:2:0).
+fn monochrome(bits: &mut BitReader<'_>) -> Result<bool> {
+    match bits.read_uvlc()? {
+        CHROMA_FORMAT_420 => Ok(false),
+        CHROMA_FORMAT_400 => Ok(true),
+        _ => Err(DecodeError::Unsupported(UNSUPPORTED_CHROMA_FORMAT)),
+    }
 }
 
 /// `Tri` of AVM's "adaptive, else on/off" two-bit pattern.
@@ -565,14 +641,16 @@ fn timing(bits: &mut BitReader<'_>, header: &mut SequenceHeader) -> Result<()> {
 
 /// Each layer's dependency mask over itself and the lower layers: every
 /// one of them unless signalled (AVM `av2_read_mlayer_dependency_info`,
-/// `av2_read_tlayer_dependency_info`). A temporal map signalled per
-/// embedded layer is read; the base embedded layer's is kept.
+/// `av2_read_tlayer_dependency_info`). Each embedded layer has its own
+/// temporal map, the base layer's unless signalled per layer.
 fn layer_dependencies(bits: &mut BitReader<'_>, header: &mut SequenceHeader) -> Result<()> {
     for (layer, mask) in header.embedded_dependencies.iter_mut().enumerate() {
         *mask = u8::MAX >> (7 - layer);
     }
-    for (layer, mask) in header.temporal_dependencies.iter_mut().enumerate() {
-        *mask = u8::MAX >> (7 - layer);
+    for masks in &mut header.temporal_dependencies {
+        for (layer, mask) in masks.iter_mut().enumerate() {
+            *mask = u8::MAX >> (7 - layer);
+        }
     }
     let (max_embedded, max_temporal) = (header.max_embedded_layer, header.max_temporal_layer);
     if max_embedded > 0 && bits.read_bit()? {
@@ -583,26 +661,28 @@ fn layer_dependencies(bits: &mut BitReader<'_>, header: &mut SequenceHeader) -> 
     }
     if max_temporal > 0 && bits.read_bit()? {
         let per_embedded_layer = max_embedded > 0 && bits.read_bit()?;
-        let maps = if per_embedded_layer {
-            max_embedded + 1
-        } else {
-            1
-        };
-        for map in 0..maps {
-            for layer in 1..=max_temporal {
-                let mask = bits.read_bits(u32::from(layer) + 1)? as u8;
-                if map == 0 {
-                    header.temporal_dependencies[usize::from(layer)] = mask;
+        for embedded in 0..=usize::from(max_embedded) {
+            if embedded == 0 || per_embedded_layer {
+                for layer in 1..=max_temporal {
+                    header.temporal_dependencies[embedded][usize::from(layer)] =
+                        bits.read_bits(u32::from(layer) + 1)? as u8;
                 }
+            } else {
+                header.temporal_dependencies[embedded] = header.temporal_dependencies[0];
             }
         }
     }
     Ok(())
 }
 
-fn partition(bits: &mut BitReader<'_>, single_picture: bool) -> Result<PartitionTools> {
+/// The partition tools; monochrome codes no separate chroma trees.
+fn partition(
+    bits: &mut BitReader<'_>,
+    single_picture: bool,
+    monochrome: bool,
+) -> Result<PartitionTools> {
     let superblock_log2 = if bits.read_bit()? { 8 } else { 6 + flag(bits)? };
-    let separate_trees = bits.read_bit()?;
+    let separate_trees = !monochrome && bits.read_bit()?;
     let extended_separate_trees = separate_trees && !single_picture && bits.read_bit()?;
     let extended = bits.read_bit()?;
     let uneven_four_way = extended && bits.read_bit()?;
@@ -632,12 +712,17 @@ fn segmentation(bits: &mut BitReader<'_>) -> Result<Segmentation> {
 /// `cfl_ds_filter_index` value that is reserved and read as zero.
 const CFL_FILTER_RESERVED: u8 = 3;
 
-fn intra(bits: &mut BitReader<'_>) -> Result<IntraTools> {
+/// The intra tools; monochrome codes no chroma-from-luma filter.
+fn intra(bits: &mut BitReader<'_>, monochrome: bool) -> Result<IntraTools> {
     let dip = bits.read_bit()?;
     let edge_filter = bits.read_bit()?;
     let multiple_reference_lines = bits.read_bit()?;
     let cfl = bits.read_bit()?;
-    let mut cfl_downsample_filter = bits.read_bits(2)? as u8;
+    let mut cfl_downsample_filter = if monochrome {
+        0
+    } else {
+        bits.read_bits(2)? as u8
+    };
     if cfl_downsample_filter == CFL_FILTER_RESERVED {
         cfl_downsample_filter = 0;
     }
@@ -740,21 +825,26 @@ fn inter_tools(
     bits.read_bit()
 }
 
-fn transform(bits: &mut BitReader<'_>, single_picture: bool) -> Result<TransformTools> {
+/// The transform tools; monochrome codes neither chroma flag.
+fn transform(
+    bits: &mut BitReader<'_>,
+    single_picture: bool,
+    monochrome: bool,
+) -> Result<TransformTools> {
     let fsc = bits.read_bit()?;
     let mut transform = TransformTools {
         fsc,
         intra_identity: fsc || bits.read_bit()?,
         intra_secondary: bits.read_bit()?,
         inter_secondary: bits.read_bit()?,
-        chroma_dct_only: bits.read_bit()?,
+        chroma_dct_only: !monochrome && bits.read_bit()?,
         ..TransformTools::default()
     };
     if !single_picture {
         transform.inter_ddt = bits.read_bit()?;
     }
     transform.reduced_partition_set = bits.read_bit()?;
-    transform.cctx = bits.read_bit()?;
+    transform.cctx = !monochrome && bits.read_bit()?;
     transform.tcq = flag(bits)?;
     if transform.tcq != 0 && !single_picture {
         transform.tcq += flag(bits)?;
@@ -775,15 +865,21 @@ fn base_delta(bits: &mut BitReader<'_>) -> Result<i8> {
     Ok(bits.read_bits(5)? as i8 + BASE_DELTA_Q_MIN)
 }
 
-fn quant(bits: &mut BitReader<'_>) -> Result<QuantTools> {
+/// The quantizer offsets; monochrome codes no chroma offsets.
+fn quant(bits: &mut BitReader<'_>, monochrome: bool) -> Result<QuantTools> {
     let mut quant = QuantTools {
-        separate_uv_delta_q: bits.read_bit()?,
+        separate_uv_delta_q: !monochrome && bits.read_bit()?,
         equal_ac_dc_q: bits.read_bit()?,
         ..QuantTools::default()
     };
     if !quant.equal_ac_dc_q {
         quant.base_y_dc_delta = base_delta(bits)?;
         quant.y_dc_delta_enabled = bits.read_bit()?;
+    }
+    if monochrome {
+        return Ok(quant);
+    }
+    if !quant.equal_ac_dc_q {
         quant.base_uv_dc_delta = base_delta(bits)?;
         quant.uv_dc_delta_enabled = bits.read_bit()?;
     }
@@ -884,6 +980,8 @@ mod tests {
     const LOW_DELAY: &str = "801a002627fb383cc000001cddc741357e377ea4dccad080";
     const SINGLE_PICTURE: &str = "821a989fece08004061b9088";
     const FEWEST_TOOLS: &str = "801a006627fb3809800000000068210000c283720684";
+    /// avmenc `--monochrome`, random access.
+    const MONOCHROME: &str = "8014800989fece0cc000001f771c04d5f9ddfc565684";
 
     #[test]
     fn default_tools_with_segments_and_128_superblocks() {
@@ -940,8 +1038,29 @@ mod tests {
     }
 
     #[test]
+    fn monochrome_leaves_out_chroma_fields() {
+        let header = parse(&bytes(MONOCHROME)).unwrap();
+        assert!(header.monochrome);
+        assert_eq!(header.planes(), 1);
+        assert_eq!((header.max_width, header.max_height), (640, 360));
+        assert!(!header.partition.separate_trees);
+        assert!(header.intra.cfl);
+        assert!(!header.transform.chroma_dct_only && !header.transform.cctx);
+        assert!(!header.quant.separate_uv_delta_q && header.quant.equal_ac_dc_q);
+        assert!(header.filters.cdef && header.filters.ccso);
+        assert_eq!(header.filters.cdef_on_skipped, Tri::On);
+        assert_eq!(parse(&bytes(LOW_DELAY)).unwrap().planes(), 3);
+    }
+
+    #[test]
     fn truncation_and_trailing_bits_are_rejected() {
-        for hex in [SEGMENTED_128, LOW_DELAY, SINGLE_PICTURE, FEWEST_TOOLS] {
+        for hex in [
+            SEGMENTED_128,
+            LOW_DELAY,
+            SINGLE_PICTURE,
+            FEWEST_TOOLS,
+            MONOCHROME,
+        ] {
             let payload = bytes(hex);
             for length in 0..payload.len() {
                 assert!(parse(&payload[..length]).is_err(), "{hex} cut to {length}");
@@ -950,10 +1069,10 @@ mod tests {
             *no_stop.last_mut().unwrap() = 0;
             assert!(parse(&no_stop).is_err());
         }
-        // Formats other than 4:2:0 are outside the decoder.
+        // Formats other than 4:2:0 and 4:0:0 are outside the decoder.
         assert_eq!(
-            parse(&bytes("8004")).unwrap_err(),
-            DecodeError::Unsupported("AV2 chroma format other than 420")
+            parse(&bytes("8006")).unwrap_err(),
+            DecodeError::Unsupported(UNSUPPORTED_CHROMA_FORMAT)
         );
     }
 }

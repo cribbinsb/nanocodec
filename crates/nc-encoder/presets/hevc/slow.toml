@@ -71,3 +71,7 @@ decision.subpel_seed_shift_zero_mv = 0
 # nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
 # streams), final check BETTER at 1/150 and 1/300 (-1.22 / -0.35 %).
 rate.key_cap_buffer_first = 0.8
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2
+# The split override (2026-11-27) is off here: final 600f +0.14 % J [+0.02, +0.28] (1/150), pulse guard +0.77 dB.
+planner.split_override = 0

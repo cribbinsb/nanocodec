@@ -58,7 +58,7 @@ fn official_general_intra_reconstruction() {
                     &mut arena,
                 )
                 .unwrap();
-                populate_test_levels(&mut units, &arena);
+                populate_test_levels(&mut units, &arena, s);
                 eprintln!(
                     "{name}: {} CUs, {} CTUs, ISP={}, MTS={}, LFNST={}",
                     units.len(),

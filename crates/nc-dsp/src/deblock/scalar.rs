@@ -44,55 +44,78 @@ fn luma_edge(plane: &mut [u8], e: &Edge) {
 /// at the depth (α, β, `tC0` scaled by `2^(BitDepth − 8)`, H.264 eqs.
 /// 8-463, 8-464, 8-466), the samples clipped to it.
 pub(crate) fn luma_edge_at<T: Sample>(plane: &mut [T], e: &Edge, depth: BitDepth) {
-    let depth = depth.of::<T>();
-    let (alpha, beta) = (i32::from(e.alpha), i32::from(e.beta));
     for line in 0..LUMA_LINES {
-        let bs = e.bs[line / 4];
-        if bs == 0 {
-            continue;
+        let segment = Line {
+            q0: e.base + line * e.along,
+            across: e.across,
+            bs: e.bs[line / 4],
+            tc0: e.tc0[line / 4],
+            alpha: e.alpha,
+            beta: e.beta,
+        };
+        luma_line_at(plane, &segment, depth);
+    }
+}
+
+/// One line across an H.264 edge: its q0 index, the step across the edge,
+/// and its bS, `tC0` and thresholds (at the depth).
+pub(crate) struct Line {
+    pub q0: usize,
+    pub across: usize,
+    pub bs: u8,
+    pub tc0: i16,
+    pub alpha: i16,
+    pub beta: i16,
+}
+
+/// One line of [`luma_edge_at`]: the luma filters of §8.7.2.3 / §8.7.2.4.
+pub(crate) fn luma_line_at<T: Sample>(plane: &mut [T], line: &Line, depth: BitDepth) {
+    let depth = depth.of::<T>();
+    let (alpha, beta) = (i32::from(line.alpha), i32::from(line.beta));
+    let bs = line.bs;
+    if bs == 0 {
+        return;
+    }
+    let (q0i, e) = (line.q0, line);
+    let s: [i32; 8] = core::array::from_fn(|i| plane[at(q0i, e.across, i as isize - 4)].to_i32());
+    let [p3, p2, p1, p0, q0, q1, q2, q3] = s;
+    if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
+        return;
+    }
+    let (ap, aq) = ((p2 - p0).abs(), (q2 - q0).abs());
+    let mut out = s;
+    if bs < 4 {
+        let tc0 = i32::from(e.tc0);
+        let tc = tc0 + i32::from(ap < beta) + i32::from(aq < beta);
+        let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
+        out[3] = p0 + delta;
+        out[4] = q0 - delta;
+        if ap < beta {
+            out[2] = p1 + ((p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1).clamp(-tc0, tc0);
         }
-        let q0i = e.base + line * e.along;
-        let s: [i32; 8] =
-            core::array::from_fn(|i| plane[at(q0i, e.across, i as isize - 4)].to_i32());
-        let [p3, p2, p1, p0, q0, q1, q2, q3] = s;
-        if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
-            continue;
+        if aq < beta {
+            out[5] = q1 + ((q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1).clamp(-tc0, tc0);
         }
-        let (ap, aq) = ((p2 - p0).abs(), (q2 - q0).abs());
-        let mut out = s;
-        if bs < 4 {
-            let tc0 = i32::from(e.tc0[line / 4]);
-            let tc = tc0 + i32::from(ap < beta) + i32::from(aq < beta);
-            let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
-            out[3] = p0 + delta;
-            out[4] = q0 - delta;
-            if ap < beta {
-                out[2] = p1 + ((p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1).clamp(-tc0, tc0);
-            }
-            if aq < beta {
-                out[5] = q1 + ((q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1).clamp(-tc0, tc0);
-            }
+    } else {
+        let strong = (p0 - q0).abs() < ((alpha >> 2) + 2);
+        if ap < beta && strong {
+            out[3] = (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3;
+            out[2] = (p2 + p1 + p0 + q0 + 2) >> 2;
+            out[1] = (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3;
         } else {
-            let strong = (p0 - q0).abs() < ((alpha >> 2) + 2);
-            if ap < beta && strong {
-                out[3] = (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3;
-                out[2] = (p2 + p1 + p0 + q0 + 2) >> 2;
-                out[1] = (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3;
-            } else {
-                out[3] = (2 * p1 + p0 + q1 + 2) >> 2;
-            }
-            if aq < beta && strong {
-                out[4] = (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3;
-                out[5] = (p0 + q0 + q1 + q2 + 2) >> 2;
-                out[6] = (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3;
-            } else {
-                out[4] = (2 * q1 + q0 + p1 + 2) >> 2;
-            }
+            out[3] = (2 * p1 + p0 + q1 + 2) >> 2;
         }
-        // p2..q2: the only samples the luma filters change.
-        for i in 1..7 {
-            plane[at(q0i, e.across, i as isize - 4)] = depth.clip_to(out[i]);
+        if aq < beta && strong {
+            out[4] = (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3;
+            out[5] = (p0 + q0 + q1 + q2 + 2) >> 2;
+            out[6] = (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3;
+        } else {
+            out[4] = (2 * q1 + q0 + p1 + 2) >> 2;
         }
+    }
+    // p2..q2: the only samples the luma filters change.
+    for i in 1..7 {
+        plane[at(q0i, e.across, i as isize - 4)] = depth.clip_to(out[i]);
     }
 }
 
@@ -108,30 +131,42 @@ fn chroma_edge(plane: &mut [u8], e: &Edge) {
 
 /// [`chroma_edge`] at any sample type and depth, as [`luma_edge_at`].
 pub(crate) fn chroma_edge_at<T: Sample>(plane: &mut [T], e: &Edge, depth: BitDepth) {
-    let depth = depth.of::<T>();
-    let (alpha, beta) = (i32::from(e.alpha), i32::from(e.beta));
     for line in 0..CHROMA_LINES {
-        let bs = e.bs[line / 2];
-        if bs == 0 {
-            continue;
-        }
-        let q0i = e.base + line * e.along;
-        let s: [i32; 4] =
-            core::array::from_fn(|i| plane[at(q0i, e.across, i as isize - 2)].to_i32());
-        let [p1, p0, q0, q1] = s;
-        if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
-            continue;
-        }
-        let (p0n, q0n) = if bs < 4 {
-            let tc = i32::from(e.tc0[line / 2]) + 1;
-            let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
-            (p0 + delta, q0 - delta)
-        } else {
-            ((2 * p1 + p0 + q1 + 2) >> 2, (2 * q1 + q0 + p1 + 2) >> 2)
+        let segment = Line {
+            q0: e.base + line * e.along,
+            across: e.across,
+            bs: e.bs[line / 2],
+            tc0: e.tc0[line / 2],
+            alpha: e.alpha,
+            beta: e.beta,
         };
-        plane[at(q0i, e.across, -1)] = depth.clip_to(p0n);
-        plane[at(q0i, e.across, 0)] = depth.clip_to(q0n);
+        chroma_line_at(plane, &segment, depth);
     }
+}
+
+/// One line of [`chroma_edge_at`] (§8.7.2.3, §8.7.2.4 with `chromaEdgeFlag` 1).
+pub(crate) fn chroma_line_at<T: Sample>(plane: &mut [T], line: &Line, depth: BitDepth) {
+    let depth = depth.of::<T>();
+    let (alpha, beta) = (i32::from(line.alpha), i32::from(line.beta));
+    let bs = line.bs;
+    if bs == 0 {
+        return;
+    }
+    let (q0i, e) = (line.q0, line);
+    let s: [i32; 4] = core::array::from_fn(|i| plane[at(q0i, e.across, i as isize - 2)].to_i32());
+    let [p1, p0, q0, q1] = s;
+    if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
+        return;
+    }
+    let (p0n, q0n) = if bs < 4 {
+        let tc = i32::from(e.tc0) + 1;
+        let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
+        (p0 + delta, q0 - delta)
+    } else {
+        ((2 * p1 + p0 + q1 + 2) >> 2, (2 * q1 + q0 + p1 + 2) >> 2)
+    };
+    plane[at(q0i, e.across, -1)] = depth.clip_to(p0n);
+    plane[at(q0i, e.across, 0)] = depth.clip_to(q0n);
 }
 
 /// The 8 samples p3..q3 of the HEVC line whose q0 is at `q0`.

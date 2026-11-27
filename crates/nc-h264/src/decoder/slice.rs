@@ -3,6 +3,8 @@
 //! (§7.3.3.2) and `dec_ref_pic_marking()` (§7.3.3.3), and the
 //! detection of a new picture's first slice (§7.4.1.2.4).
 
+use nc_common::ChromaFormat;
+
 use super::dpb::{Marking, Mmco, Modification};
 use super::pps::{BipredWeights, MAX_PPS_ID, MAX_REF_IDX_ACTIVE_MINUS1, Pps};
 use super::reader::Reader;
@@ -27,6 +29,9 @@ const SLICE_TYPES: u32 = 5;
 const MAX_IDR_PIC_ID: u32 = 65_535;
 /// `redundant_pic_cnt` range (§7.4.3).
 const MAX_REDUNDANT_PIC_CNT: u32 = 127;
+/// `colour_plane_id` is a 2-bit field of values 0..=2 (§7.4.3).
+const COLOUR_PLANE_ID_BITS: u32 = 2;
+const MAX_COLOUR_PLANE_ID: u32 = 2;
 /// `cabac_init_idc` range.
 const MAX_CABAC_INIT_IDC: u32 = 2;
 /// `luma_log2_weight_denom` / `chroma_log2_weight_denom` range.
@@ -87,6 +92,19 @@ pub(super) struct WeightTable {
 }
 
 impl WeightTable {
+    /// The table of the field macroblocks of an MBAFF frame, indexed by
+    /// their field reference index: entry `refIdx >> 1` of the frame
+    /// table (§8.4.2.3, `refIdxL0WP`).
+    pub fn by_field(&self) -> Self {
+        Self {
+            weights: self
+                .weights
+                .each_ref()
+                .map(|list| list.iter().flat_map(|&entry| [entry, entry]).collect()),
+            ..self.clone()
+        }
+    }
+
     /// Whether every weight of list `list`'s entry `ref_idx` is the
     /// default, so weighting one prediction changes nothing
     /// (`((x * 2^d + 2^(d-1)) >> d) + 0 == x`).
@@ -105,13 +123,21 @@ impl WeightTable {
 
 /// The slice header fields decoding uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "the header's own flags")]
 pub(super) struct SliceHeader {
+    /// The address of the slice's first macroblock (`first_mb_in_slice`,
+    /// doubled in MBAFF frames).
     pub first_mb: usize,
     pub slice_type: SliceType,
     pub pps_id: u32,
+    /// `colour_plane_id` of separately coded colour planes (0 Y, 1 Cb,
+    /// 2 Cr), else 0.
+    pub colour_plane: usize,
     pub frame_num: u32,
     /// A frame, or a field picture (`field_pic_flag`, `bottom_field_flag`).
     pub structure: Structure,
+    /// `MbaffFrameFlag`: a frame of macroblock pairs.
+    pub mbaff: bool,
     pub idr: bool,
     /// `nal_ref_idc != 0`.
     pub reference: bool,
@@ -186,21 +212,17 @@ pub(super) fn parse(
         _ => return Err(DecodeError::Malformed("inter slice in IDR picture")),
     };
     let pps_id = r.ue_max(MAX_PPS_ID, "pic_parameter_set_id")?;
+    let colour_plane = parse_colour_plane(r, sps)?;
     let frame_num = r.bits(sps.log2_max_frame_num)?;
-    let structure = if !sps.frame_mbs_only && r.flag()? {
-        Structure::Field(if r.flag()? {
-            Parity::Bottom
-        } else {
-            Parity::Top
-        })
-    } else {
-        Structure::Frame
-    };
-    if structure == Structure::Frame && sps.mbaff {
-        return Err(DecodeError::Unsupported("H264 MBAFF frames"));
-    }
+    let structure = parse_structure(r, sps)?;
+    // MbaffFrameFlag (eq. 7-25): first_mb_in_slice counts pairs.
+    let mbaff = structure == Structure::Frame && sps.mbaff;
+    let first_mb = first_mb << usize::from(mbaff);
     if first_mb >= sps.picture_mbs(structure) {
         return Err(DecodeError::Malformed("first_mb_in_slice"));
+    }
+    if mbaff {
+        check_mbaff(sps, pps)?;
     }
     if idr && frame_num != 0 {
         return Err(DecodeError::Malformed("IDR frame_num"));
@@ -219,15 +241,7 @@ pub(super) fn parse(
     };
     let direct_spatial = slice_type == SliceType::B && r.flag()?;
     let (num_ref_idx_active, modifications) = parse_lists(r, pps, slice_type)?;
-    let explicit = match slice_type {
-        SliceType::P => pps.weighted_pred,
-        SliceType::B => pps.weighted_bipred == BipredWeights::Explicit,
-        SliceType::I | SliceType::Si => false,
-    };
-    let lists = slice_type.lists();
-    let weights = explicit
-        .then(|| parse_weights(r, &num_ref_idx_active[..lists], sps.monochrome))
-        .transpose()?;
+    let weights = parse_explicit_weights(r, (sps, pps), slice_type, &num_ref_idx_active)?;
     let marking = parse_marking(r, idr, nal_ref_idc)?;
     let cabac_init_idc = if pps.cabac && !slice_type.is_intra() {
         r.ue_max(MAX_CABAC_INIT_IDC, "cabac_init_idc")? as u8
@@ -257,8 +271,10 @@ pub(super) fn parse(
         first_mb,
         slice_type,
         pps_id,
+        colour_plane,
         frame_num,
         structure,
+        mbaff,
         idr,
         reference: nal_ref_idc != 0,
         idr_pic_id,
@@ -279,6 +295,26 @@ pub(super) fn parse(
     })
 }
 
+/// The `pred_weight_table()` of a slice with explicit weighted prediction
+/// (`weighted_pred_flag` and a P slice, or `weighted_bipred_idc` 1 and a B
+/// slice), with chroma weights unless `ChromaArrayType` is 0.
+fn parse_explicit_weights(
+    r: &mut Reader<'_>,
+    (sps, pps): (&Sps, &Pps),
+    slice_type: SliceType,
+    num_ref_idx_active: &[usize; 2],
+) -> Result<Option<WeightTable>> {
+    let explicit = match slice_type {
+        SliceType::P => pps.weighted_pred,
+        SliceType::B => pps.weighted_bipred == BipredWeights::Explicit,
+        SliceType::I | SliceType::Si => false,
+    };
+    let lists = slice_type.lists();
+    explicit
+        .then(|| parse_weights(r, &num_ref_idx_active[..lists], sps.chroma.is_mono()))
+        .transpose()
+}
+
 /// `slice_group_change_cycle`, coded for slice group map types 3..=5.
 fn parse_change_cycle(r: &mut Reader<'_>, sps: &Sps, pps: &Pps) -> Result<u32> {
     let bits = pps
@@ -286,6 +322,48 @@ fn parse_change_cycle(r: &mut Reader<'_>, sps: &Sps, pps: &Pps) -> Result<u32> {
         .as_ref()
         .and_then(|groups| groups.change_cycle_bits(MapUnits::of_frame(sps)));
     bits.map_or(Ok(0), |bits| r.bits(bits))
+}
+
+/// `field_pic_flag` and `bottom_field_flag` (sequences of frames code
+/// neither).
+fn parse_structure(r: &mut Reader<'_>, sps: &Sps) -> Result<Structure> {
+    Ok(if !sps.frame_mbs_only && r.flag()? {
+        Structure::Field(if r.flag()? {
+            Parity::Bottom
+        } else {
+            Parity::Top
+        })
+    } else {
+        Structure::Frame
+    })
+}
+
+/// The MBAFF frames decoded: not with slice groups (Extended), and only in
+/// 4:2:0 and 4:0:0 (the pair neighbours of 4:2:2 and 4:4:4 chroma blocks
+/// and of separate colour planes are not done yet).
+fn check_mbaff(sps: &Sps, pps: &Pps) -> Result<()> {
+    if pps.slice_groups.is_some() {
+        return Err(DecodeError::Unsupported(
+            "H264 MBAFF frames with slice groups",
+        ));
+    }
+    if sps.format != ChromaFormat::Yuv420 {
+        return Err(DecodeError::Unsupported(
+            "H264 MBAFF frames in 4:2:2 or 4:4:4",
+        ));
+    }
+    Ok(())
+}
+
+/// `colour_plane_id` of a separately coded colour plane, else 0.
+fn parse_colour_plane(r: &mut Reader<'_>, sps: &Sps) -> Result<usize> {
+    if !sps.separate_planes {
+        return Ok(0);
+    }
+    match r.bits(COLOUR_PLANE_ID_BITS)? {
+        id @ 0..=MAX_COLOUR_PLANE_ID => Ok(id as usize),
+        _ => Err(DecodeError::Malformed("colour_plane_id")),
+    }
 }
 
 /// The active reference counts (`num_ref_idx_active_override_flag` and
@@ -369,7 +447,8 @@ fn parse_modifications(r: &mut Reader<'_>) -> Result<Vec<Modification>> {
     }
 }
 
-/// `pred_weight_table()` (§7.3.3.2) of lists with `counts` entries.
+/// `pred_weight_table()` (§7.3.3.2) of lists with `counts` entries;
+/// `monochrome`: `ChromaArrayType` 0, without chroma weights.
 fn parse_weights(r: &mut Reader<'_>, counts: &[usize], monochrome: bool) -> Result<WeightTable> {
     let luma_log2_denom = r.ue_max(MAX_LOG2_WEIGHT_DENOM, "luma_log2_weight_denom")?;
     let chroma_log2_denom = if monochrome {

@@ -71,6 +71,7 @@ impl Models {
     }
 }
 impl Parser<'_> {
+    #[inline]
     pub(super) fn sbt_mode(&mut self, r: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
         let node = unit.node;
         let max = 1 << self.sequence.max_transform_log2;

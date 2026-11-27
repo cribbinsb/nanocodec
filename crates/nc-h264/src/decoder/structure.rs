@@ -9,7 +9,7 @@
 //! structure, so two fields of one frame are different pictures and no
 //! identity is 0 ("no picture").
 
-use nc_common::PlaneViewMut;
+use nc_common::{PlaneViewMut, Sample};
 
 use super::Planes;
 use super::sample::H264Sample;
@@ -80,6 +80,21 @@ impl Structure {
 /// The frame of a reference identity.
 pub(super) fn frame_of(reference_id: u32) -> u32 {
     reference_id >> 2
+}
+
+/// Writable views of the rows of field `parity` of the frame `planes`
+/// (the planes of a field macroblock of an MBAFF frame).
+pub(super) fn field_rows<'p, T: Sample>(
+    planes: &'p mut Planes<'_, T>,
+    parity: Parity,
+) -> Planes<'p, T> {
+    planes.each_mut().map(|plane| {
+        let (width, height) = (plane.width(), plane.height());
+        plane
+            .sub_view_mut(0, 0, width, height)
+            .expect("the whole view")
+            .every_other_row(parity.index())
+    })
 }
 
 /// Writable views of the rows of `planes` that make up picture

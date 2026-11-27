@@ -1,6 +1,6 @@
 //! H.266 CU-level MTS/LFNST selection through the shared CABAC reader.
 //! Context initialization and coefficient constraints follow BSD-Clear `VVdeC`.
-use super::{Context, Parser, Reader, Result, Unit, initialization::bank};
+use super::{Context, Parser, Reader, Result, Sequence, Unit, initialization::bank};
 
 #[derive(Clone)]
 pub(super) struct Models {
@@ -38,7 +38,7 @@ struct Constraints {
     mts_ac: bool,
 }
 impl Constraints {
-    fn collect(unit: &Unit) -> Self {
+    fn collect(unit: &Unit, sequence: &Sequence) -> Self {
         let mut result = Self::default();
         for transform in &unit.transforms {
             for plane in 0..3 {
@@ -52,13 +52,12 @@ impl Constraints {
                 let Some(last) = transform.stats[plane].last_scan else {
                     continue;
                 };
-                let channel = usize::from(plane != 0);
                 let block = if plane == 0 {
                     transform.block
                 } else {
                     transform.chroma_block.unwrap()
                 };
-                let (width, height) = (block.width() >> channel, block.height() >> channel);
+                let (width, height) = sequence.scaled(plane != 0, (block.width(), block.height()));
                 if width >= 4 && height >= 4 {
                     let limit = if width == height && (width == 4 || width == 8) {
                         7
@@ -78,6 +77,7 @@ impl Constraints {
     }
 }
 impl Parser<'_> {
+    #[inline]
     pub(super) fn transform_selection(
         &mut self,
         reader: &mut Reader<'_>,
@@ -87,7 +87,7 @@ impl Parser<'_> {
         if !tools.lfnst && !tools.mts[0] {
             return Ok(());
         }
-        let constraints = Constraints::collect(unit);
+        let constraints = Constraints::collect(unit, self.sequence);
         if self.lfnst_allowed(unit, &constraints) {
             let separate = self.sequence.chroma && !unit.combined;
             if reader.bin(&mut self.transform_models.lfnst[usize::from(separate)])? {
@@ -141,6 +141,9 @@ impl Parser<'_> {
             return false;
         }
         let first = unit.transforms[0].block;
-        first.width() >> unit.channel >= 4 && first.height() >> unit.channel >= 4
+        let (width, height) = self
+            .sequence
+            .scaled(unit.channel != 0, (first.width(), first.height()));
+        width >= 4 && height >= 4
     }
 }

@@ -52,3 +52,7 @@ decision.subpel_seed_shift_noise = 0
 decision.subpel_seed_shift_nonbase = 0
 decision.subpel_seed_shift_size = 0
 decision.subpel_seed_shift_zero_mv = 0
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2
+# The split override (2026-11-27) is off here: final 600f +0.15 % J [+0.05, +0.24] (1/150).
+planner.split_override = 0

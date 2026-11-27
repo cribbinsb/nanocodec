@@ -335,17 +335,19 @@ pub(crate) fn prep_copy<T: Sample>(
 /// # Panics
 ///
 /// If `dst` is too short for the block at its stride.
-pub fn morph(
-    dst: &mut [u8],
+pub fn morph<T: Sample>(
+    dst: &mut [T],
     offset: usize,
     stride: usize,
     (alpha, beta): (i32, i32),
     (w, h): (usize, usize),
+    depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
     for line in dst[offset..].chunks_mut(stride).take(h) {
         for sample in &mut line[..w] {
-            let value = (alpha * i32::from(*sample) + beta) >> MORPH_SHIFT;
-            *sample = value.clamp(0, i32::from(u8::MAX)) as u8;
+            let value = (alpha * sample.to_i32() + beta) >> MORPH_SHIFT;
+            *sample = depth.clip_to(value);
         }
     }
 }
@@ -387,9 +389,9 @@ mod tests {
     #[test]
     fn morph_identity_and_offset() {
         let mut block = [10_u8, 20, 250, 0];
-        morph(&mut block, 0, 4, (256, 0), (4, 1));
+        morph(&mut block, 0, 4, (256, 0), (4, 1), BitDepth::EIGHT);
         assert_eq!(block, [10, 20, 250, 0]);
-        morph(&mut block, 0, 4, (256, 5 << 8), (4, 1));
+        morph(&mut block, 0, 4, (256, 5 << 8), (4, 1), BitDepth::EIGHT);
         assert_eq!(block, [15, 25, 255, 5]);
     }
 }

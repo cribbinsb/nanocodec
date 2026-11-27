@@ -26,8 +26,10 @@ pub mod stripes;
 
 use edges::EdgeMap;
 use nc_common::decode::{DecodeError, Result};
-use nc_common::{Picture, PlaneIndex};
+use nc_common::{BitDepth, Picture, PlaneIndex, Sample};
 use nc_dsp::Dsp;
+
+use super::sample::Av2Sample;
 
 use super::block::segmentation::SegmentMaps;
 use super::frame_header::FrameHeader;
@@ -220,15 +222,92 @@ fn ccso_filter(coded: &CcsoPlane) -> Result<PlaneFilter> {
 
 /// CDEF, then CCSO classifying on the deblocked luma (dav2d
 /// `dav2d_cdef_slice`): the picture filters of our own block layer, fed
-/// from the general block layer's maps.
+/// from the general block layer's maps. A sequence that keeps loop filters
+/// within tiles (`isolated`) filters each tile as a picture of its own:
+/// AVM treats tile edges as frame edges there (v1.0.0 `cdef_prepare_fb`'s
+/// `tile_top`..`tile_right` and `apply_ccso_filter`'s per-tile extended
+/// luma; dav2d ignores the flag).
 /// # Errors
 /// Rejects filter parameters out of range.
-pub(crate) fn cdef_and_ccso(
-    picture: &mut Picture,
+pub(crate) fn cdef_and_ccso<T: Av2Sample>(
+    picture: &mut Picture<T>,
     maps: &FilterMaps,
-    (header, single_picture): (&FrameHeader, bool),
+    (header, single_picture, depth, isolated): (&FrameHeader, bool, BitDepth, bool),
     dsp: &Dsp,
-    (cdef_scratch, ccso_source): (&mut PictureFilterScratch, &mut CcsoSource),
+    scratch: (&mut PictureFilterScratch<T>, &mut CcsoSource<T>),
+) -> Result<()> {
+    let tiles = &header.tiles;
+    let single_tile = tiles.column_starts.len() == 2 && tiles.row_starts.len() == 2;
+    let frame = (header, single_picture, depth);
+    if !isolated || single_tile {
+        return cdef_and_ccso_region(picture, maps, (0, 0), frame, dsp, scratch);
+    }
+    let (cdef_scratch, ccso_source) = scratch;
+    let superblock = 1_usize << header.superblock_log2;
+    let (width, height) = (picture.width(), picture.height());
+    let span = |starts: &[u16], index: usize, extent: usize| {
+        let at = |i: usize| (usize::from(starts[i]) * superblock).min(extent);
+        (at(index), at(index + 1))
+    };
+    for row in 0..tiles.row_starts.len() - 1 {
+        let (top, bottom) = span(&tiles.row_starts, row, height);
+        for column in 0..tiles.column_starts.len() - 1 {
+            let (left, right) = span(&tiles.column_starts, column, width);
+            let mut tile = Picture::new(right - left, bottom - top, 0)?;
+            copy_region(picture, &mut tile, (left, top), true);
+            cdef_and_ccso_region(
+                &mut tile,
+                maps,
+                (left, top),
+                frame,
+                dsp,
+                (&mut *cdef_scratch, &mut *ccso_source),
+            )?;
+            copy_region(&tile, picture, (left, top), false);
+        }
+    }
+    Ok(())
+}
+
+/// Copy between a picture and the region of it at luma (`left`, `top`)
+/// that `tile` covers: into `tile` (`into_tile`) or back.
+fn copy_region<T: Sample>(
+    from: &Picture<T>,
+    to: &mut Picture<T>,
+    (left, top): (usize, usize),
+    into_tile: bool,
+) {
+    for plane in PlaneIndex::ALL {
+        let shift = usize::from(plane != PlaneIndex::Y);
+        let (x0, y0) = (left >> shift, top >> shift);
+        let source = from.plane(plane).view();
+        let mut output = to.plane_mut(plane).view_mut();
+        let (width, height) = if into_tile {
+            (output.width(), output.height())
+        } else {
+            (source.width(), source.height())
+        };
+        for y in 0..height {
+            if into_tile {
+                output
+                    .row_mut(y)
+                    .copy_from_slice(&source.row(y0 + y)[x0..x0 + width]);
+            } else {
+                output.row_mut(y0 + y)[x0..x0 + width].copy_from_slice(source.row(y));
+            }
+        }
+    }
+}
+
+/// [`cdef_and_ccso`] of `picture`, the region of the frame whose top-left
+/// luma sample is `origin` (the block layer's maps are the frame's).
+fn cdef_and_ccso_region<T: Av2Sample>(
+    picture: &mut Picture<T>,
+    maps: &FilterMaps,
+    (origin_x, origin_y): (usize, usize),
+    (header, single_picture, depth): (&FrameHeader, bool, BitDepth),
+    dsp: &Dsp,
+    (cdef_scratch, ccso_source): (&mut PictureFilterScratch<T>, &mut CcsoSource<T>),
 ) -> Result<()> {
     let cdef = cdef_params(header, single_picture)?;
     let ccso = ccso_params(header)?;
@@ -240,7 +319,7 @@ pub(crate) fn cdef_and_ccso(
     let unit = |sample: usize| (sample >> UNIT_LOG2) as u32;
     let stride = maps.luma_edges.columns;
     let unit_set = |x: usize, y: usize| {
-        let (column, row) = (unit(x), unit(y));
+        let (column, row) = (unit(origin_x + x), unit(origin_y + y));
         let set = maps.cdef_index[maps.filter_block(row, column)]?;
         // dav2d `noskip_mask`: one of the 8x8 unit's four 4x4 units codes
         // a luma residual.
@@ -251,9 +330,15 @@ pub(crate) fn cdef_and_ccso(
             .any(|&coded| coded);
         (coded || !cdef.passes_over(true)).then_some(set)
     };
-    cdef::filter_picture(picture, unit_set, cdef, dsp, cdef_scratch);
+    cdef::filter_picture(picture, unit_set, cdef, dsp.at(depth), cdef_scratch);
     if let Some(deblocked) = &deblocked {
-        keep_lossless(picture, deblocked, maps, header, CDEF_LUMA_UNIT);
+        keep_lossless(
+            picture,
+            deblocked,
+            (maps, (origin_x, origin_y)),
+            header,
+            CDEF_LUMA_UNIT,
+        );
     }
     if ccso.is_on() {
         let flag_width = if lossless {
@@ -261,13 +346,21 @@ pub(crate) fn cdef_and_ccso(
         } else {
             1 << (UNITS64_LOG2 + UNIT_LOG2)
         };
-        ccso::filter_picture_runs(picture, ccso_source, &ccso, flag_width, |plane, x, y| {
-            let chroma = plane != PlaneIndex::Y;
-            // (x, y) is in luma samples: the plane's unit is a shift less.
-            let at = |luma: usize| luma >> (UNIT_LOG2 + u32::from(chroma));
-            maps.ccso_flags[maps.filter_block(unit(y), unit(x))][plane as usize]
-                && !(lossless && maps.lossless(header, chroma, (at(y), at(x))))
-        });
+        ccso::filter_picture_runs(
+            picture,
+            ccso_source,
+            &ccso,
+            (flag_width, depth),
+            dsp,
+            |plane, x, y| {
+                let (x, y) = (origin_x + x, origin_y + y);
+                let chroma = plane != PlaneIndex::Y;
+                // (x, y) is in luma samples: the plane's unit is a shift less.
+                let at = |luma: usize| luma >> (UNIT_LOG2 + u32::from(chroma));
+                maps.ccso_flags[maps.filter_block(unit(y), unit(x))][plane as usize]
+                    && !(lossless && maps.lossless(header, chroma, (at(y), at(x))))
+            },
+        );
     }
     Ok(())
 }
@@ -275,11 +368,12 @@ pub(crate) fn cdef_and_ccso(
 /// Put back into `picture`, from `before` (the picture before a filter
 /// that reads only such a copy), every lossless 4x4 unit of a frame with
 /// lossless segments; in luma, every `luma_unit`-sided unit holding one
-/// (CDEF leaves whole 8x8 luma units alone, dav2d `y_lossless`).
-pub(crate) fn keep_lossless(
-    picture: &mut Picture,
-    before: &Picture,
-    maps: &FilterMaps,
+/// (CDEF leaves whole 8x8 luma units alone, dav2d `y_lossless`). The
+/// pictures are the frame's region at luma `origin`.
+pub(crate) fn keep_lossless<T: Sample>(
+    picture: &mut Picture<T>,
+    before: &Picture<T>,
+    (maps, origin): (&FilterMaps, (usize, usize)),
     header: &FrameHeader,
     luma_unit: usize,
 ) {
@@ -287,6 +381,8 @@ pub(crate) fn keep_lossless(
     for plane in PlaneIndex::ALL {
         let chroma = plane != PlaneIndex::Y;
         let side = if chroma { UNIT } else { luma_unit };
+        let shift = usize::from(chroma);
+        let (origin_x, origin_y) = (origin.0 >> shift, origin.1 >> shift);
         let source = before.plane(plane).view();
         let mut output = picture.plane_mut(plane).view_mut();
         let (width, height) = (output.width(), output.height());
@@ -294,8 +390,10 @@ pub(crate) fn keep_lossless(
             for left in (0..width).step_by(side) {
                 let units = |start: usize, end: usize| (start / UNIT)..end.div_ceil(UNIT);
                 let (bottom, right) = ((top + side).min(height), (left + side).min(width));
-                let lossless = units(top, bottom).any(|row| {
-                    units(left, right).any(|column| maps.lossless(header, chroma, (row, column)))
+                let rows = units(origin_y + top, origin_y + bottom);
+                let lossless = rows.into_iter().any(|row| {
+                    units(origin_x + left, origin_x + right)
+                        .any(|column| maps.lossless(header, chroma, (row, column)))
                 });
                 if lossless {
                     for y in top..bottom {

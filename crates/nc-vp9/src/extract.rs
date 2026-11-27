@@ -5,8 +5,9 @@
 //! superframe's frames (Annex B §B.1–§B.3) through the eight reference slots
 //! (`refresh_frame_flags`, `ref_frame_idx`, §6.2 / §7.2) and keeps, per
 //! temporal unit, the frames the target layer's frame reaches: `[S0..=Sk]`
-//! in full SVC, and in K-SVC `[S0..=Sk]` on key units and `[Sk]` alone (with
-//! its `show_existing_frame`) otherwise. `nanocodec extract` and
+//! in full SVC, and in K-SVC `[S0..=Sk]` on key units and `[Sk]` alone
+//! otherwise (a hidden `Sk`, in other encoders' streams, with a
+//! `show_existing_frame`). `nanocodec extract` and
 //! `Decoder::set_operating_point` use it.
 
 use nc_common::decode::{BitReader, DecodeError, Result};
@@ -35,6 +36,9 @@ struct FramePrefix {
     show_existing_slot: Option<u8>,
     key_frame: bool,
     show_frame: bool,
+    /// `error_resilient_mode` (VP9 §6.2): the frame decodes the same
+    /// whatever frame came before it.
+    error_resilient: bool,
     refresh_mask: u8,
     needed_mask: u8,
     size_ref_slot: Option<u8>,
@@ -59,6 +63,7 @@ fn parse_frame_prefix(frame: &[u8]) -> Result<FramePrefix> {
             show_existing_slot: Some(slot),
             key_frame: false,
             show_frame: true,
+            error_resilient: false,
             refresh_mask: 0,
             needed_mask: 1u8 << slot,
             size_ref_slot: Some(slot),
@@ -79,6 +84,7 @@ fn parse_frame_prefix(frame: &[u8]) -> Result<FramePrefix> {
             show_existing_slot: None,
             key_frame: true,
             show_frame,
+            error_resilient,
             refresh_mask: u8::MAX,
             needed_mask: 0,
             size_ref_slot: None,
@@ -108,6 +114,7 @@ fn parse_inter_prefix(
             show_existing_slot: None,
             key_frame: false,
             show_frame,
+            error_resilient,
             refresh_mask,
             needed_mask: 0,
             size_ref_slot: None,
@@ -140,6 +147,7 @@ fn parse_inter_prefix(
         show_existing_slot: None,
         key_frame: false,
         show_frame,
+        error_resilient,
         refresh_mask,
         needed_mask,
         size_ref_slot,
@@ -426,12 +434,14 @@ impl Vp9StreamExtractor {
             return Ok(None);
         };
 
-        // Stripping unreferenced lower layers is safe whenever the selected
-        // frame is hidden (`show_frame = 0`, displayed via `show_existing_frame`
-        // so `last_show_frame` stays `0`, covering every non-top spatial layer
-        // and all K-SVC layers). A shown top frame (`inter_layer = 0`) keeps
-        // its preceding hidden layer so `use_prev_frame_mvs = 0` (`VP9 §7.2`).
-        let can_strip_lower = !coded[top_idx].prefix.show_frame;
+        // Stripping unreferenced lower layers is safe when the selected frame
+        // decodes the same whatever frame came before it: error resilient
+        // (ours and libvpx's SVC: no previous vectors or adapted contexts,
+        // VP9 §7.2), or hidden (shown by `show_existing_frame`, which leaves
+        // `last_show_frame = 0`). Otherwise the lower layers stay, so the
+        // frame before it is the same as in the whole stream.
+        let top = &coded[top_idx].prefix;
+        let can_strip_lower = !top.show_frame || top.error_resilient;
         let mut keep = vec![!can_strip_lower; top_idx + 1];
         keep[top_idx] = true;
         let needed = if can_strip_lower {

@@ -73,14 +73,22 @@ METRICS = ("j", "psnr_yuv", "vmaf_v1", "ms_ssim")
 
 @dataclass(frozen=True)
 class Machine:
-    """A timing series of procedure section 2: the pages' selector label, the instance type,
-    and how it is timed (section 6, with its measured half-load against alone factor)."""
+    """A timing series: the pages' selector label, the machine, and how it is timed (procedure
+    section 6 for the AWS machines; the slow platforms' own timing records otherwise). Speeds
+    are comparable only between views timed under the same conditions, so every page states
+    them beside the figures."""
     label: str
     name: str
     about: str
+    #: What its speed figures are, as the charts' axes name them.
+    speed_name: str = "loaded speed (half load)"
 
 
-#: The timing series (procedure sections 2 and 6), x86 first: the pages open on it.
+#: The AWS timing series of procedure sections 2 and 6, x86 first: the pages open on it. Every
+#: dataset is timed on them; the history, SVC and decoder pages show only these.
+AWS_MACHINES = ("c8i", "c8g")
+#: The slow platforms, which time only the fast subset (owner, 2026-11-27).
+SLOW_MACHINES = ("mac-m4", "jetson-a78ae")
 MACHINES = {
     "c8i": Machine("x86 (Intel Granite Rapids)", "c8i.metal-48xl (Intel Granite Rapids)",
                    "AWS c8i.metal-48xl (bare metal; Intel Xeon 6975P-C, Granite Rapids, 96 "
@@ -92,6 +100,24 @@ MACHINES = {
                    "builds, loaded speed at half load: one longest-first queue of the machine's "
                    "timed jobs on every second physical core (against alone, ×1.01-1.23, "
                    "procedure section 6)"),
+    "mac-m4": Machine("Apple M4 (Mac mini)", "Mac mini (Apple M4)",
+                      "a Mac mini (Apple M4: 4 performance and 6 efficiency cores, 16 GB, macOS "
+                      "26.5), every encoder built natively with PGO trained on it: 3 encodes at a "
+                      "time (of the 4 performance cores; the fourth and the efficiency cores hold "
+                      "the harness and the OS), one longest-first queue of the run's own mixed "
+                      "jobs, inputs on a RAM disk. macOS cannot pin cores or fix the clock (the "
+                      "performance cluster ran at 1.7-4.0 GHz with load), so speed is each "
+                      "encode's performance-core cycles taken as CPU-seconds at a fixed 4.0 GHz, "
+                      "the M4's single-encode clock (cycles varied 0.5-0.9 % between repeats at "
+                      "3 slots, CPU time 3-21 %); an encode under 97 % on the performance cores "
+                      "is refused and coded again (bench/bp4-mac/TIMING-METHOD.md)",
+                      "loaded speed (3 encodes on 4 performance cores; cycles at 4.0 GHz)"),
+    "jetson-a78ae": Machine("Jetson Orin Nano", "Jetson Orin Nano 8 GB (Cortex-A78AE)",
+                            "an NVIDIA Jetson Orin Nano 8 GB (6 Cortex-A78AE cores at a locked "
+                            "1.73 GHz; NEON, no SVE or I8MM), every encoder built natively with "
+                            "PGO trained on it: CPU time at half load, 3 encodes at a time on "
+                            "cores 1, 3 and 5 (core 0 holds the harness), one longest-first "
+                            "queue of the run's own mixed jobs, inputs in RAM in clip batches"),
 }
 
 
@@ -108,6 +134,10 @@ class Dataset:
     report: str
     beside: str | None = None
     beside_label: str = ""
+    #: The timing machines this dataset is measured on.
+    machines: tuple[str, ...] = AWS_MACHINES
+    #: The analysis that describes the dataset, in the repository (linked from the pages).
+    doc: str | None = None
 
 
 DATASETS = (
@@ -128,6 +158,17 @@ DATASETS = (
                                  "low-delay clips (A3-A5) are in-sample for ours",
             "eval/clipset/aomctc_bp3.manifest.json", "aomctc",
             beside="aomctc-out-of-sample", beside_label="without the 12 in-sample clips (A2 only)"),
+    Dataset("fast", "Fast subset (30 clips)",
+            "30 of the 97 clips of the \"ours\" held-out set (eval/clipset/fast-subset.json), "
+            "chosen once from the BP-4 per-clip results so that it tracks the full set, and never "
+            "tuned on. On both AWS machines every one of the 64 current families' BD-J on the 30 "
+            "is within 1 point of the median offset from its full-set BD-J (check V17: median "
+            "offset +0.36 on x86 and +0.48 on Arm, largest deviation 0.69 and 0.73), with the "
+            "same front; so figures on it read about half a point above the full set's. It is "
+            "the set the slower machines (Apple M4, Jetson Orin Nano) time",
+            "eval/clipset/heldout_2026-11-23b.manifest.json", "fast",
+            machines=AWS_MACHINES + SLOW_MACHINES,
+            doc="docs/analysis/fast-subset-2026-11-27.md"),
 )
 #: The record of the dataset clips a tuning set used (procedure section 4, V3).
 TUNED_ON = REPO / "eval" / "clipset" / "tuned_on.json"
@@ -338,9 +379,11 @@ def view(dataset: Dataset, machine: str, path: Path, reports: Path | None = None
     }
 
 
-def machines() -> dict:
-    """The timing machines as the pages show them, in the selector's order."""
-    return {key: {"label": m.label, "name": m.name, "about": m.about} for key, m in MACHINES.items()}
+def machines(keys: tuple[str, ...] = tuple(MACHINES)) -> dict:
+    """The timing machines `keys` as the pages show them, in the selector's order."""
+    return {key: {"label": MACHINES[key].label, "name": MACHINES[key].name,
+                  "about": MACHINES[key].about, "speed_name": MACHINES[key].speed_name}
+            for key in keys}
 
 
 def limitations() -> list[dict]:
@@ -373,7 +416,7 @@ def site_data(reports: Path) -> dict:
     views, missing = [], []
     record = json.loads(TUNED_ON.read_text())
     for machine in MACHINES:
-        for dataset in DATASETS:
+        for dataset in (d for d in DATASETS if machine in d.machines):
             path = report_path(reports, dataset.report, machine)
             if path.is_file():
                 views.append(view(dataset, machine, path, reports, record))
@@ -383,7 +426,8 @@ def site_data(reports: Path) -> dict:
     families = sorted({f for v in views for f in v["values"]})
     return {
         "current_procedure": procedure_version(),
-        "datasets": {d.key: {"name": d.name, "about": d.about} for d in DATASETS},
+        "datasets": {d.key: {"name": d.name, "about": d.about, "doc": d.doc,
+                             "machines": list(d.machines)} for d in DATASETS},
         "machines": machines(), "metrics": list(METRICS),
         "codecs": CODEC_NAMES, "codec_order": list(CODEC_ORDER),
         "points": {f: describe(f) for f in families},
@@ -432,12 +476,12 @@ def main(argv: list[str] | None = None) -> None:
         ap.error("--out takes an absolute path")
     data = site_data(a.reports)
     shared = {"current_procedure": data["current_procedure"],
-              "machines": machines(), "codecs": CODEC_NAMES}
-    history = preview_history.history_data(a.reports, a.days, a.captions, list(MACHINES), shared,
+              "machines": machines(AWS_MACHINES), "codecs": CODEC_NAMES}
+    history = preview_history.history_data(a.reports, a.days, a.captions, list(AWS_MACHINES), shared,
                                            describe, finite, report_path)
     decoders = preview_decoders.decoder_data(a.decoders)
-    pages = {"clips": preview_pages.clips_data(a.reports, DATASETS, MACHINES, report_path),
-             "svc": preview_pages.svc_data(machines())}
+    pages = {"clips": preview_pages.clips_data(a.reports, DATASETS, report_path),
+             "svc": preview_pages.svc_data(machines(AWS_MACHINES))}
     index = write_site(data, a.out, history, decoders, pages)
     print(f"decoders: {', '.join(decoders['machines']) or 'no machine'} measured"
           + (f", missing {', '.join(decoders['missing'])}" if decoders["missing"] else ""))

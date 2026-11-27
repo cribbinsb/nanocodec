@@ -188,12 +188,17 @@ fn weighting_and_geometric_blend_at_eight_bits_match() {
         }
         for split in [0, 7, 31, 63] {
             let mask = VvcGeometric::new((32, 16), split);
-            for (origin, chroma) in [((0, 0), false), ((16, 8), false), ((0, 0), true)] {
+            for (origin, subsampling) in [
+                ((0, 0), (0, 0)),
+                ((16, 8), (0, 0)),
+                ((0, 0), (1, 1)),
+                ((8, 0), (1, 0)),
+            ] {
                 let mut out8 = vec![0u8; w * h];
                 let mut out16 = vec![0u16; w * h];
-                eight.vvc_geometric_blend(mask, origin, (w, h), chroma, (&a, &b), &mut out8);
-                eight.vvc_geometric_blend(mask, origin, (w, h), chroma, (&a, &b), &mut out16);
-                assert_eq!(widened(&out8), out16, "{split} {origin:?} {chroma}");
+                eight.vvc_geometric_blend(mask, origin, (w, h), subsampling, (&a, &b), &mut out8);
+                eight.vvc_geometric_blend(mask, origin, (w, h), subsampling, (&a, &b), &mut out16);
+                assert_eq!(widened(&out8), out16, "{split} {origin:?} {subsampling:?}");
             }
         }
     }
@@ -306,7 +311,7 @@ fn ten_bit_blends_keep_flat_blocks_and_clip() {
 
         let mut out = vec![0u16; w * h];
         let mask = VvcGeometric::new((w, h), 11);
-        ten.vvc_geometric_blend(mask, (0, 0), (w, h), false, (input, input), &mut out);
+        ten.vvc_geometric_blend(mask, (0, 0), (w, h), (0, 0), (input, input), &mut out);
         assert!(out.iter().all(|&v| v == expected));
     }
     let count = (w + 2) * (h + 2);

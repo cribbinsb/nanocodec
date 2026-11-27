@@ -65,7 +65,6 @@ import contextlib
 import datetime
 import hashlib
 import json
-import math
 import os
 import shlex
 import shutil
@@ -117,27 +116,19 @@ ROUNDS_LOG = "rounds.jsonl"
 #: A GPU-scored command's kept streams (prebuilt_home) and how long they stay.
 GPU_PREBUILT_PREFIX = "gpu-prebuilt-"
 #: Where a result was scored (its `scored_on`, and its ledger rows' source), and the file a
-#: GPU-scored command that falls back leaves its reason in (gpuscore.GpuUnavailable).
+#: GPU-scored command that cannot go on leaves its reason in (gpuscore.GpuUnavailable).
 SCORED_GPU = "GPU (VMAFx CUDA on the PC)"
 SCORED_CPU = "CPU (libvmaf on a box)"
-FALLBACK_REASON = "fallback-reason.txt"
+UNAVAILABLE_REASON = "unavailable-reason.txt"
 PREBUILT_KEEP_HOURS = 24
 #: The commands (module, sub-command) GPU scoring here (nceval.gpuscore) can run: their
 #: points go through nceval.realuse.Runner's rounds (fixedqp ab: the A/B of two builds of
 #: our encoder; `gap` and `cost` stay on boxes, gap's reference encoders run x86 quality
-#: builds). `--score auto` takes GPU_DEFAULT_COMMANDS there when the GPU may be used,
-#: else CPU scoring on a box.
+#: builds). These are always scored on this PC's GPU: when it cannot score them the
+#: measurement is refused, never sent to a box's CPU (owner, 2026-11-27: no cloud scoring,
+#: no silent fallbacks; `--score cpu` and the automatic fallback are gone).
 GPU_COMMANDS = (("nceval.quick", None), ("nceval.screen", None),
                 ("nceval.levels", "final-check"), ("nceval.fixedqp", "ab"))
-#: All of them since 2026-11-24 (coordinator; fixedqp ab after its own equality run,
-#: docs/aws-cost-guide.md "Scoring on the PC's GPU").
-GPU_DEFAULT_COMMANDS = GPU_COMMANDS
-#: Whether `--score auto` also takes a --batch (train) to the GPU path.
-GPU_DEFAULT_BATCH = True
-SCORE_CHOICES = ("auto", "gpu", "cpu")
-#: auto since 2026-11-24 (coordinator: quick first, after its pipe-clean and equality
-#: check against the Graviton CPU path, docs/aws-cost-guide.md "Scoring on the PC's GPU").
-DEFAULT_SCORE = "auto"
 #: Python packages nceval imports that Ubuntu does not package, installed in a venv over
 #: the system's (apt's numpy, scipy, opencv, xxhash): measure_image owns the package list.
 REMOTE_VENV = measure_image.REMOTE_VENV
@@ -1193,18 +1184,14 @@ def result_name(run: Plan) -> str:
     return Path(run.remote_json).name
 
 
-def finish(run: Plan, back: Path, cloud: dict, runs: list[Plan] | None = None,
-           fallback_reason: str = "") -> dict:
+def finish(run: Plan, back: Path, cloud: dict, runs: list[Plan] | None = None) -> dict:
     """The result JSON here (localised, with the session's facts and the final-check
-    fields decided here, where it was scored and why it fell back from the GPU path);
-    returns it. `runs`: the batch whose lever rows (one spool on the box) are recorded
+    fields decided here, and where it was scored); returns it. `runs`: the batch whose lever rows (one spool on the box) are recorded
     here with it, each localised by its own run."""
     result = json.loads(localise((back / result_name(run)).read_text(), run))
     result.update(run.report_fields)
     result["cloud"] = cloud
     result["scored_on"] = SCORED_CPU
-    if fallback_reason:
-        result["fallback_reason"] = fallback_reason
     run.local_json.parent.mkdir(parents=True, exist_ok=True)
     run.local_json.write_text(json.dumps(result, indent=2, default=str) + "\n")
     spool = back / "levers.jsonl"
@@ -1215,8 +1202,7 @@ def finish(run: Plan, back: Path, cloud: dict, runs: list[Plan] | None = None,
         rows = [{f: stored.get(f) for f in levers.FIELDS}
                 for stored in map(json.loads, text.splitlines())]
         for row in rows:
-            row["source"] = f"{run.local_json} (aws {cloud['instance_type']}, CPU metrics" + (
-                f"; scored on CPU because: {fallback_reason})" if fallback_reason else ")")
+            row["source"] = f"{run.local_json} (aws {cloud['instance_type']}, CPU metrics)"
         levers.record(rows, f"{ROW_SOURCES.get(run.command.module, run.command.module)} on aws")
     say(f"result: {run.local_json}")
     return result
@@ -1296,20 +1282,16 @@ def measure(args: argparse.Namespace, session_factory=None) -> dict | None:
                                   / ROUNDS_LOG)
         return encode_rounds(args, round_requests(args), session_factory)
     commands = json.loads(Path(batch).read_text()) if batch else [args.command]
-    score = getattr(args, "score", DEFAULT_SCORE)
-    if score != "cpu" and not args.dry_run and session_factory is None and \
-            gpu_scored(commands, score, bool(batch)):
+    # session_factory: the tests drive the box path with fake sessions; a dry run rents
+    # nothing and scores nothing
+    if gpu_scored(commands) and not args.dry_run and session_factory is None:
         outcomes = gpu_score(args, commands)
         done = [r for r in outcomes if isinstance(r, dict)]
-        left = [(c, r) for c, r in zip(commands, outcomes) if isinstance(r, str)]
-        if not left:
-            return done[0] if not batch else {"results": done}
-        reason = "; ".join(sorted({r for _, r in left}))
-        announce_fallback(args, [c for c, _ in left], reason)
-        rest = measure(cpu_rest(args, [c for c, _ in left], reason), session_factory)
-        if not batch:
-            return rest
-        return {"results": done + rest["results"]}
+        left = sorted({r for r in outcomes if isinstance(r, str)})
+        if left:
+            raise SystemExit(f"{len(done)} of {len(commands)} command(s) scored (their --json "
+                             f"written); the rest: " + gpuscore.refusal("; ".join(left)))
+        return done[0] if not batch else {"results": done}
     warm = session_factory is None and not getattr(args, "cold", False)
     stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
     layout = warm_layout(stamp) if warm else Layout()
@@ -1361,8 +1343,7 @@ def measure(args: argparse.Namespace, session_factory=None) -> dict | None:
             phase_budgets(cloud.get("points_kept", 0) or job_points(runs)))
         kept = cloud.pop("points_kept", 0)  # merged as they came back (run_stages)
         good = [r for r in runs if result_status(back / result_name(r)) == "done"]
-        results = [finish(r, back, cloud, runs if r is good[0] else None,
-                          getattr(args, "fallback_reason", "")) for r in good]
+        results = [finish(r, back, cloud, runs if r is good[0] else None) for r in good]
         failures = [r for r in runs if r not in good]
         added = kept + merge_points(back)
         say(f"{added} cloud points kept in {CLOUD_WORK / WORK_SUBDIR}")
@@ -1518,63 +1499,23 @@ def round_requests(args: argparse.Namespace) -> list[dict]:
              "have": args.have}]
 
 
-def gpu_scored(commands: list[list[str]], score: str, batch: bool) -> bool:
-    """Whether `--score` sends these commands to the GPU path: `gpu` for GPU_COMMANDS,
-    `auto` for GPU_DEFAULT_COMMANDS (a batch, train's screens: when GPU_DEFAULT_BATCH)."""
-    kinds = {(parsed.module, parsed.sub) for parsed in map(Command.parse, map(list, commands))}
-    if score == "gpu":
-        return kinds <= set(GPU_COMMANDS)
-    return (GPU_DEFAULT_BATCH or not batch) and kinds <= set(GPU_DEFAULT_COMMANDS)
-
-
-def announce_fallback(args: argparse.Namespace, commands: list[list[str]], reason: str) -> None:
-    """One loud line when GPU-path commands go to CPU scoring, with what that costs more;
-    refuses (SystemExit, nothing launched) when the CPU path's planned cost passes
-    --budget."""
-    gpu_usd, cpu_usd = planned_rounds_usd([Command.parse(list(c)) for c in commands]), \
-        planned_cpu_usd(commands)
-    print(f"\n!!! {len(commands)} command(s) scored on CPU because: {reason}\n"
-          f"!!! planned ~${cpu_usd:.3f} on the CPU path against ~${gpu_usd:.3f} on the GPU path "
-          f"(+${cpu_usd - gpu_usd:.3f})\n", file=sys.stderr, flush=True)
-    budget = getattr(args, "budget", None)
-    if budget is not None and cpu_usd > budget:
-        raise SystemExit(f"the CPU path's planned ~${cpu_usd:.3f} passes --budget ${budget:g}: "
-                         f"nothing launched (fix the cause: {reason})")
-
-
-#: The CPU path's planned cost (`planned_cpu_usd`): a Graviton box of CPU_PLAN_VCPUS at
-#: its spot price with root volume and IPv4 (c8g.12xlarge, docs/aws-cost-guide.md), set
-#: up anew, for the run's planned minutes (run_minutes).
-CPU_PLAN_VCPUS = 48
-CPU_BOX_USD_PER_HOUR = 0.28
-
-
-def planned_cpu_usd(commands: list[list[str]]) -> float:
-    runs = [plan(Command.parse(list(c)), i) for i, c in enumerate(commands)]
-    minutes = run_minutes(runs, CPU_PLAN_VCPUS)
-    boxes = max(1, math.ceil(minutes / (RUN_CAP_MINUTES * RUN_FILL)))
-    return CPU_BOX_USD_PER_HOUR * (minutes + boxes * ROUND_SETUP_MINUTES) / 60
-
-
-def cpu_rest(args: argparse.Namespace, commands: list[list[str]],
-             reason: str = "") -> argparse.Namespace:
-    """`args` for the commands that fell back, on the CPU path (a batch file of them), with
-    why (recorded in their results and ledger rows)."""
-    if len(commands) == 1 and not getattr(args, "batch", None):
-        return argparse.Namespace(**{**vars(args), "score": "cpu", "fallback_reason": reason})
-    # swept with this job's other staging once its process is gone (sweep_staging)
-    rest = STAGE_ROOT / f"back-fallback-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}" \
-        / "batch.json"
-    rest.parent.mkdir(parents=True, exist_ok=True)
-    rest.write_text(json.dumps(commands))
-    return argparse.Namespace(**{**vars(args), "score": "cpu", "batch": str(rest),
-                                 "fallback_reason": reason})
+def gpu_scored(commands: list[list[str]]) -> bool:
+    """Whether these commands are scored on the GPU (GPU_COMMANDS); refuses a batch that
+    mixes them with commands only a box can run (it would score the GPU commands on a
+    box's CPU)."""
+    gpu = [(parsed.module, parsed.sub) in GPU_COMMANDS
+           for parsed in map(Command.parse, map(list, commands))]
+    if any(gpu) and not all(gpu):
+        raise SystemExit("refused: the batch mixes commands scored on this PC's GPU ("
+                         + ", ".join(" ".join(filter(None, c)) for c in GPU_COMMANDS)
+                         + ") with commands only a box runs; split it into two batches")
+    return all(gpu)
 
 
 def gpu_score(args: argparse.Namespace, commands: list[list[str]]) -> list[dict | str]:
     """The commands scored here on the GPU, their points encoded on boxes (nceval.gpuscore),
-    all in one bounded scope; per command its result, or why it fell back (the caller
-    scores it on a box's CPU): every command's, when the GPU may not be used now at all."""
+    all in one bounded scope; per command its result, or why the GPU could not score it (the
+    caller refuses): every command's, when the GPU may not be used now at all."""
     every = lambda reason: [reason] * len(commands)
     lock = gpuscore.GpuQueue()
     wait = getattr(args, "gpu_wait", None)
@@ -1607,7 +1548,7 @@ def gpu_score(args: argparse.Namespace, commands: list[list[str]]) -> list[dict 
                             getattr(args, "tree_commit", None), budget)
         results = []
         for (command, home, fields), fact in zip(entries, facts):
-            if isinstance(fact, str):  # fell back (why): its streams are kept for a retry
+            if isinstance(fact, str):  # refused (why): its streams are kept for a retry
                 results.append(fact)
                 continue
             shutil.rmtree(home, ignore_errors=True)
@@ -1731,7 +1672,7 @@ def run_scoring(entries: list[tuple[Command, Path]], tree_commit: str | None = N
     command), scoring with VMAFx CUDA on one server; their encode rounds go to boxes. The
     machine-wide GPU slots (LOCAL_SLOTS) queue their points for the server. Returns each command's facts (the
     scope's PC CPU and memory, which also hold the VMAFx server it starts; its rounds and
-    their cost), or why one fell back (gpuscore.FALLBACK_EXIT)."""
+    their cost), or why the GPU could not score one (gpuscore.UNAVAILABLE_EXIT)."""
     unit = f"nanocodec-gpu-score-{os.getpid()}"
     slots = str(gpuscore.LOCAL_SLOTS)
     common = {**os.environ, METRICS_BACKEND_ENV: VMAFX_CUDA_BACKEND,
@@ -1746,7 +1687,7 @@ def run_scoring(entries: list[tuple[Command, Path]], tree_commit: str | None = N
                       *([command.sub] if command.sub else []), *command.args, LOCAL_FLAG],
              "env": {gpuscore.PREBUILT_ENV: str(home / PREBUILT),
                      gpuscore.ROUND_COMMAND_ENV: json.dumps(command.argv()),
-                     gpuscore.FALLBACK_REASON_ENV: str(home / FALLBACK_REASON),
+                     gpuscore.UNAVAILABLE_REASON_ENV: str(home / UNAVAILABLE_REASON),
                      levers.SCORED_ON_ENV: SCORED_GPU},
              "status": str(home / "status")}
             for command, home in entries]
@@ -1794,8 +1735,8 @@ def run_scoring(entries: list[tuple[Command, Path]], tree_commit: str | None = N
         status_file = home / "status"
         status = int(status_file.read_text()) if status_file.exists() else 1
         status_file.unlink(missing_ok=True)
-        if status == gpuscore.FALLBACK_EXIT:
-            why = home / FALLBACK_REASON
+        if status == gpuscore.UNAVAILABLE_EXIT:
+            why = home / UNAVAILABLE_REASON
             out.append(why.read_text().strip() if why.exists() else "guard: during the run")
             why.unlink(missing_ok=True)
             continue
@@ -1980,8 +1921,12 @@ class Pull:
 
 
 def merge_prebuilt(source: Path, target: Path) -> int:
-    """An encode round's streams into `target`, each point's `.done` last (a point is
-    complete there only with all its files); returns the points completed."""
+    """An encode round's streams into `target`, each point's `.done` last and only once the
+    files it records are there whole (gpuscore.point_whole: a point is complete there only
+    with all its files); returns the points completed. A `.done` whose files have not all
+    come back stays in `source` for a later pull to complete; when the box is gone first,
+    the point is not in `target`'s done keys, so the next box codes it again (the reclaim
+    rules, docs/aws-cost-guide.md: retry only what is missing)."""
     if not source.is_dir():
         return 0
     files = sorted((f for f in source.rglob("*") if f.is_file()
@@ -1990,6 +1935,10 @@ def merge_prebuilt(source: Path, target: Path) -> int:
     done = 0
     for file in files:
         destination = target / file.relative_to(source)
+        if file.suffix == ".done" and not gpuscore.point_whole(
+                file, Path(str(destination)[:-len(".done")])):
+            say(f"{destination.name}: held back, its files are not all here whole yet")
+            continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         os.replace(file, destination)
         done += file.suffix in (".done", ".failed")
@@ -2233,17 +2182,9 @@ def main(argv: list[str]) -> None:
     p.add_argument("--dry-run", action="store_true", help="stage and print, rent nothing")
     p.add_argument("--tree-commit", help="the commit the box runs (a long job's pinned tree, "
                    "nceval.cloud.pinned_tree; default: HEAD, refused when uncommitted)")
-    p.add_argument("--score", choices=SCORE_CHOICES, default=DEFAULT_SCORE,
-                   help=f"where the points are scored (default {DEFAULT_SCORE}): gpu = encoded "
-                        f"on boxes, scored on this PC's GPU (nceval.gpuscore), falling back to "
-                        f"cpu when the GPU may not be used; auto = gpu for "
-                        f"{', '.join(' '.join(filter(None, c)) for c in GPU_DEFAULT_COMMANDS)} "
-                        f"(gpu: also {', '.join(' '.join(filter(None, c)) for c in GPU_COMMANDS)});"
-                        f" cpu = encoded and scored on a box")
     p.add_argument("--gpu-wait", type=float, metavar="MINUTES",
-                   help="with --score gpu|auto: wait up to this long for a place in the GPU "
-                        f"scoring service (default {gpuscore.QUEUE_WAIT_MINUTES}), then score "
-                        "on a box's CPU")
+                   help="wait up to this long for a place in the GPU scoring service (default "
+                        f"{gpuscore.QUEUE_WAIT_MINUTES}), then refuse (never scored on a box)")
     p.add_argument("--encode-round", metavar="DIR", help=argparse.SUPPRESS)  # nceval.gpuscore
     p.add_argument("--encode-rounds", metavar="FILE", help=argparse.SUPPRESS)  # requests
     p.add_argument("--rounds-log", help=argparse.SUPPRESS)

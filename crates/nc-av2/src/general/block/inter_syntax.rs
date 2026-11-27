@@ -22,6 +22,7 @@ use super::{Tile, context};
 use crate::entropy::Cdf;
 use crate::general::cdfs::Cdfs;
 use crate::general::frame_header::filter_mode;
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 
 /// The residual precisions (dav2d `mv_prec`, 0..6 for 8, 4, 2, 1, 1/2,
@@ -125,7 +126,7 @@ const MAX_COLUMN_CONTEXT: u32 = 3;
 const PAIR_SECOND_MIN: u32 = 4;
 const PAIR_REMAINDER_MIN: u32 = 6;
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Read an inter block's syntax (everything up to its transform
     /// partition).
     #[allow(clippy::too_many_lines, reason = "dav2d decode_b's inter branch")]
@@ -204,11 +205,7 @@ impl Tile<'_, '_> {
     ) -> Result<bool> {
         let size = record.luma.unwrap_or(BlockSize::B4x4);
         let (bw4, bh4) = size.units();
-        if record.skip_mode
-            || self.frame.tip.mode == 0
-            || record.luma != record.chroma
-            || bw4.min(bh4) < 2
-        {
+        if record.skip_mode || self.frame.tip.mode == 0 || !record.shared_tree || bw4.min(bh4) < 2 {
             return Ok(false);
         }
         let context = (0..neighbours.count)
@@ -406,7 +403,11 @@ impl Tile<'_, '_> {
         if optical_flow != 0
             && mode != InterMode::GlobalGlobal as u8
             && bw4.min(bh4) >= 2
-            && refs.future[r0 as usize] != refs.future[r1 as usize]
+            // A reference at the frame's own order counts as future here
+            // (AVM v1.0.0 `opfl_allowed_cur_refs_bsize`; dav2d 60c16dad).
+            && (refs.distance[r0 as usize] >= 0) != (refs.distance[r1 as usize] >= 0)
+            && !refs.scaled(r0 as usize)
+            && !refs.scaled(r1 as usize)
         {
             let opfl_context = usize::from(mode > InterMode::NearNear as u8);
             if optical_flow == 2 || self.bool(|m| &mut m.opfl[opfl_context])? {
@@ -890,12 +891,17 @@ impl Tile<'_, '_> {
                 inter.mode,
                 InterMode::NearNew | InterMode::NewNear | InterMode::NewNew | InterMode::JointNew
             );
+        // Only translation: a warped compound block neither signals nor
+        // implies it (AVM v1.0.0 `is_refinemv_allowed`; dav2d 5bf33c8f).
         if !refs.refine_mv
+            || inter.motion_mode != MotionMode::Translation
             || bw4.min(bh4) < 2
             || bw4 * bh4 <= 4
             || inter.mode == InterMode::GlobalGlobal
             || refs.distance[r0] != -refs.distance[r1]
             || refs.distance[r0] == 0
+            || refs.scaled(r0)
+            || refs.scaled(r1)
             || switchable_new
         {
             return Ok(0);
@@ -1005,7 +1011,10 @@ impl Tile<'_, '_> {
             index += 1;
         }
         let [r0, r1] = inter.references.map(|r| r as usize);
-        let one_side = usize::from(self.references.future[r0] == self.references.future[r1]);
+        // References at the frame's own order are on neither side (AVM
+        // v1.0.0 `get_cwp_coding_idx`; dav2d 8a2ac4af).
+        let [d0, d1] = [r0, r1].map(|r| self.references.distance[r]);
+        let one_side = usize::from((d0 > 0 && d1 > 0) || (d0 < 0 && d1 < 0));
         inter.weight = WEIGHTS[one_side][index];
         if coded != inter.mode && inter.weight != EQUAL_WEIGHT {
             // Optical flow in every block, which a weight turns off.
@@ -1252,7 +1261,11 @@ impl Tile<'_, '_> {
     ) -> Result<()> {
         let size = record.luma.unwrap_or(BlockSize::B4x4);
         let (bw4, bh4) = size.units();
-        if !self.frame.bawp || inter.mode == InterMode::Global || bw4.min(bh4) < 2 {
+        if !self.frame.bawp
+            || inter.mode == InterMode::Global
+            || bw4.min(bh4) < 2
+            || self.references.scaled(inter.references[0] as usize)
+        {
             return Ok(());
         }
         let mut luma = u8::from(self.bool(|m| &mut m.bawp[0])?);

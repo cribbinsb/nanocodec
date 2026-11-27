@@ -4,25 +4,34 @@ and Broadcom: argon_coveragetool_av1_base_and_extended_profiles_v2.1.1.zip,
 https://aomedia.org/av1-video-decoder-verification-tool/) with our decoder
 and aomdec, and compare their whole output MD5s.
 
-Argon ships reference MD5s of `aomdec --rawvideo --all-layers` output; our
-CLI writes the conformance runner's form (tools/ci/conformance.py: the
-operating point's output frames, monochrome with mid-grey chroma), so the
-reference here is aomdec run on the same input in that form (`--i420`).
-Each stream (Annex B in the `*_core*` and `*_stress` sets, Section 5 in
+Argon ships reference MD5s of `aomdec --rawvideo --all-layers` output; the
+reference here is `aomdec --rawvideo` run on the same input (the operating
+point's frames: every picture in its own format and depth, 16-bit
+little-endian beyond 8 bits, monochrome as luma only), and our CLI writes
+the same form (`--monochrome-chroma 0`). Streams of the `*_error` sets
+violate the specification on purpose: there the check is only that our
+decoder ends, with or without an error, within the time limit and without
+a panic or a signal ("robust"); their output is not compared.
+Each stream (Annex B in the `*_core*`, `*_error` and `*_stress` sets, Section 5 in
 `*_not_annexb*`) is first rewritten as IVF, one temporal unit per frame,
 every OBU with its size field (§5.2, Annex B.2); both decoders read that
-file. Nothing decoded is written to disk.
+file. Nothing decoded is written to disk. Our decoder runs with
+`--unbounded 1`: Argon exercises frame sizes beyond the level 6.3 bound
+that guards untrusted input by default.
 
-    python3 -I tools/dev/av1_argon.py ARGON_DIR --fetch [--sets ...]
+    python3 -I tools/dev/av1_argon.py ARGON_DIR --fetch [--sets ...] [--stress]
     python3 -I tools/dev/av1_argon.py ARGON_DIR --bin NANOCODEC --aomdec AOMDEC
-        [--sets profile0_core,profile0_not_annexb] [--jobs 8] [--json OUT]
+        [--sets profile0_core,profile0_not_annexb] [--stress] [--jobs 8] [--json OUT]
+
+Exits 1 when any stream does not match (the nightly verifier's
+`conformance-av1-argon` check).
 
 ARGON_DIR holds the `argon_coveragetool_av1_base_and_extended_profiles_v2.1`
 tree (untrusted data: only read). `--fetch` fills it with the chosen sets'
 streams straight from the published zip by HTTP range requests (the whole
-zip is 7 GB; the four default sets' streams about 0.8 GB). Large scale tile sets need tile list
-decoding (not supported) and the error set holds invalid streams: neither
-is a default set.
+zip is 7 GB; the default sets' streams about 2.3 GB). The large scale tile
+sets need tile list decoding (an exception, docs/decoder-compliance.md) and
+are not default sets.
 """
 
 import argparse
@@ -43,8 +52,17 @@ ZIP_URL = ("https://aom-cwg-av1-argon-streams-public.s3.us-east-1.amazonaws.com/
 ROOT_NAME = "argon_coveragetool_av1_base_and_extended_profiles_v2.1"
 RANGE_BUFFER = 1 << 22
 
-DEFAULT_SETS = ("profile0_core,profile0_core_special,profile0_not_annexb,"
-                "profile0_not_annexb_special")
+#: The sets of the three profiles; the large scale tile sets need tile list
+#: decoding (an exception, docs/decoder-compliance.md). The stress sets
+#: (`--stress`: 3.6 GB of streams, 0.9 TB of output, about 14 minutes at 24
+#: jobs on the build box) are left out of the default.
+PROFILES = range(3)
+DEFAULT_SETS = ",".join(f"profile{profile}_{kind}" for profile in PROFILES
+                        for kind in ("core", "core_special", "not_annexb",
+                                     "not_annexb_special", "error"))
+STRESS_SETS = ",".join(f"profile{profile}_stress" for profile in PROFILES)
+#: Exit status of a Rust panic.
+PANIC_STATUS = 101
 OBU_TEMPORAL_DELIMITER = 2
 OBU_HAS_SIZE = 0x02
 OBU_HAS_EXTENSION = 0x04
@@ -135,6 +153,8 @@ def write_ivf(units, path):
 
 
 def hashed(command):
+    """MD5 of `command`'s output (None unless it succeeds), its size, its
+    last error line and its exit status (None on a timeout)."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     digest, size = hashlib.md5(), 0
     try:
@@ -145,9 +165,10 @@ def hashed(command):
     except subprocess.TimeoutExpired:
         process.kill()
         process.communicate()
-        return None, size, "timeout"
+        return None, size, "timeout", None
     error = err.decode(errors="replace").strip().splitlines()
-    return digest.hexdigest() if process.returncode == 0 else None, size, error[-1] if error else ""
+    status = process.returncode
+    return digest.hexdigest() if status == 0 else None, size, error[-1] if error else "", status
 
 
 class RangeReader(io.RawIOBase):
@@ -204,19 +225,25 @@ def fetch(argon, sets):
     print(f"fetched {count} streams into {argon}")
 
 
-def run_one(stream, args, annex_b):
+def run_one(stream, args, annex_b, invalid):
     data = stream.read_bytes()
     try:
         units = list(annex_b_units(data) if annex_b else section5_units(data))
     except (ValueError, IndexError) as e:
-        return {"status": "framing", "error": str(e)}
+        # An invalid stream's framing may itself be broken: nothing to feed.
+        return {"status": "unframed" if invalid else "framing", "error": str(e)}
     with tempfile.TemporaryDirectory(prefix="nanocodec-argon-") as scratch:
         ivf = Path(scratch) / "stream.ivf"
         write_ivf(units, ivf)
-        reference, ref_bytes, ref_error = hashed(
-            [args.aomdec, "--i420", "-o", "/dev/stdout", str(ivf)])
-        ours, our_bytes, our_error = hashed(
-            [args.bin, "decode", "--codec", "av1", "--input", str(ivf), "--output", "/dev/stdout"])
+        ours, our_bytes, our_error, our_status = hashed(
+            [args.bin, "decode", "--codec", "av1", "--unbounded", "1", "--monochrome-chroma",
+             "0", "--input", str(ivf), "--output", "/dev/stdout"])
+        if invalid:
+            crashed = our_status is None or our_status < 0 or our_status == PANIC_STATUS
+            return {"status": "crash" if crashed else "robust", "bytes": [our_bytes],
+                    "error": our_error}
+        reference, ref_bytes, ref_error, _ = hashed(
+            [args.aomdec, "--rawvideo", "-o", "/dev/stdout", str(ivf)])
     if reference is None:
         status = "reference-failed"
     elif ours is None:
@@ -233,9 +260,12 @@ def main():
     parser.add_argument("--bin")
     parser.add_argument("--aomdec")
     parser.add_argument("--sets", default=DEFAULT_SETS)
+    parser.add_argument("--stress", action="store_true", help="add the stress sets")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--json", type=Path)
     args = parser.parse_args()
+    if args.stress:
+        args.sets += "," + STRESS_SETS
     if args.fetch:
         fetch(args.argon, args.sets.split(","))
         return 0
@@ -246,8 +276,10 @@ def main():
         futures = {}
         for name in args.sets.split(","):
             annex_b = "not_annexb" not in name
+            invalid = name.endswith("_error")
             for stream in sorted((args.argon / name / "streams").glob("*.obu")):
-                futures[pool.submit(run_one, stream, args, annex_b)] = f"{name}/{stream.name}"
+                futures[pool.submit(run_one, stream, args, annex_b, invalid)] = \
+                    f"{name}/{stream.name}"
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]] = future.result()
     summary = {}
@@ -262,7 +294,8 @@ def main():
     if args.json:
         args.json.write_text(json.dumps({"summary": summary, "errors": errors,
                                          "streams": dict(sorted(results.items()))}, indent=1))
-    return 0
+    passed = ("pass", "robust", "unframed")
+    return 0 if all(result["status"] in passed for result in results.values()) else 1
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@
 
 use super::av2::{AV2_EDGE_LINES, AV2_MAX_RAMP, AV2_RAMP_SHIFT, Av2Ramps, ramp_line};
 use crate::simd::I32Lanes;
+use nc_common::BitDepth;
 
 /// Ramps of a horizontal edge (`along == 1`); `V` has one lane per line.
 ///
@@ -68,10 +69,10 @@ pub(crate) unsafe fn vertical<V: I32Lanes>(plane: &mut [u8], ramps: &Av2Ramps) {
         if q0 < AV2_MAX_RAMP || q0 + AV2_MAX_RAMP > plane.len() {
             ramp_line(
                 plane,
-                q0,
-                ramps.across,
+                (q0, ramps.across),
                 ramps.widths,
                 (scaled_neg, scaled_pos),
+                BitDepth::EIGHT,
             );
             continue;
         }

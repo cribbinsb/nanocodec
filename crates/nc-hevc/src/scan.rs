@@ -63,6 +63,50 @@ pub fn coded_sub_blocks(levels: &[i16], scan: &Scan) -> CodedGroups {
     CodedGroups::from_scan_mask(bits)
 }
 
+/// The non-zero levels of the 4x4 sub-block `(xs, ys)` (as
+/// [`sub_block_coded`]).
+#[must_use]
+#[inline]
+fn sub_block_nonzero(levels: &[i16], size: usize, (xs, ys): (usize, usize)) -> u32 {
+    let origin = 4 * (ys * size + xs);
+    let block = &levels[origin..origin + 3 * size + 4];
+    let mut count = 0;
+    for row in 0..4 {
+        let values = block[row * size..row * size + 4]
+            .first_chunk::<4>()
+            .expect("four levels per sub-block row");
+        count += values.iter().map(|&v| u32::from(v != 0)).sum::<u32>();
+    }
+    count
+}
+
+/// [`coded_sub_blocks`] of `levels` that hold at most `nonzero` non-zero
+/// levels (the quantiser's count, or an upper bound of it): the walk in
+/// scan order stops once that many are found, as every later sub-block is
+/// then empty. Exact (an upper bound only walks further). Coded levels sit
+/// in the first sub-blocks, so most of a large block is never read: the
+/// whole-block test was ~1 % of HEVC Default instructions.
+#[must_use]
+pub fn coded_sub_blocks_counted(levels: &[i16], scan: &Scan, nonzero: u32) -> CodedGroups {
+    debug_assert!(nonzero > 0);
+    let size = 1usize << scan.log2;
+    let mut remaining = nonzero;
+    let mut bits = 0u64;
+    for (i, &sub_block) in scan.sub_blocks.iter().enumerate() {
+        let count = sub_block_nonzero(levels, size, sub_block);
+        if count > 0 {
+            bits |= 1 << i;
+            remaining = remaining.saturating_sub(count);
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
+    let coded = CodedGroups::from_scan_mask(bits);
+    debug_assert_eq!(coded, coded_sub_blocks(levels, scan));
+    coded
+}
+
 /// `sub_blocks` with the trailing sub-blocks that hold no level of `levels`
 /// (a `scan` block) dropped: exact again after shaving, which can only have
 /// emptied the last sub-blocks.

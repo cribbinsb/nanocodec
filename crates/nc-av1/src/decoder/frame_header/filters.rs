@@ -2,6 +2,7 @@
 //! §5.9.11, §5.9.19, §5.9.20).
 use super::TOTAL_REFS;
 use crate::backend::decoder::sequence::Sequence;
+use nc_common::ChromaFormat;
 use nc_common::decode::{BitReader, DecodeError};
 
 /// Default `loop_filter_ref_deltas[]` (`setup_past_independence`, §7.20):
@@ -189,8 +190,10 @@ pub(crate) fn restoration(
         0
     };
     lr.unit_size[0] = RESTORATION_TILESIZE_MAX >> (2 - shift);
+    // `lr_uv_shift` is coded only for 4:2:0 chroma.
     let chroma_lr = lr.kind[1..].iter().any(|&k| k != LrType::None);
-    let uv_shift = usize::from(chroma_lr && r.read_bit()?);
+    let subsampled = seq.chroma_format == ChromaFormat::Yuv420;
+    let uv_shift = usize::from(chroma_lr && subsampled && r.read_bit()?);
     lr.unit_size[1] = lr.unit_size[0] >> uv_shift;
     lr.unit_size[2] = lr.unit_size[1];
     Ok(lr)

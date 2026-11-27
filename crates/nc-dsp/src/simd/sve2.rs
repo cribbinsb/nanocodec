@@ -11,8 +11,9 @@
 )]
 
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, int64x2_t, uint8x16_t, uint32x4_t, vdupq_n_s64, vld1q_s16, vld1q_u8,
-    vqtbl1q_u8, vreinterpretq_s16_u8, vreinterpretq_s32_s64, vreinterpretq_u8_s16, vuzp1q_s32,
+    int16x8_t, int32x4_t, int64x2_t, uint8x16_t, uint16x8_t, uint32x4_t, vdupq_n_s64, vld1q_s16,
+    vld1q_u8, vqtbl1q_u8, vreinterpretq_s16_u8, vreinterpretq_s32_s64, vreinterpretq_u8_s16,
+    vuzp1q_s32,
 };
 use core::arch::asm;
 
@@ -46,6 +47,26 @@ pub(crate) unsafe fn mul_high(left: uint32x4_t, right: uint32x4_t) -> uint32x4_t
         asm!(
             aliases!(out, left, right),
             "umulh nc_sve_out.s, nc_sve_left.s, nc_sve_right.s",
+            unalias!(out, left, right),
+            out = lateout(vreg) out, left = in(vreg) left, right = in(vreg) right,
+            options(pure, nomem, nostack, preserves_flags),
+        );
+    }
+    out
+}
+
+/// High halves of eight unsigned 16×16 products.
+///
+/// # Safety
+/// The CPU and operating system must support SVE2.
+#[inline(always)]
+pub(crate) unsafe fn mul_high_words(left: uint16x8_t, right: uint16x8_t) -> uint16x8_t {
+    let out;
+    // SAFETY: one register-only SVE2 instruction, with no cross-lane effects.
+    unsafe {
+        asm!(
+            aliases!(out, left, right),
+            "umulh nc_sve_out.h, nc_sve_left.h, nc_sve_right.h",
             unalias!(out, left, right),
             out = lateout(vreg) out, left = in(vreg) left, right = in(vreg) right,
             options(pure, nomem, nostack, preserves_flags),

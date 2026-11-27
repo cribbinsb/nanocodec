@@ -1,8 +1,11 @@
 //! HEVC core transforms (HEVC §8.6.4).
 //!
 //! The encoder runs nc-dsp's SIMD kernels (`Dsp::hevc_forward`,
-//! `Dsp::hevc_inverse`). The scalar code here is their reference: it is
-//! compiled for tests only, where it checks the kernels block for block.
+//! `Dsp::hevc_inverse`). The scalar code here is their reference, compiled
+//! for tests, where it checks the kernels block for block; its inverse is
+//! also the decoder's for extended precision processing
+//! ([`inverse_extended`]), whose coefficients (up to 22 bits) and products
+//! (beyond 32 bits) the shared 16-bit kernel family cannot hold.
 //!
 //! Every HEVC DCT is a sub-matrix of the 32-point `transMatrix` (HEVC
 //! §8.6.4.2, equations 8-315..8-318): the N-point basis vector `k` is row
@@ -56,7 +59,6 @@ const INV_SHIFT_1: u32 = 7;
 /// Shift after the second inverse stage: `20 − BitDepth`.
 const INV_SHIFT_2: u32 = 20 - BIT_DEPTH;
 
-#[cfg(test)]
 /// The 32-point DCT matrix, `transMatrix` of HEVC §8.6.4.2.
 #[rustfmt::skip]
 const DCT32: [[i8; 32]; 32] = [
@@ -94,7 +96,6 @@ const DCT32: [[i8; 32]; 32] = [
     [4, -13, 22, -31, 38, -46, 54, -61, 67, -73, 78, -82, 85, -88, 90, -90, 90, -90, 88, -85, 82, -78, 73, -67, 61, -54, 46, -38, 31, -22, 13, -4],
 ];
 
-#[cfg(test)]
 /// Coefficient `n` of basis vector `k` of the `2^log2`-point DCT.
 fn basis(log2: u8, k: usize, n: usize) -> i32 {
     i32::from(DCT32[k << (MAX_LOG2 - log2)][n])
@@ -104,7 +105,6 @@ fn basis(log2: u8, k: usize, n: usize) -> i32 {
 pub const MAX_SIZE: usize = 1 << MAX_LOG2;
 /// Coefficients of the largest transform.
 pub const MAX_COEFFS: usize = MAX_SIZE * MAX_SIZE;
-#[cfg(test)]
 /// Half the largest transform: the size of the butterflies' scratch arrays.
 const HALF_MAX: usize = 1 << (MAX_LOG2 - 1);
 
@@ -140,7 +140,6 @@ fn forward_1d(x: &[i64], out: &mut [i64]) {
     }
 }
 
-#[cfg(test)]
 /// One-dimensional inverse DCT of coefficients `c` into `out`: the even
 /// coefficients through the half-size inverse give `E`, the odd ones `O`,
 /// and `out[i] = E[i] + O[i]`, `out[N−1−i] = E[i] − O[i]`.
@@ -214,7 +213,7 @@ pub fn forward(log2: u8, residual: &[i16], coeffs: &mut [i32]) {
         }
         forward_1d(line, out);
         for (k, &v) in out.iter().enumerate() {
-            tmp[y * n + k] = i64::from(round_shift_i64(v, shift1));
+            tmp[y * n + k] = round_shift_i64(v, shift1);
         }
     }
     for x in 0..n {
@@ -223,16 +222,57 @@ pub fn forward(log2: u8, residual: &[i16], coeffs: &mut [i32]) {
         }
         forward_1d(line, out);
         for (k, &v) in out.iter().enumerate() {
-            coeffs[k * n + x] = round_shift_i64(v, shift2).clamp(COEFF_MIN, COEFF_MAX);
+            coeffs[k * n + x] =
+                round_shift_i64(v, shift2).clamp(i64::from(COEFF_MIN), i64::from(COEFF_MAX)) as i32;
         }
     }
 }
 
 #[cfg(test)]
 /// Normative inverse 2-D DCT (HEVC §8.6.4.2) of scaled coefficients `d`
-/// (row-major, `d[y * n + x]`), producing the residual.
+/// (row-major, `d[y * n + x]`), producing the residual (8-bit, without
+/// extended precision).
 pub fn inverse(log2: u8, d: &[i32], residual: &mut [i32]) {
-    let n = 1usize << log2;
+    let kind = nc_dsp::HevcTransform::dct(log2).expect("transform sizes 4..32");
+    inverse_extended(kind, d, residual, (COEFF_MIN, COEFF_MAX), INV_SHIFT_2);
+}
+
+/// `transMatrix` of the 4x4 DST (HEVC eq. 8-315).
+const DST4: [[i64; 4]; 4] = [
+    [29, 55, 74, 84],
+    [74, 74, 0, -74],
+    [84, -29, -74, 55],
+    [55, -84, 74, -29],
+];
+
+/// One-dimensional inverse DST of coefficients `c` into `out`.
+fn inverse_dst_1d(c: &[i64], out: &mut [i64]) {
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = (0..4).map(|k| DST4[k][i] * c[k]).sum();
+    }
+}
+
+/// The normative inverse transform `kind` (§8.6.4.2) of scaled
+/// coefficients `d` (row-major) into `residual`, in 64-bit arithmetic: the
+/// first stage shifts by 7 and clips to `CoeffMinY..=CoeffMaxY` (`range`),
+/// the second shifts by `bdShift` (`second_shift`: `Max(20 − BitDepth,
+/// extended_precision_processing_flag ? 11 : 0)`). With extended
+/// precision the coefficients reach `2^22` and the sums `2^35`.
+pub fn inverse_extended(
+    kind: nc_dsp::HevcTransform,
+    d: &[i32],
+    residual: &mut [i32],
+    (coeff_min, coeff_max): (i32, i32),
+    second_shift: u32,
+) {
+    let n = kind.side();
+    let line_1d = |c: &[i64], out: &mut [i64]| {
+        if kind == nc_dsp::HevcTransform::Dst4 {
+            inverse_dst_1d(c, out);
+        } else {
+            inverse_1d(c, out);
+        }
+    };
     let (mut line, mut out) = ([0i64; MAX_SIZE], [0i64; MAX_SIZE]);
     let (line, out) = (&mut line[..n], &mut out[..n]);
     // Stage 1: each column (fixed x) is inverse transformed, then clipped.
@@ -241,9 +281,11 @@ pub fn inverse(log2: u8, d: &[i32], residual: &mut [i32]) {
         for (k, l) in line.iter_mut().enumerate() {
             *l = i64::from(d[k * n + x]);
         }
-        inverse_1d(line, out);
+        line_1d(line, out);
         for (y, &v) in out.iter().enumerate() {
-            g[y * n + x] = round_shift_i64(v, INV_SHIFT_1).clamp(COEFF_MIN, COEFF_MAX);
+            g[y * n + x] = round_shift_i64(v, INV_SHIFT_1)
+                .clamp(i64::from(coeff_min), i64::from(coeff_max))
+                as i32;
         }
     }
     // Stage 2: each row (fixed y).
@@ -251,16 +293,17 @@ pub fn inverse(log2: u8, d: &[i32], residual: &mut [i32]) {
         for (l, &v) in line.iter_mut().zip(&g[y * n..(y + 1) * n]) {
             *l = i64::from(v);
         }
-        inverse_1d(line, out);
+        line_1d(line, out);
         for (r, &v) in residual[y * n..(y + 1) * n].iter_mut().zip(out.iter()) {
-            *r = round_shift_i64(v, INV_SHIFT_2);
+            // |g| <= 2^22 times at most 32 · 90 < 2^12, shifted by at
+            // least 11 (or |g| <= 2^15, shifted by at least 4): in i32.
+            *r = round_shift_i64(v, second_shift) as i32;
         }
     }
 }
 
-#[cfg(test)]
-fn round_shift_i64(value: i64, shift: u32) -> i32 {
-    ((value + (1 << (shift - 1))) >> shift) as i32
+fn round_shift_i64(value: i64, shift: u32) -> i64 {
+    (value + (1 << (shift - 1))) >> shift
 }
 
 #[cfg(test)]

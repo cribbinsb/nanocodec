@@ -4,7 +4,7 @@
     python3 tools/dev/measure_smoke.py [--commit COMMIT]
 
 One staged-off screen of H.264 medium (candidate: hold on, SMOKE_PARAM) on 2 small train clips (60 frames), through
-aws_measure with GPU scoring (`--score gpu`): a warm Graviton box (baked image), the encode
+aws_measure with GPU scoring: a warm Graviton box (baked image), the encode
 round, the stream transfer, the PC's GPU scoring service, the result and its phase timeline.
 It fails loudly (non-zero exit, one line saying why) on any error, on any phase over its
 budget (aws_measure's OVER BUDGET lines), or when the whole run passes SMOKE_BUDGET_S.
@@ -48,7 +48,7 @@ def main() -> None:
     binary = Path(binary_dir(commit)) / "nanocodec"
     with tempfile.TemporaryDirectory(prefix="nanocodec-smoke-") as tmp:
         out = Path(tmp) / "smoke.json"
-        argv = [sys.executable, str(REPO / "tools/dev/aws_measure.py"), "--score", "gpu",
+        argv = [sys.executable, str(REPO / "tools/dev/aws_measure.py"),
                 "--budget", str(SMOKE_USD), "--",
                 "python3", "-m", "nceval.screen", "--codec", "h264", "--binary", str(binary),
                 "--param", SMOKE_PARAM,

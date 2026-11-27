@@ -169,7 +169,9 @@ fn integer_change(gram: &Gram, c: &[i32; TAPS]) -> i64 {
 
 /// The real-valued filter minimising [`integer_change`] for `gram`: the
 /// normal equations `A c = −2^7 b`, solved by Cholesky decomposition with
-/// a small ridge. `None` when the group has no usable samples.
+/// a small ridge. `None` when the group has no usable samples. The
+/// iterator sums stay: indexed loops (c1c1ad202) cost 3,496 -> 5,267
+/// instructions a call (VVC Default +0.43 % / +0.51 % on crowd / pan 360p).
 fn wiener(gram: &Gram) -> Option<[f64; TAPS]> {
     let a = |i: usize, j: usize| gram[vvc_alf_gram_index(i.min(j), i.max(j))] as f64;
     let mut l = [[0f64; TAPS]; TAPS];

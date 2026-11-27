@@ -1,7 +1,8 @@
 //! Intra prediction with explicit neighbour availability (slices and
 //! `constrained_intra_pred_flag` make it more than "inside the picture"):
 //! `Intra_4x4` (§8.3.1.2), `Intra_8x8` with reference sample filtering
-//! (§8.3.2.2), `Intra_16x16` (§8.3.3) and 4:2:0 chroma (§8.3.4).
+//! (§8.3.2.2), `Intra_16x16` (§8.3.3) and 4:2:0 / 4:2:2 chroma (§8.3.4;
+//! 4:4:4 chroma takes the luma processes, §8.3.4.5).
 //!
 //! The neighbouring samples are gathered into one line ([`Edge`]): the left
 //! column bottom-up, the corner, then the row above. With that layout the
@@ -503,13 +504,9 @@ fn horizontal_up<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
     }
 }
 
-/// Plane prediction (§8.3.3.4 luma `n` 16, §8.3.4.4 4:2:0 chroma `n` 8).
+/// Plane prediction of a 16x16 block (§8.3.3.4).
 fn plane_prediction<T: Sample>(plane: &mut PlaneViewMut<'_, T>, at: (usize, usize), e: &Edge<T>) {
-    match e.n {
-        8 => plane_prediction_size::<T, 8>(plane, at, e),
-        16 => plane_prediction_size::<T, 16>(plane, at, e),
-        _ => unreachable!("H.264 plane prediction supports 8 or 16 samples"),
-    }
+    plane_prediction_size::<T, MAX_SIDE>(plane, at, e);
 }
 
 fn plane_prediction_size<T: Sample, const N: usize>(
@@ -518,7 +515,7 @@ fn plane_prediction_size<T: Sample, const N: usize>(
     edges: &Edge<T>,
 ) {
     let top: &[T; N] = (&edges.line[N + 1..=2 * N]).try_into().expect("top edge");
-    let left = core::array::from_fn(|i| edges.line[N - 1 - i]);
+    let left: [T; N] = core::array::from_fn(|i| edges.line[N - 1 - i]);
     let mut view = plane
         .sub_view_mut(x, y, N, N)
         .expect("plane prediction block");
@@ -567,14 +564,19 @@ pub(super) fn predict_16x16<T: Sample>(
     Ok(())
 }
 
-/// 4:2:0 chroma prediction of the 8x8 block at (`x0`, `y0`) (§8.3.4).
-pub(super) fn predict_chroma<T: Sample>(
+/// Chroma prediction of the 8 x `H` block at (`x0`, `y0`): 4:2:0 (`H` 8)
+/// or 4:2:2 (`H` 16) (§8.3.4).
+///
+/// `left_halves`: whether the left samples of the upper and the lower
+/// half are available (they differ only beside an MBAFF pair coded the
+/// other way under `constrained_intra_pred_flag`); `avail.left` is both.
+pub(super) fn predict_chroma<T: Sample, const H: usize>(
     plane: &mut PlaneViewMut<'_, T>,
     (x0, y0): (usize, usize),
     mode: u8,
-    (avail, depth): (Avail, BitDepth),
+    (avail, left_halves, depth): (Avail, [bool; 2], BitDepth),
 ) -> Result<()> {
-    const SIDE: usize = 8;
+    const W: usize = 8;
     const SUB: usize = 4;
     let needed = match mode {
         CHROMA_DC => true,
@@ -587,46 +589,114 @@ pub(super) fn predict_chroma<T: Sample>(
             "chroma intra mode needs unavailable samples",
         ));
     }
-    let avail = Avail {
-        top_right: false,
-        ..avail
-    };
-    let e = Edge::gather(plane, (x0, y0), SIDE, avail, depth);
+    let depth = depth.of::<T>();
+    let mut top = [T::default(); W];
+    let mut left = [T::default(); H];
+    let mut corner = T::default();
+    {
+        let view = plane.as_view();
+        let (data, stride) = (view.data(), view.stride());
+        let at = y0 * stride + x0;
+        if avail.top {
+            top.copy_from_slice(&data[at - stride..at - stride + W]);
+        }
+        // Read the left samples where either half may be used.
+        if left_halves[0] || left_halves[1] {
+            for (sample, &value) in left.iter_mut().zip(data[at - 1..].iter().step_by(stride)) {
+                *sample = value;
+            }
+        }
+        if avail.top_left {
+            corner = data[at - stride - 1];
+        }
+    }
     let at = (x0, y0);
     match mode {
         CHROMA_DC => {
             // §8.3.4.1..3: each 4x4 block averages the samples beside it;
-            // the top-right block prefers those above, the bottom-left the
-            // ones to its left.
-            let mut dc = [e.none(); 4];
-            for (blk, value) in dc.iter_mut().enumerate() {
-                let (bx, by) = (blk % 2, blk / 2);
-                let sum_top = sum(&e.top()[bx * SUB..bx * SUB + SUB]);
-                // Left samples run bottom-up in the line.
-                let sum_left = sum(&e.line[SIDE - SUB - by * SUB..SIDE - by * SUB]);
-                let both = Edge::<T>::sample((sum_top + sum_left + 4) >> 3);
-                let top = Edge::<T>::sample((sum_top + 2) >> 2);
-                let left = Edge::<T>::sample((sum_left + 2) >> 2);
-                *value = match (blk, avail.top, avail.left) {
-                    (0 | 3, true, true) => both,
-                    (1, true, _) | (0 | 2 | 3, true, false) => top,
-                    (2, _, true) | (0 | 1 | 3, false, true) => left,
-                    _ => e.none(),
-                };
-            }
-            let mut out = block(plane, x0, y0, SIDE);
-            for y in 0..SIDE {
-                let row = out.row_mut(y);
-                let (left, right) = row.split_at_mut(SUB);
-                left.fill(dc[(y / SUB) * 2]);
-                right.fill(dc[(y / SUB) * 2 + 1]);
+            // blocks on the top row (but not the first) prefer those above,
+            // blocks in the left column (but not the first) the ones to
+            // their left.
+            let none = T::from_i32(depth.mid());
+            let mut out = plane
+                .sub_view_mut(x0, y0, W, H)
+                .expect("chroma block inside the picture");
+            for by in 0..H / SUB {
+                let sum_left = sum(&left[by * SUB..by * SUB + SUB]);
+                let has_left = left_halves[by * SUB * 2 / H];
+                for bx in 0..W / SUB {
+                    let sum_top = sum(&top[bx * SUB..bx * SUB + SUB]);
+                    let sides = (avail.top, has_left);
+                    let value = chroma_dc((bx, by), (sum_top, sum_left), sides, none);
+                    for y in by * SUB..by * SUB + SUB {
+                        out.row_mut(y)[bx * SUB..bx * SUB + SUB].fill(value);
+                    }
+                }
             }
         }
-        CHROMA_HORIZONTAL => fill_flat(plane, at, SIDE, |y| e.line[SIDE - 1 - y]),
-        CHROMA_VERTICAL => fill_rows(plane, at, e.top()),
-        _ => plane_prediction(plane, at, &e),
+        CHROMA_HORIZONTAL => {
+            let mut out = plane
+                .sub_view_mut(at.0, at.1, W, H)
+                .expect("chroma block inside the picture");
+            for (y, &value) in left.iter().enumerate() {
+                out.row_mut(y).fill(value);
+            }
+        }
+        CHROMA_VERTICAL => {
+            let mut out = plane
+                .sub_view_mut(at.0, at.1, W, H)
+                .expect("chroma block inside the picture");
+            for y in 0..H {
+                out.row_mut(y).copy_from_slice(&top);
+            }
+        }
+        _ => {
+            let mut view = plane
+                .sub_view_mut(at.0, at.1, W, H)
+                .expect("plane prediction block");
+            let stride = view.stride();
+            nc_dsp::h264_plane(view.data_mut(), stride, (&top, &left, corner), depth);
+        }
     }
     Ok(())
+}
+
+/// The DC value of chroma 4x4 block (`bx`, `by`) from the sums of the four
+/// samples above and left of it, whichever are available (§8.3.4.1..3).
+fn chroma_dc<T: Sample>(
+    (bx, by): (usize, usize),
+    (sum_top, sum_left): (u32, u32),
+    (has_top, has_left): (bool, bool),
+    none: T,
+) -> T {
+    let both = || Edge::<T>::sample((sum_top + sum_left + 4) >> 3);
+    let from_top = || Edge::<T>::sample((sum_top + 2) >> 2);
+    let from_left = || Edge::<T>::sample((sum_left + 2) >> 2);
+    if (bx > 0) == (by > 0) {
+        // The first block and those inside: both sides.
+        match (has_top, has_left) {
+            (true, true) => both(),
+            (true, false) => from_top(),
+            (false, true) => from_left(),
+            (false, false) => none,
+        }
+    } else if by == 0 {
+        // The rest of the top row: the samples above first.
+        if has_top {
+            from_top()
+        } else if has_left {
+            from_left()
+        } else {
+            none
+        }
+    } else if has_left {
+        // The rest of the left column: those to the left.
+        from_left()
+    } else if has_top {
+        from_top()
+    } else {
+        none
+    }
 }
 
 #[cfg(test)]

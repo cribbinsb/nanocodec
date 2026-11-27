@@ -74,3 +74,7 @@ rate.cadence_leaf_penalty = 1
 # Inherits rate.in_frame = 1 and rate.in_frame_proactive = 1 from AV1 Default
 # (draw 2026-11-26, L3 n=98: J -0.40% [-0.58, +0.09], 40/98 worse,
 # 0 guards, periodic-key pulse 2 s -0.03 dB / 10 s -0.02 dB).
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2
+# The split override (2026-11-27) is off here: final 600f +0.11 % J [+0.03, +0.20] (1/150).
+planner.split_override = 0

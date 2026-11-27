@@ -18,7 +18,7 @@ use core::arch::aarch64::{
 pub(super) const DOT_PIXEL_BIAS: i32 = 128 * 64;
 
 /// Contiguous four-pixel dot groups, shared with the H-only schedule.
-pub(super) const GATHER: [[u8; 16]; 3] = [
+pub(crate) const GATHER: [[u8; 16]; 3] = [
     [0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4, 5, 3, 4, 5, 6],
     [4, 5, 6, 7, 5, 6, 7, 8, 6, 7, 8, 9, 7, 8, 9, 10],
     [8, 9, 10, 11, 9, 10, 11, 12, 10, 11, 12, 13, 11, 12, 13, 14],

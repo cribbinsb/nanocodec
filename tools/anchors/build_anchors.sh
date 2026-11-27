@@ -53,7 +53,12 @@
 #   (-Dbitdepths=8,16), installing only bin/dav2d-hbd: the AV2 10- and
 #   12-bit reference beside avmdec. Separate, so the 8-bit oracle and its
 #   speed anchor are unchanged.
-#   Opt-in tools: libvpx avm dav2d dav2dasm dav2dhbd vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd (not built by
+#   hmhbd = the pinned HM built again with HIGH_BITDEPTH (RExt__HIGH_BIT_DEPTH_SUPPORT),
+#   installing only bin/TAppDecoder-hbd: the reference of the hevc-rext
+#   conformance streams with extended precision processing or 16-bit
+#   samples, which the default HM refuses. Separate, so the HM of the
+#   landing gates is unchanged.
+#   Opt-in tools: libvpx avm dav2d dav2dasm dav2dhbd vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd hmhbd (not built by
 #   the default all-tools invocation). vvdec installs bin/vvdecapp, the VVC conformance
 #   gate's second decoder (eval/nceval/conformance.py). vvenc installs
 #   bin/vvencFFapp and its configuration files under share/vvenc/cfg: the
@@ -73,7 +78,7 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly ALL_TOOLS=(python openh264 harness x264 x265 kvazaar svtav1 libaom dav1d jm hm vmaf aominspect)
-readonly OPTIONAL_TOOLS=(libvpx avm dav2d dav2dasm dav2dhbd vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd)
+readonly OPTIONAL_TOOLS=(libvpx avm dav2d dav2dasm dav2dhbd vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd hmhbd)
 readonly HARNESS_DIR=$(cd "$SCRIPT_DIR/../openh264-harness" 2>/dev/null && pwd || true)
 # Minimum CMake that every CMake-based tool here accepts.
 readonly CMAKE_MIN_VERSION=3.16
@@ -819,6 +824,15 @@ build_hm() {
     install -m 755 "$BLD/tree/bin/umake/gcc-"*/*/release/TAppDecoder "$PREFIX/bin/TAppDecoder"
 }
 
+build_hmhbd() {
+    # build_hm's configuration plus high bit depth; only the decoder is
+    # installed, renamed.
+    copy_source_to_build
+    cmake_configure "$BLD/tree" -DBUILD_STATIC=ON -DENABLE_SEARCH_OPENSSL=OFF -DHIGH_BITDEPTH=ON
+    run cmake --build "$BLD" -j "$JOBS" --target TAppDecoder
+    install -m 755 "$BLD/tree/bin/umake/gcc-"*/*/release/TAppDecoder "$PREFIX/bin/TAppDecoder-hbd"
+}
+
 build_vmaf() {
     meson_build_install "$SRC/libvmaf" -Denable_tests=false -Denable_docs=false \
         -Dbuilt_in_models=true -Denable_float=true
@@ -849,6 +863,12 @@ build_tool() {
             commit=$LIBAOM_COMMIT
             : >"$CURRENT_LOG"
             fetch_source libaom "$LIBAOM_URL" "$ref" "$commit" ;;
+        hmhbd)
+            # Same pinned source as HM, built with different options.
+            ref=$HM_REF
+            commit=$HM_COMMIT
+            : >"$CURRENT_LOG"
+            fetch_source hm "$HM_URL" "$ref" "$commit" ;;
         vpxsvc|vpxhbd)
             # Same pinned source as libvpx, built with different options.
             ref=$LIBVPX_REF

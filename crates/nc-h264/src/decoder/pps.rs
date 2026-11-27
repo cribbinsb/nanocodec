@@ -5,7 +5,7 @@
 use super::reader::Reader;
 use super::scaling::{self, ParsedMatrix};
 use super::slice_groups::{self, SliceGroups};
-use super::sps::MAX_SPS_ID;
+use super::sps::{LISTS_8X8_Y, LISTS_8X8_YUV, MAX_SPS_ID};
 use super::{DecodeError, Result};
 
 /// `pic_parameter_set_id` range (§7.4.2.2).
@@ -15,9 +15,9 @@ pub(super) const MAX_REF_IDX_ACTIVE_MINUS1: u32 = 31;
 /// `chroma_qp_index_offset` range (§7.4.2.2).
 pub(super) const MAX_CHROMA_QP_OFFSET: i32 = 12;
 /// `pic_init_qp_minus26` range (§7.4.2.2: from −(26 + `QpBdOffsetY`), here
-/// at the deepest decoded samples, 10 bits; the slice QP is checked against
-/// the SPS's depth).
-const MIN_INIT_QP_MINUS26: i32 = -(26 + 12);
+/// at the deepest samples, 14 bits; the slice QP is checked against the
+/// SPS's depth).
+const MIN_INIT_QP_MINUS26: i32 = -(26 + 36);
 const MAX_INIT_QP_MINUS26: i32 = 25;
 /// `pic_init_qs_minus26` lower bound (§7.4.2.2: QS is 8-bit only).
 const MIN_INIT_QS_MINUS26: i32 = -26;
@@ -66,7 +66,11 @@ pub(super) struct Pps {
     pub scaling: Option<ParsedMatrix>,
 }
 
-pub(super) fn parse(data: &[u8]) -> Result<Pps> {
+/// Parse a PPS RBSP; `chroma_444` tells whether the SPS of an id is 4:4:4,
+/// whose picture scaling matrix has 8x8 lists for Cb and Cr as well
+/// (§7.3.2.2: `6 + ( ( chroma_format_idc != 3 ) ? 2 : 6 ) *
+/// transform_8x8_mode_flag` lists).
+pub(super) fn parse(data: &[u8], chroma_444: impl FnOnce(u32) -> bool) -> Result<Pps> {
     let mut r = Reader::new(data);
     let id = r.ue_max(MAX_PPS_ID, "pic_parameter_set_id")?;
     let sps_id = r.ue_max(MAX_SPS_ID, "seq_parameter_set_id")?;
@@ -132,10 +136,10 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
     if r.more_rbsp_data() {
         pps.transform_8x8_mode = r.flag()?;
         if r.flag()? {
-            let count_8x8 = if pps.transform_8x8_mode {
-                scaling::LISTS_8X8
-            } else {
-                0
+            let count_8x8 = match (pps.transform_8x8_mode, chroma_444(sps_id)) {
+                (false, _) => 0,
+                (true, false) => LISTS_8X8_Y,
+                (true, true) => LISTS_8X8_YUV,
             };
             pps.scaling = Some(scaling::parse_matrix(&mut r, count_8x8)?);
         }

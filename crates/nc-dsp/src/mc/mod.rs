@@ -101,6 +101,8 @@ pub(crate) mod avx2;
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 mod av1_avx2;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use av1_avx2::extended_warp;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]

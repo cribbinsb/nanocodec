@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use super::cavlc::{CavlcSlice, CavlcSyntax, CavlcTables};
+use super::chroma::ChromaArray;
 use super::mbstate::{MbState, Neighbours};
 use super::pps::Pps;
 use super::reader::Reader;
@@ -94,16 +95,18 @@ pub(super) struct PartitionedCavlc<'a, 't, T> {
 
 impl<'a, 't, T> PartitionedCavlc<'a, 't, T> {
     /// The syntax over partition A's slice data and B's and C's (each at
-    /// its slice data).
+    /// its slice data). Partitioned slices are the Extended profile's,
+    /// whose SPS codes no chroma format: 4:2:0 (§7.4.2.1.1).
     pub fn new(
         [a, b, c]: [Reader<'a>; 3],
         tables: &'t CavlcTables,
         constrained_intra_pred: bool,
     ) -> Self {
+        let chroma = ChromaArray::Yuv420;
         Self {
-            a: CavlcSyntax::new(a, tables),
-            b: CavlcSyntax::new(b, tables),
-            c: CavlcSyntax::new(c, tables),
+            a: CavlcSyntax::new(a, tables, chroma),
+            b: CavlcSyntax::new(b, tables, chroma),
+            c: CavlcSyntax::new(c, tables, chroma),
             constrained_intra_pred,
         }
     }
@@ -196,25 +199,25 @@ impl<T> MbSyntax for PartitionedCavlc<'_, '_, T> {
         self.a.mvd(nb, cur, list, x4, y4)
     }
 
-    fn coded_block_pattern(
-        &mut self,
-        nb: &Neighbours<'_>,
-        cur: &MbState,
-        monochrome: bool,
-    ) -> Result<u8> {
-        self.a.coded_block_pattern(nb, cur, monochrome)
+    fn coded_block_pattern(&mut self, nb: &Neighbours<'_>, cur: &MbState) -> Result<u8> {
+        self.a.coded_block_pattern(nb, cur)
     }
 
     fn mb_qp_delta(&mut self) -> Result<i32> {
         self.a.mb_qp_delta()
     }
 
-    fn luma_dc(&mut self, nb: &Neighbours<'_>, cur: &mut MbState, out: &mut Coeffs) -> Result<()> {
+    fn luma_dc<const PLANE: usize>(
+        &mut self,
+        nb: &Neighbours<'_>,
+        cur: &mut MbState,
+        out: &mut Coeffs,
+    ) -> Result<()> {
         let (syntax, nb) = self.residual(nb, cur);
-        syntax.luma_dc(&nb, cur, out)
+        syntax.luma_dc::<PLANE>(&nb, cur, out)
     }
 
-    fn block_4x4(
+    fn block_4x4<const PLANE: usize>(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &mut MbState,
@@ -222,10 +225,10 @@ impl<T> MbSyntax for PartitionedCavlc<'_, '_, T> {
         out: &mut Coeffs,
     ) -> Result<()> {
         let (syntax, nb) = self.residual(nb, cur);
-        syntax.block_4x4(&nb, cur, block, out)
+        syntax.block_4x4::<PLANE>(&nb, cur, block, out)
     }
 
-    fn luma_8x8(
+    fn luma_8x8<const PLANE: usize>(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &mut MbState,
@@ -233,7 +236,7 @@ impl<T> MbSyntax for PartitionedCavlc<'_, '_, T> {
         out: &mut Coeffs,
     ) -> Result<()> {
         let (syntax, nb) = self.residual(nb, cur);
-        syntax.luma_8x8(&nb, cur, b8, out)
+        syntax.luma_8x8::<PLANE>(&nb, cur, b8, out)
     }
 
     fn chroma_dc(

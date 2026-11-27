@@ -14,7 +14,7 @@
 use core::fmt::Debug;
 use core::ops::Range;
 
-use nc_common::{Picture, PlaneView, PlaneViewMut, Sample};
+use nc_common::{ChromaFormat, Picture, PlaneView, PlaneViewMut, Sample};
 
 use super::{Av1Taps, DepthKernels};
 use crate::av1_film_grain::Av1FilmGrainParams;
@@ -27,6 +27,7 @@ use crate::av1_mc::warp_kernels::{WarpOut, WarpPhases};
 use crate::av1_restoration::{Av1LoopRestoration, Av1LrScratch, Av1StripeBoundaries};
 use crate::cdef::band::{CdefLines, CdefSets, CdefUnit};
 use crate::deblock::runs::{EdgeRun, Plane as RunPlane};
+use crate::intra_prediction::av1_block::cfl::{CFL_420, cfl_predict_scalar};
 use crate::intra_prediction::av1_block::{BlockEdges, IntraKind};
 use crate::intra_prediction::filter::FilterIntraMode;
 use crate::{Av1EdgeFilter, Av1TxSize, Av1TxType, BlockSize};
@@ -246,7 +247,7 @@ pub trait Av1Pixel: Sample {
     #[doc(hidden)]
     fn av1_add_film_grain(
         kernels: DepthKernels<'_>,
-        params: &Av1FilmGrainParams,
+        grain: (&Av1FilmGrainParams, ChromaFormat),
         input: [&PlaneView<'_, Self>; 3],
         size: (usize, usize),
         output: [&mut PlaneViewMut<'_, Self>; 3],
@@ -721,12 +722,14 @@ impl Av1Pixel for u8 {
 
     fn av1_add_film_grain(
         kernels: DepthKernels<'_>,
-        params: &Av1FilmGrainParams,
+        (params, format): (&Av1FilmGrainParams, ChromaFormat),
         input: [&PlaneView<'_, u8>; 3],
         size: (usize, usize),
         output: [&mut PlaneViewMut<'_, u8>; 3],
     ) {
-        kernels.dsp.av1_add_film_grain(params, input, size, output);
+        kernels
+            .dsp
+            .av1_add_film_grain_in(params, format, input, size, output);
     }
 }
 
@@ -1301,14 +1304,14 @@ impl Av1Pixel for u16 {
 
     fn av1_add_film_grain(
         kernels: DepthKernels<'_>,
-        params: &Av1FilmGrainParams,
+        grain: (&Av1FilmGrainParams, ChromaFormat),
         input: [&PlaneView<'_, u16>; 3],
         size: (usize, usize),
         output: [&mut PlaneViewMut<'_, u16>; 3],
     ) {
         kernels
             .dsp
-            .av1_add_film_grain_u16(params, input, size, output, kernels.depth);
+            .av1_add_film_grain_u16(grain, input, size, output, kernels.depth);
     }
 }
 
@@ -1360,16 +1363,32 @@ impl DepthKernels<'_> {
         T::av1_intra_predict_filter_block(self, edges, mode, dst);
     }
 
-    /// One-pass AV1 Chroma-from-Luma (`CfL`, §7.11.5) prediction at this depth.
+    /// One-pass AV1 Chroma-from-Luma (`CfL`, §7.11.5) prediction at this
+    /// depth, of a format subsampled by `subsampling` (log2 per axis):
+    /// 4:2:0 through this ISA's kernels, the other formats through the
+    /// scalar reference.
     pub fn av1_cfl_predict<T: Av1Pixel>(
         self,
         luma: &PlaneView<'_, T>,
         luma_extent: (usize, usize),
+        subsampling: (usize, usize),
         dc: T,
         alpha_q3: i32,
         dst: &mut PlaneViewMut<'_, T>,
     ) {
-        T::av1_cfl_predict(self, luma, luma_extent, dc, alpha_q3, dst);
+        if subsampling == CFL_420 {
+            T::av1_cfl_predict(self, luma, luma_extent, dc, alpha_q3, dst);
+        } else {
+            cfl_predict_scalar(
+                luma,
+                luma_extent,
+                subsampling,
+                dc,
+                alpha_q3,
+                dst,
+                self.depth,
+            );
+        }
     }
 
     /// [`Dsp::av1_put_samples`](crate::Dsp::av1_put_samples) at this depth.
@@ -1571,16 +1590,16 @@ impl DepthKernels<'_> {
         T::cdef_filter_band(self, lines, picture, rows, units, sets);
     }
 
-    /// [`Dsp::av1_add_film_grain`](crate::Dsp::av1_add_film_grain) at this
-    /// depth.
+    /// [`Dsp::av1_add_film_grain_in`](crate::Dsp::av1_add_film_grain_in)
+    /// at this depth: film grain of a frame in chroma `format`.
     pub fn av1_add_film_grain<T: Av1Pixel>(
         self,
-        params: &Av1FilmGrainParams,
+        (params, format): (&Av1FilmGrainParams, ChromaFormat),
         input: [&PlaneView<'_, T>; 3],
         size: (usize, usize),
         output: [&mut PlaneViewMut<'_, T>; 3],
     ) {
-        T::av1_add_film_grain(self, params, input, size, output);
+        T::av1_add_film_grain(self, (params, format), input, size, output);
     }
 
     /// [`Av1LoopRestoration::apply`] at this depth.

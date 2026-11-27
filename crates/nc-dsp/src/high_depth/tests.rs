@@ -413,3 +413,70 @@ fn h264_prediction_at_eight_bits_matches_the_eight_bit_kernels() {
         }
     }
 }
+
+/// A square `side` view over `d`.
+fn view(d: &mut [u16], side: usize) -> PlaneViewMut<'_, u16> {
+    PlaneViewMut::new(d, side, side, side).unwrap()
+}
+
+#[test]
+fn h264_deblocking_lines_match_the_edge_kernels() {
+    use crate::{H264EdgeParams, H264MbEdges};
+    let dsp = Dsp::new();
+    let side = 24;
+    for (depth, max) in [(BitDepth::EIGHT, 255), (BitDepth::TEN, 1023)] {
+        let kernels = dsp.at(depth);
+        for seed in 0..8u8 {
+            let params = H264EdgeParams {
+                bs: [seed % 5, 4, (seed + 2) % 4, 1],
+                tc0: [seed % 13, 2, 9, 0],
+                alpha: 40 + seed * 9,
+                beta: 6 + seed,
+            };
+            for vertical in [true, false] {
+                // Only edge 0 of the direction: one luma edge of 16 lines,
+                // one chroma edge of 8.
+                let edges = H264MbEdges {
+                    mask: if vertical { 0b0001 } else { 0b1_0000 },
+                    edges: [[params; 4]; 2],
+                };
+                let base = pattern(side * side, usize::from(seed), max);
+                let (mut whole, mut lines) = (wide(&base), wide(&base));
+                kernels.h264_deblock_mb_luma(&mut view(&mut whole, side), (4, 4), &edges);
+                kernels.h264_deblock_mb_chroma_plane(&mut view(&mut whole, side), (8, 8), &edges);
+                for line in 0..16 {
+                    let at = if vertical {
+                        (4, 4 + line)
+                    } else {
+                        (4 + line, 4)
+                    };
+                    let one = H264EdgeParams {
+                        bs: [params.bs[line / 4]; 4],
+                        tc0: [params.tc0[line / 4]; 4],
+                        ..params
+                    };
+                    kernels.h264_deblock_luma_line(&mut view(&mut lines, side), at, vertical, &one);
+                }
+                for line in 0..8 {
+                    let at = if vertical {
+                        (8, 8 + line)
+                    } else {
+                        (8 + line, 8)
+                    };
+                    let one = H264EdgeParams {
+                        bs: [params.bs[line / 2]; 4],
+                        tc0: [params.tc0[line / 2]; 4],
+                        ..params
+                    };
+                    kernels.h264_deblock_chroma_line(
+                        &mut view(&mut lines, side),
+                        at,
+                        vertical,
+                        &one,
+                    );
+                }
+                assert_eq!(whole, lines, "{depth:?} seed {seed} vertical {vertical}");
+            }
+        }
+    }
+}

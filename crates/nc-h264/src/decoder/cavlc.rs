@@ -1,9 +1,10 @@
 //! CAVLC: the exp-Golomb macroblock syntax elements (§9.1) and
 //! `residual_block_cavlc()` (§7.3.5.3.2, §9.2), with `nC` from the
-//! neighbouring blocks' `TotalCoeff` (§9.2.1).
+//! neighbouring blocks' `TotalCoeff` (§9.2.1), of every chroma format.
 
 use core::marker::PhantomData;
 
+use super::chroma::{CHROMA_DC_420, CHROMA_DC_422, ChromaArray};
 use super::mb::PCM_LUMA_SAMPLES;
 use super::mbstate::{MbState, Neighbours};
 use super::reader::Reader;
@@ -16,6 +17,7 @@ use crate::tables::cavlc::{
     CODED_BLOCK_PATTERN_400, CODED_BLOCK_PATTERN_420, COEFF_TOKEN, RUN_BEFORE, TOTAL_ZEROS,
     TOTAL_ZEROS_CHROMA_DC,
 };
+use crate::tables::cavlc_422::{COEFF_TOKEN_CHROMA_DC_422, TOTAL_ZEROS_CHROMA_DC_422};
 
 /// Largest `mb_type` of I slices (Table 7-11), P slices (Table 7-13 + 26)
 /// and B slices (Table 7-14 + 26).
@@ -29,10 +31,10 @@ const MAX_SUB_MB_TYPE_P: u32 = 3;
 const MAX_SUB_MB_TYPE_B: u32 = 12;
 const MAX_CHROMA_PRED_MODE: u32 = 3;
 const REM_INTRA_PRED_MODE_BITS: u32 = 3;
-/// `mb_qp_delta` range (§7.4.5: ±(26 + `QpBdOffsetY` / 2), here at 10 bits;
-/// the QP wraps into the stream's own range, eq. 7-37).
-const MIN_QP_DELTA: i32 = -(26 + 6);
-const MAX_QP_DELTA: i32 = 25 + 6;
+/// `mb_qp_delta` range (§7.4.5: ±(26 + `QpBdOffsetY` / 2), here at 14
+/// bits; the QP wraps into the stream's own range, eq. 7-37).
+const MIN_QP_DELTA: i32 = -(26 + 18);
+const MAX_QP_DELTA: i32 = 25 + 18;
 /// Bound on `|mvd|` for robustness against hostile input.
 const MAX_ABS_MVD: i32 = 1 << 15;
 /// `nC` from which `coeff_token` is a 6-bit fixed-length code (Table 9-5).
@@ -41,13 +43,29 @@ const FLC_BITS: u8 = 6;
 /// The fixed-length code of `TotalCoeff` 0 (`0000 11`).
 const FLC_NO_COEFFS: u32 = 3;
 /// `coeff_token` tables: the three `nC` classes of Table 9-5 (0 <= `nC` < 2,
-/// 2 <= `nC` < 4, 4 <= `nC` < 8), 4:2:0 chroma DC (`nC` == -1) and the
-/// fixed-length code.
+/// 2 <= `nC` < 4, 4 <= `nC` < 8), 4:2:0 chroma DC (`nC` == -1), the
+/// fixed-length code and 4:2:2 chroma DC (`nC` == -2).
 const CHROMA_DC_TABLE: usize = 3;
 const FLC_TABLE: usize = 4;
-const COEFF_TOKEN_TABLES: usize = 5;
-/// `coeff_token` table by `nC + 1`, `nC` clamped to [`FLC_NC`].
-const NC_TABLE: [usize; FLC_NC as usize + 2] = [CHROMA_DC_TABLE, 0, 0, 1, 1, 2, 2, 2, 2, FLC_TABLE];
+const CHROMA_DC_422_TABLE: usize = 5;
+const COEFF_TOKEN_TABLES: usize = 6;
+/// `nC` of 4:2:0 and of 4:2:2 chroma DC blocks (§9.2.1).
+const NC_CHROMA_DC_420: i32 = -1;
+const NC_CHROMA_DC_422: i32 = -2;
+/// `coeff_token` table by `nC + 2`, `nC` clamped to [`FLC_NC`].
+const NC_TABLE: [usize; FLC_NC as usize + 3] = [
+    CHROMA_DC_422_TABLE,
+    CHROMA_DC_TABLE,
+    0,
+    0,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    FLC_TABLE,
+];
 /// `coeff_token` symbols are `TotalCoeff * 4 + TrailingOnes`.
 const TRAILING_ONES_BITS: u32 = 2;
 /// Maximum trailing ones (`TrailingOnes` is 0..=3).
@@ -61,12 +79,13 @@ const LEVEL_PREFIX_14: u32 = 14;
 const LEVEL_PREFIX_14_SUFFIX: u32 = 4;
 /// `suffixLength` grows while it is below this (§9.2.2.1).
 const MAX_SUFFIX_LENGTH: u32 = 6;
-/// Coefficients of 4:2:0 chroma DC, 4x4 and AC blocks.
-const CHROMA_DC_COEFFS: usize = 4;
+/// Coefficients of 4x4 and AC blocks.
 const BLOCK_COEFFS: usize = 16;
 const AC_COEFFS: usize = 15;
-/// `total_zeros` tables: 15 for 4x4 blocks, then 3 for chroma DC.
+/// `total_zeros` tables: 15 for 4x4 blocks, then 3 for 4:2:0 chroma DC,
+/// then 7 for 4:2:2 chroma DC.
 const TOTAL_ZEROS_CHROMA_DC_BASE: usize = 15;
+const TOTAL_ZEROS_CHROMA_DC_422_BASE: usize = 18;
 /// `run_before` tables by `min(zerosLeft, 7)`; table 0 is the empty code.
 const RUN_BEFORE_TABLES: usize = 7;
 
@@ -75,7 +94,8 @@ const RUN_BEFORE_TABLES: usize = 7;
 pub(super) struct CavlcTables {
     /// `coeff_token` per table of [`NC_TABLE`].
     coeff_token: [VlcTable; COEFF_TOKEN_TABLES],
-    /// `total_zeros` by `TotalCoeff - 1`, 4x4 blocks then chroma DC.
+    /// `total_zeros` by `TotalCoeff - 1`, 4x4 blocks then 4:2:0 and 4:2:2
+    /// chroma DC.
     total_zeros: Vec<VlcTable>,
     /// `run_before` by `min(zerosLeft, 7)`.
     run_before: Vec<VlcTable>,
@@ -83,17 +103,12 @@ pub(super) struct CavlcTables {
 
 impl CavlcTables {
     pub fn new() -> Self {
-        let token = |class: usize| {
-            VlcTable::new(
-                COEFF_TOKEN[class]
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(total, row)| {
-                        row.iter().enumerate().map(move |(ones, &(code, length))| {
-                            (u32::from(code), length, (total * 4 + ones) as u16)
-                        })
-                    }),
-            )
+        let token = |rows: &[[(u8, u8); 4]]| {
+            VlcTable::new(rows.iter().enumerate().flat_map(|(total, row)| {
+                row.iter().enumerate().map(move |(ones, &(code, length))| {
+                    (u32::from(code), length, (total * 4 + ones) as u16)
+                })
+            }))
         };
         // §9.2.1: six bits, `TotalCoeff - 1` then `TrailingOnes`, except
         // `0000 11` for no coefficients.
@@ -114,11 +129,19 @@ impl CavlcTables {
             )
         };
         Self {
-            coeff_token: [token(0), token(1), token(2), token(CHROMA_DC_TABLE), fixed],
+            coeff_token: [
+                token(&COEFF_TOKEN[0]),
+                token(&COEFF_TOKEN[1]),
+                token(&COEFF_TOKEN[2]),
+                token(&COEFF_TOKEN[CHROMA_DC_TABLE]),
+                fixed,
+                token(&COEFF_TOKEN_CHROMA_DC_422),
+            ],
             total_zeros: TOTAL_ZEROS
                 .iter()
                 .map(|codes| simple(codes))
                 .chain(TOTAL_ZEROS_CHROMA_DC.iter().map(|codes| simple(codes)))
+                .chain(TOTAL_ZEROS_CHROMA_DC_422.iter().map(|codes| simple(codes)))
                 .collect(),
             run_before: std::iter::once(VlcTable::new([]))
                 .chain(RUN_BEFORE.iter().map(|codes| simple(codes)))
@@ -133,20 +156,28 @@ impl CavlcTables {
 pub(super) struct CavlcSyntax<'a, 't, T = u8> {
     pub reader: Reader<'a>,
     tables: &'t CavlcTables,
+    /// `ChromaArrayType` of the slice.
+    chroma: ChromaArray,
     sample: PhantomData<T>,
 }
 
 impl<'a, 't, T> CavlcSyntax<'a, 't, T> {
-    pub fn new(reader: Reader<'a>, tables: &'t CavlcTables) -> Self {
+    pub fn new(reader: Reader<'a>, tables: &'t CavlcTables, chroma: ChromaArray) -> Self {
         Self {
             reader,
             tables,
+            chroma,
             sample: PhantomData,
         }
     }
 
+    /// `mb_field_decoding_flag` (MBAFF frames).
+    pub fn mb_field_decoding_flag(&mut self) -> Result<bool> {
+        self.reader.flag()
+    }
+
     /// `residual_block_cavlc()` of up to `max_coeffs` coefficients with
-    /// context `nc` (-1: chroma DC); returns `TotalCoeff`.
+    /// context `nc` (-1, -2: 4:2:0, 4:2:2 chroma DC); returns `TotalCoeff`.
     ///
     /// The block is parsed from 32-bit peeks with unchecked consumption and
     /// one end-of-data check (as openh264 parses a block from a local bit
@@ -155,7 +186,7 @@ impl<'a, 't, T> CavlcSyntax<'a, 't, T> {
     fn residual(&mut self, nc: i32, max_coeffs: usize, out: &mut Coeffs) -> Result<u8> {
         out.count = 0;
         let r = &mut self.reader;
-        let table = NC_TABLE[(nc.min(FLC_NC) + 1) as usize];
+        let table = NC_TABLE[(nc.min(FLC_NC) + 2) as usize];
         let (symbol, length) = self.tables.coeff_token[table]
             .lookup(r.peek32())
             .ok_or(DecodeError::Malformed("coeff_token"))?;
@@ -173,10 +204,10 @@ impl<'a, 't, T> CavlcSyntax<'a, 't, T> {
         Self::levels(r, total, trailing_ones, &mut levels)?;
         let mut zeros_left = 0;
         if total < max_coeffs {
-            let base = if max_coeffs == CHROMA_DC_COEFFS {
-                TOTAL_ZEROS_CHROMA_DC_BASE
-            } else {
-                0
+            let base = match max_coeffs {
+                CHROMA_DC_420 => TOTAL_ZEROS_CHROMA_DC_BASE,
+                CHROMA_DC_422 => TOTAL_ZEROS_CHROMA_DC_422_BASE,
+                _ => 0,
             };
             let (zeros, length) = self.tables.total_zeros[base + total - 1]
                 .lookup(r.peek32())
@@ -289,7 +320,7 @@ impl<'a, 't, T> CavlcSyntax<'a, 't, T> {
 #[cfg(test)]
 pub(crate) fn block_for_tests(bytes: &[u8], nc: i32, max_coeffs: usize) -> Vec<i32> {
     let tables = CavlcTables::new();
-    let mut syntax = CavlcSyntax::<u8>::new(Reader::new(bytes), &tables);
+    let mut syntax = CavlcSyntax::<u8>::new(Reader::new(bytes), &tables, ChromaArray::Yuv420);
     let mut coeffs = Coeffs::new();
     syntax
         .residual(nc, max_coeffs, &mut coeffs)
@@ -321,9 +352,12 @@ impl<T> CavlcSlice for CavlcSyntax<'_, '_, T> {
     }
 }
 
-/// `nC` of the luma 4x4 block (`x4`, `y4`) of `cur`.
-fn luma_nc(nb: &Neighbours<'_>, cur: &MbState, x4: usize, y4: usize) -> i32 {
-    let count = |n: Option<(&MbState, usize, usize)>| n.map(|(m, x, y)| m.total_coeff[y * 4 + x]);
+/// `nC` of the luma-like 4x4 block (`x4`, `y4`) of component `PLANE` of
+/// `cur` (luma, or Cb and Cr in 4:4:4: their own blocks' counts, §9.2.1).
+fn luma_nc<const PLANE: usize>(nb: &Neighbours<'_>, cur: &MbState, x4: usize, y4: usize) -> i32 {
+    let count = |n: Option<(&MbState, usize, usize)>| {
+        n.map(|(m, x, y)| m.plane_total_coeff(PLANE)[y * 4 + x])
+    };
     predicted_nc(count(nb.left(cur, x4, y4)), count(nb.above(cur, x4, y4)))
 }
 
@@ -396,18 +430,15 @@ impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
         Ok(mvd)
     }
 
-    fn coded_block_pattern(
-        &mut self,
-        _nb: &Neighbours<'_>,
-        cur: &MbState,
-        monochrome: bool,
-    ) -> Result<u8> {
+    fn coded_block_pattern(&mut self, _nb: &Neighbours<'_>, cur: &MbState) -> Result<u8> {
         let column = usize::from(!cur.is_intra());
         let code = self.reader.ue()? as usize;
-        let table: &[u8] = if monochrome {
-            &CODED_BLOCK_PATTERN_400[column]
-        } else {
+        // Table 9-4: one column pair for `ChromaArrayType` 1 or 2, one for 0
+        // or 3 (luma bits only).
+        let table: &[u8] = if self.chroma.has_chroma_blocks() {
             &CODED_BLOCK_PATTERN_420[column]
+        } else {
+            &CODED_BLOCK_PATTERN_400[column]
         };
         table
             .get(code)
@@ -420,13 +451,18 @@ impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
             .se_range(MIN_QP_DELTA, MAX_QP_DELTA, "mb_qp_delta")
     }
 
-    fn luma_dc(&mut self, nb: &Neighbours<'_>, cur: &mut MbState, out: &mut Coeffs) -> Result<()> {
-        let nc = luma_nc(nb, cur, 0, 0);
+    fn luma_dc<const PLANE: usize>(
+        &mut self,
+        nb: &Neighbours<'_>,
+        cur: &mut MbState,
+        out: &mut Coeffs,
+    ) -> Result<()> {
+        let nc = luma_nc::<PLANE>(nb, cur, 0, 0);
         self.residual(nc, BLOCK_COEFFS, out)?;
         Ok(())
     }
 
-    fn block_4x4(
+    fn block_4x4<const PLANE: usize>(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &mut MbState,
@@ -440,21 +476,23 @@ impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
                 } else {
                     BLOCK_COEFFS
                 };
-                let nc = luma_nc(nb, cur, x, y);
-                cur.total_coeff[y * 4 + x] = self.residual(nc, max, out)?;
+                let nc = luma_nc::<PLANE>(nb, cur, x, y);
+                cur.plane_total_coeff_mut(PLANE)[y * 4 + x] = self.residual(nc, max, out)?;
             }
             Block4x4::ChromaAc(comp, b) => {
+                // Two blocks per row, 2 (4:2:0) or 4 (4:2:2) rows (§6.4.11.5).
                 let (x, y) = (b % 2, b / 2);
+                let last_row = self.chroma.chroma_blocks() / 2 - 1;
                 let count = |m: &MbState, x: usize, y: usize| m.chroma_total_coeff[comp][y * 2 + x];
                 let left = if x > 0 {
                     Some(count(cur, 0, y))
                 } else {
-                    nb.a.map(|m| count(m, 1, y))
+                    nb.left_row_chroma(y).map(|(m, row)| count(m, 1, row))
                 };
                 let above = if y > 0 {
-                    Some(count(cur, x, 0))
+                    Some(count(cur, x, y - 1))
                 } else {
-                    nb.b.map(|m| count(m, x, 1))
+                    nb.b.map(|m| count(m, x, last_row))
                 };
                 cur.chroma_total_coeff[comp][b] =
                     self.residual(predicted_nc(left, above), AC_COEFFS, out)?;
@@ -463,7 +501,7 @@ impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
         Ok(())
     }
 
-    fn luma_8x8(
+    fn luma_8x8<const PLANE: usize>(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &mut MbState,
@@ -476,8 +514,9 @@ impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
         let mut combined = Coeffs::new();
         for i in 0..4 {
             let (x, y) = ((b8 % 2) * 2 + i % 2, (b8 / 2) * 2 + i / 2);
-            let nc = luma_nc(nb, cur, x, y);
-            cur.total_coeff[y * 4 + x] = self.residual(nc, BLOCK_COEFFS, &mut part)?;
+            let nc = luma_nc::<PLANE>(nb, cur, x, y);
+            cur.plane_total_coeff_mut(PLANE)[y * 4 + x] =
+                self.residual(nc, BLOCK_COEFFS, &mut part)?;
             for (scan, level) in part.iter() {
                 combined.push(4 * scan + i, level);
             }
@@ -493,7 +532,12 @@ impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
         _comp: usize,
         out: &mut Coeffs,
     ) -> Result<()> {
-        self.residual(-1, CHROMA_DC_COEFFS, out)?;
+        let (nc, coefficients) = if self.chroma == ChromaArray::Yuv422 {
+            (NC_CHROMA_DC_422, CHROMA_DC_422)
+        } else {
+            (NC_CHROMA_DC_420, CHROMA_DC_420)
+        };
+        self.residual(nc, coefficients, out)?;
         Ok(())
     }
 

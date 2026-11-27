@@ -3,6 +3,11 @@
 use super::initialization::bank;
 use super::{Context, DecodeError, Parser, Reader, Result, Split, Transform, Unit, intra};
 
+/// `intra_chroma_pred_mode` 0 to 3 when no candidate equals the derived
+/// mode (H.266 Table 19).
+const EXPLICIT_CHROMA_MODES: [u8; 4] =
+    [intra::PLANAR, intra::VERTICAL, intra::HORIZONTAL, intra::DC];
+
 #[derive(Clone)]
 pub(super) struct Models {
     bdpcm: [Context; 4],
@@ -42,9 +47,12 @@ impl Parser<'_> {
             return Ok(());
         };
         let node = unit.node;
+        let (width, height) = self
+            .sequence
+            .scaled(channel != 0, (node.width, node.height));
         if self.sequence.transforms.bdpcm
-            && node.width >> channel <= 1 << log2
-            && node.height >> channel <= 1 << log2
+            && width <= 1 << log2
+            && height <= 1 << log2
             && r.bin(&mut self.intra_models.bdpcm[2 * channel])?
         {
             unit.bdpcm[channel] =
@@ -52,6 +60,7 @@ impl Parser<'_> {
         }
         Ok(())
     }
+    #[inline]
     pub(super) fn luma_prediction(&mut self, r: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
         self.bdpcm(r, unit, 0)?;
         if unit.bdpcm[0] != 0 {
@@ -138,6 +147,7 @@ impl Parser<'_> {
     fn isp_mode(&mut self, r: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
         let node = unit.node;
         if self.sequence.tools.isp
+            && !unit.act
             && unit.reference_line == 0
             && node.width * node.height > 16
             && node.width.max(node.height) <= 1 << self.sequence.max_transform_log2
@@ -153,6 +163,13 @@ impl Parser<'_> {
         Ok(())
     }
     pub(super) fn chroma_prediction(&mut self, r: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
+        if unit.act {
+            // ACT chroma takes the derived mode, without syntax (§7.3.11.5;
+            // MIP for a MIP luma CU, as ACT is 4:4:4 only).
+            unit.chroma_mip = unit.mip.is_some();
+            unit.chroma_mode = unit.luma_mode;
+            return Ok(());
+        }
         self.bdpcm(r, unit, 1)?;
         if unit.bdpcm[1] != 0 {
             unit.chroma_mode = if unit.bdpcm[1] == 2 {
@@ -167,19 +184,32 @@ impl Parser<'_> {
             let luma = self
                 .neighbour(node.x + node.width / 2, node.y + node.height / 2, 0)
                 .ok_or(DecodeError::Malformed("VVC missing collocated luma"))?;
-            // The derived mode of chroma under an IBC luma CU is DC (§8.4.3).
-            unit.luma_mode = if luma.block_vector_signalled() {
+            // The derived mode of chroma under an IBC or palette luma CU is
+            // DC (§8.4.3).
+            unit.luma_mode = if luma.block_vector_signalled() || luma.palette.is_some() {
                 intra::DC
             } else {
                 luma.luma_mode
             };
         }
+        // 4:4:4 chroma of a single-tree MIP CU derives MIP itself, so no
+        // explicit candidate is replaced (H.266 §8.4.3).
+        let derives_mip = unit.combined
+            && unit.mip.is_some()
+            && self.sequence.format == nc_common::ChromaFormat::Yuv444;
         unit.chroma_mode =
             if self.sequence.tools.cclm && self.cclm_allowed(unit) && r.bin(&mut self.cclm[0])? {
                 67 + if r.bin(&mut self.cclm[1])? {
                     1 + u8::from(r.bypass()?)
                 } else {
                     0
+                }
+            } else if derives_mip {
+                if r.bin(&mut self.contexts.chroma_mode)? {
+                    EXPLICIT_CHROMA_MODES[r.bypass_bits(2)? as usize]
+                } else {
+                    unit.chroma_mip = true;
+                    intra::PLANAR
                 }
             } else {
                 crate::chroma::code(r, &mut self.contexts, unit.luma_mode, unit.luma_mode)?
@@ -241,7 +271,10 @@ impl Parser<'_> {
             && unit.sbt.is_none()
             && (unit.isp.is_none() || plane != 0)
             && self.sequence.transforms.skip_log2.is_some_and(|log2| {
-                block.width() >> channel <= 1 << log2 && block.height() >> channel <= 1 << log2
+                let (width, height) = self
+                    .sequence
+                    .scaled(plane != 0, (block.width(), block.height()));
+                width <= 1 << log2 && height <= 1 << log2
             })
         {
             transform.skip[plane] = r.bin(&mut self.intra_models.skip[channel])?;

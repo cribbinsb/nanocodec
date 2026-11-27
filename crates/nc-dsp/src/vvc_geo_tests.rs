@@ -26,7 +26,7 @@ fn chroma_blend_samples_the_luma_mask_before_rounding() {
     let first = [64 * 31 + 17; 16];
     let second = [64 * 183 + 45; 16];
     let mut result = [0; 16];
-    dsp.vvc_geometric_blend(mask, (4, 4), (4, 4), true, (&first, &second), &mut result);
+    dsp.vvc_geometric_blend(mask, (4, 4), (4, 4), (1, 1), (&first, &second), &mut result);
     for (i, &pixel) in result.iter().enumerate() {
         let weight = i64::from(mask.weight(4 + 2 * (i % 4), 4 + 2 * (i / 4)));
         let expected =

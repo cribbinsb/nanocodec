@@ -175,6 +175,47 @@ pub(crate) struct Analysis<'a, T = u8> {
     classes: Vec<[u8; 2]>,
 }
 
+/// The width of the Laplacian group sums of the classification
+/// (§8.8.5.3): `u16` up to [`nc_dsp::VVC_ALF_MAX_BIT_DEPTH`] (the SIMD
+/// kernels), `u32` for deeper samples.
+trait LaplacianSum: Copy + Default + std::ops::AddAssign + std::ops::Add<Output = Self> {
+    fn laplacians<T: Pixel>(kernels: DepthKernels<'_>, rows: &[&[T]; 4], out: &mut [[Self; 4]]);
+    fn classify<T: Pixel>(
+        kernels: DepthKernels<'_>,
+        groups: &[[Self; 4]],
+        boundary: bool,
+        out: &mut [[u8; 2]],
+    );
+}
+
+impl LaplacianSum for u16 {
+    fn laplacians<T: Pixel>(kernels: DepthKernels<'_>, rows: &[&[T]; 4], out: &mut [[u16; 4]]) {
+        kernels.vvc_alf_laplacians(rows, out);
+    }
+    fn classify<T: Pixel>(
+        kernels: DepthKernels<'_>,
+        groups: &[[u16; 4]],
+        boundary: bool,
+        out: &mut [[u8; 2]],
+    ) {
+        kernels.vvc_alf_classify::<T>(groups, boundary, out);
+    }
+}
+
+impl LaplacianSum for u32 {
+    fn laplacians<T: Pixel>(kernels: DepthKernels<'_>, rows: &[&[T]; 4], out: &mut [[u32; 4]]) {
+        kernels.vvc_alf_laplacians_wide(rows, out);
+    }
+    fn classify<T: Pixel>(
+        kernels: DepthKernels<'_>,
+        groups: &[[u32; 4]],
+        boundary: bool,
+        out: &mut [[u8; 2]],
+    ) {
+        kernels.vvc_alf_classify_wide(groups, boundary, out);
+    }
+}
+
 impl<'a, T: Pixel> Analysis<'a, T> {
     /// Analyse the luma of `picture` (`ctu`-sample CTUs, samples of
     /// `depth`): classify the blocks of the CTBs (raster index) `wanted`
@@ -303,7 +344,7 @@ impl<'a, T: Pixel> Analysis<'a, T> {
     /// The Laplacian group sums (`nc_dsp` `vvc_alf_laplacians`) of the
     /// classification grid row at picture row `y`; rows across the virtual
     /// boundary are replaced by the nearest on the row's side.
-    fn laplacian_row(&self, y: isize, first_block: usize, out: &mut [[u16; 4]]) {
+    fn laplacian_row<S: LaplacianSum>(&self, y: isize, first_block: usize, out: &mut [[S; 4]]) {
         let boundary = if y > 0 {
             self.boundary_row(y as usize)
         } else {
@@ -317,8 +358,7 @@ impl<'a, T: Pixel> Analysis<'a, T> {
             });
             &row[PAD + first_block * BLOCK - LAPLACIAN_LEAD..]
         };
-        self.kernels()
-            .vvc_alf_laplacians(&[row(-1), row(0), row(1), row(2)], out);
+        S::laplacians(self.kernels(), &[row(-1), row(0), row(1), row(2)], out);
     }
 
     /// The class of every block of the CTBs (raster index) that `needed`
@@ -333,6 +373,19 @@ impl<'a, T: Pixel> Analysis<'a, T> {
     }
 
     fn classify_into(&self, classes: &mut Vec<[u8; 2]>, needed: impl Fn(usize) -> bool) {
+        // Laplacian sums of samples deeper than 10 bits need 32 bits.
+        if self.kernels().depth().bits() > nc_dsp::VVC_ALF_MAX_BIT_DEPTH {
+            self.classify_sums::<u32>(classes, needed);
+        } else {
+            self.classify_sums::<u16>(classes, needed);
+        }
+    }
+
+    fn classify_sums<S: LaplacianSum>(
+        &self,
+        classes: &mut Vec<[u8; 2]>,
+        needed: impl Fn(usize) -> bool,
+    ) {
         let block_rows = self.height.div_ceil(BLOCK);
         classes.clear();
         classes.resize(block_rows * self.block_columns, [0; 2]);
@@ -356,7 +409,7 @@ impl<'a, T: Pixel> Analysis<'a, T> {
                 // Keep the summed pair and the second raw row from each
                 // side of the 4×4 block row. The lower pair becomes the
                 // upper pair of the next block row.
-                laplacians.resize(5 * groups, [0; 4]);
+                laplacians.resize(5 * groups, [S::default(); 4]);
                 let (pairs, column_sums) = laplacians.split_at_mut(4 * groups);
                 let (upper, lower) = pairs.split_at_mut(2 * groups);
                 let mut upper = upper.split_at_mut(groups);
@@ -399,7 +452,8 @@ impl<'a, T: Pixel> Analysis<'a, T> {
                     }
                     let boundary = position == -4 || position == 0;
                     let start = by * self.block_columns;
-                    self.kernels().vvc_alf_classify::<T>(
+                    S::classify::<T>(
+                        self.kernels(),
                         column_sums,
                         boundary,
                         &mut classes[start + blocks.start..start + blocks.end],
@@ -1112,10 +1166,11 @@ impl Region {
 
     /// The same region in a plane subsampled by two both ways (4:2:0
     /// chroma).
-    pub(crate) fn halved(&self) -> Self {
+    /// The region in samples of a plane subsampled by `(sx, sy)`.
+    pub(crate) fn scaled(&self, (sx, sy): (usize, usize)) -> Self {
         let (x, y, w, h) = self.rect;
         Self {
-            rect: (x / 2, y / 2, w / 2, h / 2),
+            rect: (x >> sx, y >> sy, w >> sx, h >> sy),
             ..*self
         }
     }

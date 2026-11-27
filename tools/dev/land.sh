@@ -58,9 +58,12 @@ MAX_ATTEMPTS=20
 DEFAULT_BUILD_JOBS=8  # the per-agent cap (CLAUDE.md "Working in parallel")
 #: The pre-land checks' shared target dir (under targets/), jobs and memory (header).
 LAND_TARGET_NAME=land-shared
+LAND_SLOTS=2
 LAND_BUILD_JOBS=8
-LAND_MEM_MAX=8G
-LAND_MEM_HIGH=7G
+# nc-dsp's test build needs about 8-10 GB; at 8G/7G it crawled in reclaim (14+ min per lander,
+# 2026-11-27). Landers run one at a time, so 15G stays well inside the PC's 60 GB.
+LAND_MEM_MAX=15G
+LAND_MEM_HIGH=13G
 DEFAULT_CHECK_BUDGET=90
 DEFAULT_PYTEST_WORKERS=4
 #: Seconds the revert guard may take (git blame of the touched files).
@@ -264,20 +267,44 @@ drop_site_commit() {
     git reset --quiet --hard HEAD~1
 }
 
-# What cannot wait (header, step 2), on HEAD against base $1.
-pre_land_checks() {
-    local lock_fd
+# One of the LAND_SLOTS shared pre-land targets for this lander's cargo checks.
+take_build_slot() {
+    local slot
     mkdir -p "$data_root/locks"
-    exec {lock_fd}>"$data_root/locks/$LAND_TARGET_NAME"
-    if ! flock -n "$lock_fd"; then
-        printf '== waiting for another lander'"'"'s checks (shared target %s)\n' "$CARGO_TARGET_DIR"
+    # LAND_SLOTS shared targets, each taken by one lander at a time: two landers check at once
+    # (2 x LAND_MEM_MAX stays well inside the PC), the rest wait for the first slot to free.
+    for ((slot = 1; slot <= LAND_SLOTS; slot++)); do
+        exec {lock_fd}>"$data_root/locks/$LAND_TARGET_NAME-$slot"
+        flock -n "$lock_fd" && break
+        exec {lock_fd}>&-
+    done
+    if ((slot > LAND_SLOTS)); then
+        slot=1
+        exec {lock_fd}>"$data_root/locks/$LAND_TARGET_NAME-$slot"
+        printf '== waiting for another lander'"'"'s checks (shared target slot %d)\n' "$slot"
         flock "$lock_fd"
     fi
-    local began=$SECONDS key values budget=${NC_LAND_CHECK_BUDGET:-$DEFAULT_CHECK_BUDGET}
+    export CARGO_TARGET_DIR=$data_root/targets/$LAND_TARGET_NAME-$slot
+    # The shared target holds another worktree's builds of the same crates, and cargo's
+    # freshness check compares source mtimes, not paths: a lander whose sources are older
+    # than the last build would reuse that tree's artifacts (2026-11-27: "no StreamRate in
+    # nc_encoder" in clippy after cargo check passed). Touching this tree's workspace
+    # sources inside the lock rebuilds the workspace crates; dependencies stay warm.
+    find crates -name '*.rs' -o -name Cargo.toml -o -name build.rs | xargs -r touch
+}
+
+# What cannot wait (header, step 2), on HEAD against base $1.
+pre_land_checks() {
     local -A plan=()
     local scope
     scope=$(python3 tools/dev/land_scope.py "$1" 2>/dev/null) || die "tools/dev/land_scope.py failed: not landed"
     while read -r key values; do plan[$key]=$values; done <<<"$scope"
+    # A change with no Rust to check (Python, docs, pages) takes no build slot (2026-11-27: a
+    # Python-only landing waited 15 min behind Rust landers).
+    if [[ ${plan[rust]:-none} != none || -n "${plan[touched]:-}" ]]; then
+        take_build_slot
+    fi
+    local began=$SECONDS key values budget=${NC_LAND_CHECK_BUDGET:-$DEFAULT_CHECK_BUDGET}
     [[ -z "${plan[python]:-}" ]] || timed "python byte-compile" python3 -m py_compile ${plan[python]} ||
         die "python byte-compile failed: not landed"
     local file
@@ -331,7 +358,8 @@ pre_land_checks() {
         printf '== NC_LAND_MODE=full: every check, in this tree (target %s)\n' "$CARGO_TARGET_DIR"
         run_checks "$scope" || die "full checks failed: not landed"
     fi
-    exec {lock_fd}>&-
+    # no slot taken (nothing to build): no lock to release
+    if [[ -n ${lock_fd:-} ]]; then exec {lock_fd}>&-; fi
     printf -- '-- pre-land checks: %ds\n' $((SECONDS - began))
     (((SECONDS - began) <= budget)) ||
         printf '== note: the pre-land checks took over the %ds budget\n' "$budget"

@@ -341,6 +341,11 @@ pub struct VvcBackend {
     colour: nc_common::ColourInfo,
     /// The SPS's stream timing.
     timing: headers::Timing,
+    /// The SPS's `general_level_idc` (`headers::level_idc`), for the rate
+    /// in force.
+    level_idc: u32,
+    /// The nominal frame rate, which the level covers.
+    frame_rate: nc_encoder::FrameRate,
     key_qp_offset: i32,
     rate_control: bool,
     /// The intra-refresh window of the current frame (`set_refresh`), if
@@ -495,6 +500,7 @@ impl VvcParams {
             long_term_slot: false,
             poc_bits: headers::POC_BITS,
             long_term_refs: false,
+            gdr: false,
         }
     }
 
@@ -612,6 +618,10 @@ fn sequence_tools(params: &VvcParams, config: &EncoderConfig) -> (bool, headers:
         || (nc_encoder::uses_long_term_slot(&config.params) && config.temporal_layers == 1);
     let tools = headers::Tools {
         long_term_refs: long_term,
+        // GDR pictures start the sweeps of an encoder created with intra
+        // refresh; one switched on later codes trailing pictures until the
+        // next key's SPS (`VvcBackend::picture_kind`).
+        gdr: nc_encoder::RefreshParams::from_overrides(&config.params).period > 0.0,
         ..params
             .tools()
             .with_long_term_slot(long_term_slot, holds_second_reference(&config.params))
@@ -981,6 +991,12 @@ impl CodecBackend for VvcBackend {
         ("layers.propagation_flat", 1.0),
         ("layers.propagation_grid", 3.0),
         ("layers.propagation_prekey", 1.0),
+        // Variance AQ (`rate.aq_strength`, `nc-encoder` `aq.rs`, matching HEVC's
+        // 0.25): L3 n=98 (draw 2026-11-27, --strict-buffer) J -0.40% [-0.73, -0.08]
+        // BETTER, 0 guards, periodic-key pulse 2 s -0.10 dB / 10 s -0.39 dB;
+        // carries monotonically across the VVC ladder (quick n=24: faster -0.72%,
+        // fast -0.77%, medium -0.66%, slow -0.69%, 0 guards on all 4).
+        ("rate.aq_strength", 0.25),
         // Periodic keys planned 3 QP units finer than the inter level, adopted
         // with the key-frame RD partition search (3ebca4466). The search itself
         // is off at medium (reverted 2026-11-22): on the published front's chart
@@ -1105,6 +1121,8 @@ impl CodecBackend for VvcBackend {
             },
             colour: config.signal.colour,
             timing: headers::Timing::from_signal(config.signal.timing, config.frame_rate),
+            level_idc: headers::level_idc(&geometry, config.frame_rate, None),
+            frame_rate: config.frame_rate,
             key_qp_offset: config.key_qp_offset.unwrap_or_else(|| {
                 nc_encoder::fixed_qp_key_offset(config.intra_period, KEY_QP_OFFSET_AT_REFERENCE)
                     + params.key_qp_offset_delta.round() as i32
@@ -1506,6 +1524,11 @@ impl CodecBackend for VvcBackend {
         });
     }
 
+    /// The SPS level from the next IRAP picture on covers `rate`.
+    fn set_stream_rate(&mut self, rate: Option<nc_encoder::StreamRate>) {
+        self.level_idc = headers::level_idc(&self.geometry, self.frame_rate, rate);
+    }
+
     fn begin_frame(&mut self, plan: &FramePlan) {
         self.qp = if plan.frame_type == FrameType::Key && !self.rate_control {
             nc_encoder::offset_key_quantizer(plan.quantizer, self.key_qp_offset, 0, headers::MAX_QP)
@@ -1863,11 +1886,7 @@ impl CodecBackend for VvcBackend {
             );
         }
         headers::temporal_nal(
-            if self.inter {
-                headers::TRAIL_NUT
-            } else {
-                headers::IDR_N_LP
-            },
+            self.picture_kind().nal_type(),
             self.references.plan.position.layer,
             &slice,
             &mut out,
@@ -2378,6 +2397,7 @@ impl VvcBackend {
                 &self.chroma_qp,
                 self.tools,
                 Some(self.timing),
+                self.level_idc,
                 self.temporal_layers,
             ),
             out,
@@ -2395,11 +2415,28 @@ impl VvcBackend {
         );
     }
 
+    /// How the current picture is coded: an inter picture starting an
+    /// intra-refresh sweep is a GDR picture when the SPS enables them and
+    /// the POC distance to its recovery fits the POC LSBs (§7.4.3.8).
+    fn picture_kind(&self) -> headers::PictureKind {
+        if !self.inter {
+            return headers::PictureKind::Idr;
+        }
+        self.refresh
+            .as_ref()
+            .filter(|w| w.sweep_start && self.tools.gdr)
+            .map(|w| w.recovery_frames)
+            .filter(|&frames| frames < 1 << self.tools.poc_bits)
+            .map_or(headers::PictureKind::Trailing, |recovery_poc_cnt| {
+                headers::PictureKind::Gdr { recovery_poc_cnt }
+            })
+    }
+
     /// The current picture's slice header (with its picture header).
     fn slice_header(&self) -> Vec<u8> {
         headers::slice_layered(
             self.qp,
-            self.inter,
+            self.picture_kind(),
             self.poc,
             self.tools.alf.then(|| self.alf.slice_syntax(ALF_APS_ID)),
             self.block_qp.is_some(),

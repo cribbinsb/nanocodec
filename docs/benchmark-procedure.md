@@ -441,14 +441,14 @@ also code points past each end:
   - PSNR per plane, combined as (6 Y + U + V) / 8.
 
 - **Where scoring runs (owner, 2026-11-25: locally where possible).**
-  - **On the PC** (`fleet.py score --local`, `tools/bench/localscore.py`): `score.py` itself,
+  - **On the PC** (`fleet.py score`, the default; `tools/bench/localscore.py`): `score.py` itself,
     with its `vmafx` backend, so the decodes, checks and records are a scoring box's.
     - The standard decoders (the run's `stage/bin`, ffmpeg the pinned 8.0.1) run on the CPU in
       the GPU scoring service's slice, at most 8 workers, each pass's clips decompressed into
       its own directory and deleted after it.
     - VMAF v1 and MS-SSIM run on the GPU through the one bounded VMAFx CUDA scoring service
       that the dev tools use (`nceval.metrics`, `nceval.gpuscore`: a place in the service and
-      8 GiB of free GPU memory to start, or the pass is refused with the cloud path named; the
+      8 GiB of free GPU memory to start, or the pass is refused with the fix named; the
       patched build and its verification are in `docs/handoff/vmafx-gpu.md`). PSNR comes from
       exact per-plane squared-error sums with libvmaf's 60 dB cap.
     - `--follow MINUTES` repeats passes while streams arrive, so scoring runs beside encoding.
@@ -470,7 +470,7 @@ also code points past each end:
     precision, MS-SSIM within 1e-5 and PSNR per plane within 1e-4 dB; a mismatch stops the pass
     and its scores are not merged (`v27-<tag>.json` lists each difference).
   - **The fallback** is cloud CPU scoring: Graviton c8g.8xlarge spot, else c7i or c6i
-    .24xlarge (`fleet.py score`, in use). It is used when the GPU or the PC is unavailable,
+    .24xlarge (`fleet.py score --cloud`, an explicit choice). It is used when the GPU or the PC is unavailable,
     never silently: each score record names its backend.
   - **Cloud CPU details:**
     - decodes live in memory (the box's tmpfs), and the workers are capped by the memory they
@@ -663,8 +663,8 @@ also code points past each end:
 | run (BP-3 layout) | `fleet.py run RUN --series S --boxes K [--fleet-budget USD] [--discard-streams] [--packed N] [--type T --region R --on-demand]` | in use for BP-3 runs and packed untimed encodes; BP-4 timing uses `--layout half` |
 | plan-timing (BP-4, to build: T23) | `fleet.py plan-timing RUN... --series S --machines M` | section 6's plan: family order, whole families to machines, expected wall and cost, into the manifest |
 | run, BP-4 layout (to build: T23) | `fleet.py run RUN --series S --layout half` | whole machines of the series' one type; families one at a time, longest first, filler, check sets, family-level settling (section 6) |
-| score, local | `fleet.py score RUN --series S --local [--follow MINUTES]` | `score.py --metrics-backend vmafx` on the PC (`localscore.py`): decoding on its CPU, VMAF v1 and MS-SSIM on its GPU scoring service, the V27 sample on a small cloud box; passes merged only after V27 |
-| score | `fleet.py score RUN --series S --boxes K` | in use; under BP-4 the fallback: `score.py` on spot scoring boxes (Graviton c8g.8xlarge by default, x86 c7i/c6i as fallback), for streams without a valid score; slots replace lost boxes |
+| score, local | `fleet.py score RUN --series S [--follow MINUTES]` | `score.py --metrics-backend vmafx` on the PC (`localscore.py`): decoding on its CPU, VMAF v1 and MS-SSIM on its GPU scoring service, the V27 sample on a small cloud box; passes merged only after V27 |
+| score, cloud | `fleet.py score RUN --series S --cloud --boxes K` | explicit only (never automatic); under BP-4 the labelled fallback: `score.py` on spot scoring boxes (Graviton c8g.8xlarge by default, x86 c7i/c6i as fallback), for streams without a valid score; slots replace lost boxes |
 | preflight | `fleet.py preflight RUN...` | disk, quota and cap, the PC's address, prices and reclaim rates by zone, the cost envelope |
 | rehearse | `fleet.py rehearse RUN... --out DIR` | the whole pipeline on whole sample clips of each run, with a forced reclaim |
 | status | `fleet.py status RUN... [--group] [--since ISO]` | measured progress, rates, ETAs from remaining expected seconds, the benchmark's own spend |

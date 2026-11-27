@@ -24,7 +24,10 @@ from nceval import rate_ladder  # noqa: E402
 #: the source allows it).
 MANIFESTS = {"ours": "eval/clipset/heldout_2026-11-23b-bp4.manifest.json",
              "vc1k": "eval/clipset/vc1k_2026-11-18-bp4.manifest.json",
-             "aomctc": "eval/clipset/aomctc_bp3.manifest.json"}
+             "aomctc": "eval/clipset/aomctc_bp3.manifest.json",
+             "fast": "eval/clipset/heldout_2026-11-23b-bp4.manifest.json"}
+#: A dataset that is a fixed subset of another's manifest: its clip-set file (`clips`: [{name}]).
+SUBSETS = {"fast": "eval/clipset/fast-subset.json"}
 #: The record of the dataset clips a tuning set used (procedure section 4, V3).
 TUNED_ON = REPO / "eval" / "clipset" / "tuned_on.json"
 #: The 600-frame window (procedure D7): coded where the source allows it.
@@ -74,13 +77,22 @@ def tuned_on() -> dict[str, str]:
             for name, entry in record["sets"].items() for c in entry["clips"]}
 
 
-def clips_data(reports: Path, datasets, machines, report_path) -> dict:
+def manifest_clips(key: str) -> list[dict]:
+    """A dataset's manifest clips, restricted to its subset file where it is a subset."""
+    clips = json.loads((REPO / MANIFESTS[key]).read_text())["clips"]
+    if key not in SUBSETS:
+        return clips
+    names = {c["name"] for c in json.loads((REPO / SUBSETS[key]).read_text())["clips"]}
+    return [c for c in clips if c["name"] in names]
+
+
+def clips_data(reports: Path, datasets, report_path) -> dict:
+    """Each dataset's clips and, per timing machine it is measured on, its report's losses."""
     out = {}
     tuned = tuned_on()
     for dataset in datasets:
-        manifest = json.loads((REPO / MANIFESTS[dataset.key]).read_text())
         views = {}
-        for machine in machines:
+        for machine in dataset.machines:
             path = report_path(reports, dataset.key, machine)
             if path.is_file():
                 report = json.loads(path.read_text())
@@ -88,10 +100,10 @@ def clips_data(reports: Path, datasets, machines, report_path) -> dict:
                 views[machine] = {"view_clips": series["view_clips"],
                                   "common_clips": series["common_clips"],
                                   "lost": lost_by_clip(report, machine)}
-        out[dataset.key] = {"name": dataset.name, "about": dataset.about,
-                            "manifest": MANIFESTS[dataset.key],
+        out[dataset.key] = {"name": dataset.name, "about": dataset.about, "doc": dataset.doc,
+                            "manifest": SUBSETS.get(dataset.key, MANIFESTS[dataset.key]),
                             "clips": [clip_row(c) | {"tuned_on": tuned.get(c["name"])}
-                                      for c in manifest["clips"]], "views": views}
+                                      for c in manifest_clips(dataset.key)], "views": views}
     return {"datasets": out, "drop_suffix": DROP_SUFFIX,
             "ladder_kbps": list(rate_ladder.LADDER_720P30_KBPS)}
 

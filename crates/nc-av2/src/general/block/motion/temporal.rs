@@ -24,6 +24,17 @@ const PROJECTION_BLOCK: usize = 8;
 /// The gap filling works in 16-unit blocks of 2x2 samples.
 const GAP_BLOCK: usize = 16;
 
+/// Reset the sampled positions of one contiguous row.
+fn clear_samples<T: Copy>(row: &mut [T], step: usize, invalid: T) {
+    if step == 1 {
+        row.fill(invalid);
+    } else {
+        for sample in row.iter_mut().step_by(step) {
+            *sample = invalid;
+        }
+    }
+}
+
 /// Where a trajectory continues: the offset from one end to the other in
 /// field units (dav2d `refmvs_traj_map`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +67,8 @@ pub struct Projected {
     distances: Vec<u8>,
     /// Per rank, the trajectory vector of each unit of the row.
     trajectories: Vec<Vec<TemporalMv>>,
-    /// Per column group and rank, each unit's link.
-    links: Vec<Vec<Vec<TrajectoryLink>>>,
+    /// Per rank and unit, the links to the three adjacent column groups.
+    links: Vec<Vec<[TrajectoryLink; MAP_GROUPS]>>,
 }
 
 impl Projected {
@@ -74,7 +85,7 @@ impl Projected {
         let (trajectories, links) = if params.trajectories && params.use_motion_fields {
             (
                 vec![vec![TemporalMv::INVALID; row_units]; REFERENCES],
-                vec![vec![vec![TrajectoryLink::INVALID; row_units]; REFERENCES]; MAP_GROUPS],
+                vec![vec![[TrajectoryLink::INVALID; MAP_GROUPS]; row_units]; REFERENCES],
             )
         } else {
             (Vec::new(), Vec::new())
@@ -122,30 +133,39 @@ impl Projected {
         (y & (self.superblock8 - 1)) * self.stride
     }
 
-    /// Clear the trajectories and maps of the row.
-    fn clear_trajectories(&mut self, (rows, columns): ((usize, usize), (usize, usize))) {
+    /// Clear the trajectories and maps across a superblock row.
+    fn clear_trajectories(&mut self, rows: (usize, usize)) {
         let step = self.step;
-        // The projection block of the load (8 units per sample step), not
-        // the trajectories' reach.
+        let columns = self.columns8;
         let block = PROJECTION_BLOCK * step;
-        let mask = block - 1;
+        // The previous-group links start one projection block in. The
+        // next-group links end one block before the aligned right edge.
+        let previous = columns.min(block);
+        let next = columns.next_multiple_of(block).saturating_sub(block);
         for n in 0..REFERENCES {
+            let trajectory = &mut self.trajectories[n];
+            let links = &mut self.links[n];
             for y in (rows.0..rows.1).step_by(step) {
                 let row = (y - rows.0) * self.stride;
-                for x in (columns.0..columns.1).step_by(step) {
-                    self.trajectories[n][row + x] = TemporalMv::INVALID;
-                }
-            }
-            for k in 0..MAP_GROUPS {
-                let shift = (k as isize - 1) * block as isize;
-                let start = (columns.0 as isize - shift).max(0) as usize;
-                let end =
-                    (((columns.1 + mask) & !mask) as isize - shift).min(self.columns8 as isize);
-                for y in (rows.0..rows.1).step_by(step) {
-                    let row = (y - rows.0) * self.stride;
-                    for x in (start as isize..end).step_by(step) {
-                        self.links[k][n][row + x as usize] = TrajectoryLink::INVALID;
+                clear_samples(
+                    &mut trajectory[row..row + columns],
+                    step,
+                    TemporalMv::INVALID,
+                );
+                let (left, tail) = links[row..row + columns].split_at_mut(previous);
+                let (middle, right) = tail.split_at_mut(next.saturating_sub(previous));
+                if next == 0 {
+                    for cell in left.iter_mut().step_by(step) {
+                        cell[1] = TrajectoryLink::INVALID;
                     }
+                } else {
+                    for cell in left.iter_mut().step_by(step) {
+                        cell[1..].fill(TrajectoryLink::INVALID);
+                    }
+                }
+                clear_samples(middle, step, [TrajectoryLink::INVALID; MAP_GROUPS]);
+                for cell in right.iter_mut().step_by(step) {
+                    cell[..2].fill(TrajectoryLink::INVALID);
                 }
             }
         }
@@ -224,13 +244,16 @@ impl FrameMotion {
         );
         let groups = (columns.0 >> shift, (columns.1 - 1) >> shift);
         for y in (rows.0..rows.1).step_by(step) {
-            for x in (columns.0..columns.1).step_by(step) {
-                field.vectors[y * stride + x] = TemporalMv::INVALID;
-            }
+            let row = y * stride;
+            clear_samples(
+                &mut field.vectors[row + columns.0..row + columns.1],
+                step,
+                TemporalMv::INVALID,
+            );
         }
         let trajectories = !field.trajectories.is_empty();
         if trajectories {
-            field.clear_trajectories((rows, columns));
+            field.clear_trajectories(rows);
         }
         for projection in &self.projections {
             if projection.to_current == INVALID_DISTANCE {
@@ -281,8 +304,12 @@ fn project_unit(
     if trajectories && let Some(far_rank) = far_rank {
         intersect(field, (projection.reference, far_rank), (y, x), mv, groups);
     }
-    let to_reference = i32::from(projection.to_reference[far]);
-    if to_reference == 0 || usize::from(to_reference < 0) != projection.side {
+    // A reference at the projected reference's own order projects either
+    // side (dav2d 54856741).
+    let Some(to_reference) = projection.to_reference[far].map(i32::from) else {
+        return;
+    };
+    if to_reference != 0 && usize::from(to_reference < 0) != projection.side {
         return;
     }
     let mv1 = scale_temporal(mv, -projection.factors[far][0]);
@@ -394,7 +421,7 @@ impl Projected {
     fn link(&mut self, rank: usize, (y1, x1): (i32, i32), (y2, x2): (i32, i32)) {
         let k = self.group(x1) - self.group(x2) + 1;
         let at = self.unit(y2, x2);
-        self.links[k as usize][rank][at] = TrajectoryLink {
+        self.links[rank][at][k as usize] = TrajectoryLink {
             y: (y1 - y2) as i8,
             x: (x1 - x2) as i8,
         };
@@ -427,7 +454,7 @@ fn intersect_forward(
     let mask = !(field.step as i32 - 1);
     let at = field.unit(y, x);
     for k in field.link_groups(groups, x) {
-        let link = field.links[k as usize][from][at];
+        let link = field.links[from][at][k as usize];
         if link == TrajectoryLink::INVALID {
             continue;
         }
@@ -477,7 +504,7 @@ fn intersect_backward(
     let (y1, x1) = (y1 & mask, x1 & mask);
     let at1 = field.unit(y1, x1);
     for k in field.link_groups(groups, x1) {
-        let link = field.links[k as usize][to][at1];
+        let link = field.links[to][at1][k as usize];
         if link == TrajectoryLink::INVALID {
             continue;
         }

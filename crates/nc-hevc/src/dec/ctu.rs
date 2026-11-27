@@ -3,6 +3,12 @@
 //! units (with PCM and lossless bypass), prediction units, transform trees
 //! with QP deltas (§8.6.1), and the reconstruction of each block (§8.4,
 //! §8.5, §8.6).
+//!
+//! Chroma follows `ChromaArrayType` (§7.4.3.2.1): none in 4:0:0; in 4:2:2
+//! each chroma transform block is two square blocks stacked vertically,
+//! each with its own `cbf_cb` / `cbf_cr`, and chroma intra modes map
+//! through Table 8-3; in 4:4:4 chroma transform blocks are the luma size
+//! (4x4 included) and an `NxN` intra coding unit codes four chroma modes.
 
 #![allow(
     clippy::many_single_char_names,
@@ -12,7 +18,7 @@
 use nc_common::decode::{BitReader, DecodeError};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
-use nc_common::{BitDepth, BitDepths, Picture, PlaneIndex};
+use nc_common::{BitDepths, ChromaFormat, Picture, PlaneIndex};
 use nc_dsp::{Dsp, Pixel};
 use nc_encoder::Mv;
 
@@ -21,8 +27,9 @@ use super::ctx::{self, Contexts};
 use super::loop_filter::LoopFilter;
 use super::mc::{self, Source};
 use super::mvpred::{Collocated, Predictor, Pu};
-use super::params::{FLAT_SCALE, MAX_QP, Pps, ScalingLists, Sps, qp_bd_offset};
+use super::params::{FLAT_SCALE, MAX_QP, Pps, ScalingLists, Sps, chroma_qp, qp_bd_offset};
 use super::picture::{BlockInfo, Edges, GRID_LOG2, PictureState, PuMotion, flag};
+use super::residual::{Coded, LOG2_TRANSFORM_RANGE, RangeOptions};
 use super::sao;
 use super::slice::{SliceHeader, SliceSegment, SliceType};
 
@@ -30,8 +37,9 @@ use super::slice::{SliceHeader, SliceSegment, SliceType};
 // out without it.
 #[cfg(feature = "analysis")]
 mod analysis;
-use crate::predict::{self, Refs, Sides};
-use crate::quant::{MAX_CHROMA_QPI, chroma_qp_table};
+use crate::inter::Component;
+use crate::predict::{self, IntraFilters, Refs, Sides};
+use crate::quant::MAX_CHROMA_QPI;
 use crate::scan::{ScanKind, Scans};
 
 /// `levelScale` (§8.6.3).
@@ -46,14 +54,26 @@ const QP_DELTA_BELOW: i32 = 26;
 const QP_DELTA_ABOVE: i32 = 25;
 /// QP values wrap modulo this plus `QpBdOffsetY` (equation 8-283).
 const QP_WRAP: i32 = MAX_QP + 1;
-/// Transform-skip residuals are scaled up by 7 bits (§8.6.4.2, v1).
-const TRANSFORM_SKIP_SHIFT: u32 = 7;
+/// `tsShift = 5 + Log2(nTbS)`: transform-skip residuals are scaled up to
+/// the inverse transform's scale (§8.6.4.2; 7 for 4x4 as in version 1).
+const TRANSFORM_SKIP_SHIFT_BELOW: u32 = 5;
+/// The smallest transform, the only one scaling lists apply to when
+/// transform-skipped and the one `transform_skip_rotation_enabled_flag`
+/// rotates.
+const MIN_TRANSFORM_LOG2: u8 = 2;
+const ROTATED_SIZE: usize = 1 << MIN_TRANSFORM_LOG2;
+/// Cross-component prediction scales by `ResScaleVal / 8` (§7.3.8.12).
+const CROSS_COMPONENT_SHIFT: u32 = 3;
+/// `log_res_scale_abs_plus1` is truncated unary with `cMax` 4 (§9.3.3).
+const MAX_LOG_RES_SCALE: u32 = 4;
 /// `bdShift = RESIDUAL_BITS − BitDepth` after the transform (or transform
 /// skip, §8.6.2).
 const RESIDUAL_BITS: u32 = 20;
 /// `bdShift = BitDepth + Log2(nTbS) − SCALING_SHIFT_BELOW` of the scaling
-/// process (§8.6.3: `+ 10 − 15`).
+/// process (§8.6.3: `+ 10 − 15`), and its `+ 10` before `−
+/// log2TransformRange` with extended precision.
 const SCALING_SHIFT_BELOW: u32 = 5;
+const SCALING_SHIFT_ABOVE: u32 = 10;
 
 /// `PartMode` (Table 7-10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,11 +133,124 @@ pub(super) struct SliceContext<'a, T: Pixel> {
     pub scans: &'a Scans,
     /// The SPS's depths as the instance sees them (`BitDepths::of`).
     pub depths: BitDepths,
+    /// Which instance of the residual parser blocks take.
+    pub residual: ResidualPath,
+    /// `Log2MaxTransformSkipSize` where `transform_skip_enabled_flag`, else
+    /// 0 (no block codes `transform_skip_flag`).
+    pub transform_skip_log2: u8,
+    /// Residual arithmetic beyond 16 bits, `None` for the 16-bit path.
+    pub wide: Option<WideRange>,
+    /// The chroma geometry of the SPS.
+    pub chroma: ChromaLayout,
+}
+
+/// The residual parser instance of a slice's blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResidualPath {
+    /// Version 1: no range extension tool.
+    Main,
+    /// Range extension tools, 16-bit levels.
+    Range,
+    /// [`WideRange`] levels.
+    Wide,
+}
+
+impl ResidualPath {
+    pub fn of(sps: &Sps, pps: &Pps) -> Self {
+        if WideRange::of(sps).is_some() {
+            Self::Wide
+        } else if sps.range.residual_tools()
+            || pps.range.log2_max_transform_skip > MIN_TRANSFORM_LOG2
+        {
+            Self::Range
+        } else {
+            Self::Main
+        }
+    }
+}
+
+/// The chroma geometry of a sequence (`ChromaArrayType`, §7.4.3.2.1),
+/// resolved once per slice for the block loops.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ChromaLayout {
+    /// The chroma planes' format, `None` for 4:0:0.
+    format: Option<ChromaFormat>,
+    /// Log2 `SubWidthC`, `SubHeightC`.
+    sx: usize,
+    sy: usize,
+    /// The smallest luma transform block coded with its own chroma blocks
+    /// (8x8; 4x4 in 4:4:4; none in 4:0:0): smaller ones share their
+    /// parent's (§7.3.8.8, §7.3.8.10).
+    own_min_log2: u8,
+    /// Chroma blocks per component of a transform unit: two in 4:2:2.
+    blocks: usize,
+    /// 4:4:4: chroma takes luma's mode-dependent scans and reference
+    /// filtering.
+    full: bool,
+    /// How inter prediction addresses the chroma planes, `None` in 4:0:0.
+    component: Option<Component>,
+    /// The intra filters of luma and chroma blocks (§8.4.4.2), before
+    /// `disableIntraBoundaryFilter`.
+    intra_filters: [IntraFilters; 2],
+}
+
+/// `own_min_log2` of 4:0:0: no transform block has chroma.
+const NO_CHROMA_LOG2: u8 = u8::MAX;
+/// `own_min_log2` of the subsampled formats and of 4:4:4.
+const SUBSAMPLED_CHROMA_MIN_LOG2: u8 = 3;
+const FULL_CHROMA_MIN_LOG2: u8 = 2;
+
+impl ChromaLayout {
+    pub fn of(sps: &Sps) -> Self {
+        let format = sps.chroma;
+        let (sx, sy) = format.map_or((0, 0), ChromaFormat::subsampling);
+        let full = format == Some(ChromaFormat::Yuv444);
+        let smoothing = !sps.range.intra_smoothing_disabled;
+        let filters = |luma: bool| IntraFilters {
+            smooth: (luma || full) && smoothing,
+            strong: luma && sps.strong_intra_smoothing,
+            dc_edges: luma,
+            angular_edges: luma,
+        };
+        Self {
+            format,
+            sx,
+            sy,
+            own_min_log2: match format {
+                None => NO_CHROMA_LOG2,
+                Some(_) if full => FULL_CHROMA_MIN_LOG2,
+                Some(_) => SUBSAMPLED_CHROMA_MIN_LOG2,
+            },
+            blocks: if format == Some(ChromaFormat::Yuv422) {
+                2
+            } else {
+                1
+            },
+            full,
+            component: format.map(Component::chroma),
+            intra_filters: [filters(true), filters(false)],
+        }
+    }
 }
 
 impl<T: Pixel> SliceContext<'_, T> {
     fn scaling(&self) -> Option<&ScalingLists> {
         self.pps.scaling.as_ref().or(self.sps.scaling.as_ref())
+    }
+
+    /// `ScalingFactor` of a block (`kind`: intra, transform skip), `None`
+    /// for the flat 16: without scaling lists, and for transform-skip
+    /// blocks above 4x4 (§8.6.4.2: m = 16).
+    fn scaling_factors(
+        &self,
+        log2: u8,
+        c: usize,
+        (intra, transform_skip): (bool, bool),
+    ) -> Option<&[u8]> {
+        let matrix = if intra { 0 } else { 3 } + c;
+        self.scaling()
+            .filter(|_| !transform_skip || log2 == MIN_TRANSFORM_LOG2)
+            .map(|s| s.factors(log2, matrix))
     }
 
     /// `initType` (§9.3.2.2).
@@ -170,10 +303,114 @@ struct Cu {
     intra: bool,
     part: Part,
     bypass: bool,
-    /// `IntraPredModeY` of the four `PART_NxN` partitions (all equal otherwise),
-    /// and `IntraPredModeC`.
+    /// `IntraPredModeY` and `IntraPredModeC` of the four `PART_NxN`
+    /// partitions (all equal otherwise; chroma differs only in 4:4:4).
     luma_modes: [u8; 4],
-    chroma_mode: u8,
+    chroma_modes: [u8; 4],
+    /// `intra_chroma_pred_mode` is 4 (DM) per partition: cross-component
+    /// prediction applies (§7.3.8.12).
+    chroma_dm: [bool; 4],
+}
+
+/// What a block's residual has to do with cross-component prediction
+/// (§7.3.8.12): nothing, kept for the chroma blocks of its transform unit
+/// (luma, when the PPS enables the tool), or scaled into a chroma
+/// residual (`ResScaleVal`, not 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrossComponent {
+    None,
+    KeepLuma,
+    Scale(i32),
+}
+
+/// Where a block's residual comes from in [`SegmentDecoder::reconstruct_general`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResidualSource {
+    /// No coded residual (a chroma block of cross-component prediction).
+    Zero,
+    /// `cu_transquant_bypass_flag`: the levels.
+    Bypass,
+    TransformSkip,
+    Transform(nc_dsp::HevcTransform),
+}
+
+/// The direction RDPCM accumulates an untransformed residual in (§8.6.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rdpcm {
+    Horizontal,
+    Vertical,
+}
+
+/// Residual arithmetic beyond the 16-bit kernels (§7.4.9.11, §8.6.2 to
+/// §8.6.4): with `extended_precision_processing_flag`, or samples deeper
+/// than 12 bits. Levels are `i32` and the inverse transform is the 64-bit
+/// normative one ([`crate::transform::inverse_extended`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct WideRange {
+    /// `extended_precision_processing_flag`.
+    extended: bool,
+    /// `log2TransformRange` of luma and chroma: `CoeffMin = −2^range`.
+    log2_range: [u32; 2],
+    /// The inverse transform's second shift of luma and chroma: `Max(20 −
+    /// BitDepth, extended ? 11 : 0)`.
+    second_shift: [u32; 2],
+}
+
+/// The deepest samples the 16-bit residual path takes (the depth its
+/// kernels and transform-skip shifts are sized for).
+const NARROW_MAX_BIT_DEPTH: u32 = 12;
+/// `log2TransformRange = Max(15, BitDepth + EXTENDED_RANGE_ABOVE_DEPTH)`
+/// with extended precision (§7.4.9.11).
+const EXTENDED_RANGE_ABOVE_DEPTH: u32 = 6;
+/// The smallest second inverse-transform shift with extended precision
+/// (§8.6.4.2).
+const EXTENDED_MIN_SECOND_SHIFT: u32 = 11;
+
+impl WideRange {
+    /// The wide arithmetic of `sps`, `None` when the 16-bit path holds it.
+    pub fn of(sps: &Sps) -> Option<Self> {
+        let depths = [sps.depths.luma, sps.depths.chroma];
+        let extended = sps.range.extended_precision;
+        if !extended && depths.iter().all(|d| d.bits() <= NARROW_MAX_BIT_DEPTH) {
+            return None;
+        }
+        Some(Self {
+            extended,
+            log2_range: depths.map(|d| {
+                if extended {
+                    LOG2_TRANSFORM_RANGE.max(d.bits() + EXTENDED_RANGE_ABOVE_DEPTH)
+                } else {
+                    LOG2_TRANSFORM_RANGE
+                }
+            }),
+            second_shift: depths.map(|d| {
+                let min = if extended {
+                    EXTENDED_MIN_SECOND_SHIFT
+                } else {
+                    0
+                };
+                (RESIDUAL_BITS - d.bits()).max(min)
+            }),
+        })
+    }
+
+    /// `CoeffMin`, `CoeffMax` of component `c`.
+    fn coeff_range(self, c: usize) -> (i32, i32) {
+        let range = self.log2_range[usize::from(c > 0)];
+        (-(1 << range), (1 << range) - 1)
+    }
+
+    /// `tsShift` and `bdShift` of a transform-skip block of side `2^log2`
+    /// in component `c` (§8.6.4.2).
+    fn transform_skip_shifts(self, c: usize, log2: u8) -> (u32, u32) {
+        let second = self.second_shift[usize::from(c > 0)];
+        let base = if self.extended {
+            TRANSFORM_SKIP_SHIFT_BELOW.min(second - 2)
+        } else {
+            TRANSFORM_SKIP_SHIFT_BELOW
+        };
+        (base + u32::from(log2), second)
+    }
 }
 
 /// A node of the transform tree (§7.3.8.8).
@@ -187,7 +424,17 @@ struct TuNode {
     depth: u8,
     blk_idx: usize,
     /// The parent's `cbf_cb`, `cbf_cr`.
-    parent_cbf: [bool; 2],
+    parent_cbf: ChromaCbf,
+}
+
+/// `cbf_cb` and `cbf_cr` of a transform node: per component, its top and
+/// (4:2:2 only) bottom chroma block.
+type ChromaCbf = [[bool; 2]; 2];
+
+/// Whether any chroma block of a node is coded.
+#[inline]
+fn any_chroma(cbf: ChromaCbf) -> bool {
+    cbf[0][0] || cbf[0][1] || cbf[1][0] || cbf[1][1]
 }
 
 /// Working memory of block decoding, kept by the decoder so that no
@@ -199,8 +446,15 @@ pub(super) struct Scratch<T: Pixel> {
     /// Parsed, then scaled, levels: 16 bits by §7.4.9.11 (`CoeffMinY` to
     /// `CoeffMaxY`) and §8.6.3 (the scaled values' clamp).
     levels: Vec<i16>,
+    /// `levels` of [`WideRange`] streams.
+    wide_levels: Vec<i32>,
     positions: Vec<u16>,
-    residual: Vec<i16>,
+    /// Residuals built in full (`reconstruct_general`), and the luma one
+    /// cross-component prediction reads.
+    residual: Vec<i32>,
+    luma_residual: Vec<i32>,
+    /// An inverse transform's output before it is widened into `residual`.
+    transformed: Vec<i16>,
     pred: Vec<T>,
     /// Intra reference samples, refilled per block.
     refs: Refs<T>,
@@ -214,8 +468,11 @@ impl<T: Pixel> Default for Scratch<T> {
     fn default() -> Self {
         Self {
             levels: vec![0; MAX_COEFFS],
+            wide_levels: vec![0; MAX_COEFFS],
             positions: Vec::with_capacity(MAX_COEFFS),
             residual: vec![0; MAX_COEFFS],
+            luma_residual: vec![0; MAX_COEFFS],
+            transformed: vec![0; MAX_COEFFS],
             pred: vec![T::default(); MAX_COEFFS],
             refs: Refs::default(),
             buffers: mc::Buffers::default(),
@@ -243,6 +500,8 @@ pub(super) fn decode_segment<T: Pixel>(
         qg: QuantGroup::default(),
         last_qp: cx.header.qp,
         qp: cx.header.qp,
+        chroma_qp_offset: [0; 2],
+        chroma_qp_offset_coded: false,
         s: scratch,
         #[cfg(feature = "analysis")]
         analysis: analysis::Analysis::default(),
@@ -260,6 +519,10 @@ struct SegmentDecoder<'c, 'a, T: Pixel> {
     last_qp: i32,
     /// `QpY` of the current coding unit.
     qp: i32,
+    /// `CuQpOffsetCb`, `CuQpOffsetCr` (§7.4.9.14), and whether the current
+    /// chroma QP offset group coded them (`IsCuChromaQpOffsetCoded`).
+    chroma_qp_offset: [i32; 2],
+    chroma_qp_offset_coded: bool,
     s: &'c mut Scratch<T>,
     /// What the current units' analysis records collect.
     #[cfg(feature = "analysis")]
@@ -401,6 +664,7 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
                     left,
                     up,
                     enabled: header.sao,
+                    log2_offset_scale: self.cx.pps.range.log2_sao_offset_scale,
                 },
             );
             #[cfg(feature = "analysis")]
@@ -432,6 +696,13 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         let qg_log2 = sps.log2_ctb - self.cx.pps.cu_qp_delta_depth.unwrap_or(0);
         if log2 >= qg_log2 {
             self.start_quant_group((x, y));
+        }
+        if self.cx.header.chroma_qp_offsets
+            && let Some(offsets) = &self.cx.pps.range.chroma_qp_offsets
+            && log2 >= sps.log2_ctb - offsets.depth
+        {
+            // A chroma QP offset group starts (§7.3.8.4).
+            self.chroma_qp_offset_coded = false;
         }
         if split {
             let half = size / 2;
@@ -551,7 +822,8 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
             part: Part::P2Nx2N,
             bypass,
             luma_modes: [predict::DC; 4],
-            chroma_mode: predict::DC,
+            chroma_modes: [predict::DC; 4],
+            chroma_dm: [false; 4],
         };
         if !skip {
             cu.intra = !inter_slice || e.bin(self.ctx.at(ctx::PRED_MODE, 0));
@@ -568,6 +840,7 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         }
         if bypass {
             flags |= flag::NO_FILTER;
+            self.pic.filter_exempt = true;
         }
         let info = BlockInfo {
             slice,
@@ -683,22 +956,24 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         let start = e.next_byte();
         let mut r = BitReader::new(data.get(start..).ok_or(DecodeError::Truncated)?);
         let size = 1usize << cu.log2;
-        for (c, plane) in PlaneIndex::ALL.into_iter().enumerate() {
-            let (n, bits) = if c == 0 {
-                (size, pcm.bit_depth_luma)
+        let planes = if self.cx.chroma.format.is_some() {
+            3
+        } else {
+            1
+        };
+        for (c, plane) in PlaneIndex::ALL.into_iter().enumerate().take(planes) {
+            let bits = if c == 0 {
+                pcm.bit_depth_luma
             } else {
-                (size / 2, pcm.bit_depth_chroma)
+                pcm.bit_depth_chroma
             };
-            let (px, py) = if c == 0 {
-                (cu.x, cu.y)
-            } else {
-                (cu.x / 2, cu.y / 2)
-            };
+            let (sx, sy) = self.subsampling(c);
+            let (px, py, w, h) = (cu.x >> sx, cu.y >> sy, size >> sx, size >> sy);
             // `recSamples = pcm_sample << (BitDepth − PcmBitDepth)` (eq. 8-7).
             let depth = self.cx.depths.plane(c).bits();
             let mut view = self.pic.samples.plane_mut(plane).view_mut();
-            for row in 0..n {
-                let line = &mut view.row_mut(py + row)[px..px + n];
+            for row in 0..h {
+                let line = &mut view.row_mut(py + row)[px..px + w];
                 for s in line {
                     *s = T::from_i32((r.read_bits(bits)? << (depth - bits)) as i32);
                 }
@@ -708,6 +983,7 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         let mut flags = 0;
         if pcm.loop_filter_disabled {
             flags |= flag::NO_FILTER;
+            self.pic.filter_exempt = true;
         }
         self.pic
             .fill((cu.x, cu.y), (size, size), |b| b.flags |= flags);
@@ -758,12 +1034,32 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         if parts == 1 {
             cu.luma_modes = [cu.luma_modes[0]; 4];
         }
-        let chroma = if e.bin(self.ctx.at(ctx::CHROMA_PRED, 0)) {
-            e.bypass_bits(2) as u8
-        } else {
-            predict::CHROMA_DM
-        };
-        cu.chroma_mode = predict::chroma_mode(chroma, cu.luma_modes[0]);
+        if let Some(format) = self.cx.sps.chroma {
+            // 4:4:4 codes a chroma mode per partition, the others one.
+            let chroma_parts = if format == ChromaFormat::Yuv444 {
+                parts
+            } else {
+                1
+            };
+            for i in 0..chroma_parts {
+                let coded = if e.bin(self.ctx.at(ctx::CHROMA_PRED, 0)) {
+                    e.bypass_bits(2) as u8
+                } else {
+                    predict::CHROMA_DM
+                };
+                cu.chroma_dm[i] = coded == predict::CHROMA_DM;
+                let mode = predict::chroma_mode(coded, cu.luma_modes[i]);
+                cu.chroma_modes[i] = if format == ChromaFormat::Yuv422 {
+                    predict::chroma_mode_422(mode)
+                } else {
+                    mode
+                };
+            }
+            if chroma_parts == 1 {
+                cu.chroma_modes = [cu.chroma_modes[0]; 4];
+                cu.chroma_dm = [cu.chroma_dm[0]; 4];
+            }
+        }
         #[cfg(feature = "analysis")]
         if self.s.stats.is_some() {
             self.intra_records(cu, parts, pb);
@@ -988,6 +1284,7 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         mc::predict(
             self.cx.dsp,
             self.cx.depths,
+            self.cx.chroma.component,
             &mut self.s.buffers,
             &mut self.pic.samples,
             (x, y),
@@ -1007,7 +1304,7 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
             log2: cu.log2,
             depth: 0,
             blk_idx: 0,
-            parent_cbf: [true; 2],
+            parent_cbf: [[true, false]; 2],
         };
         self.transform_tree(e, cu, node)
     }
@@ -1037,14 +1334,21 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         } else {
             log2 > sps.log2_max_tb || (intra_split && node.depth == 0) || inter_split
         };
-        let mut cbf = [false; 2];
-        if log2 > 2 {
-            for (c, f) in cbf.iter_mut().enumerate() {
-                if node.depth == 0 || node.parent_cbf[c] {
-                    *f = e.bin(self.ctx.at(ctx::CBF_CHROMA, usize::from(node.depth)));
+        let mut cbf: ChromaCbf = [[false; 2]; 2];
+        let layout = &self.cx.chroma;
+        if log2 >= layout.own_min_log2 {
+            // 4:2:2 codes the bottom block's flag where its blocks are
+            // coded: unsplit, or split into 4x4 luma blocks (§7.3.8.8).
+            let two = layout.blocks == 2 && (!split || log2 == SUBSAMPLED_CHROMA_MIN_LOG2);
+            let inc = usize::from(node.depth);
+            for (f, parent) in cbf.iter_mut().zip(node.parent_cbf) {
+                if node.depth == 0 || parent[0] || parent[1] {
+                    f[0] = e.bin(self.ctx.at(ctx::CBF_CHROMA, inc));
+                    f[1] = two && e.bin(self.ctx.at(ctx::CBF_CHROMA, inc));
                 }
             }
-        } else {
+        } else if layout.format.is_some() {
+            // 4x4 luma blocks: their chroma is their parent's.
             cbf = node.parent_cbf;
         }
         if split {
@@ -1066,7 +1370,7 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
             }
             return Ok(());
         }
-        let luma_cbf = if cu.intra || node.depth != 0 || cbf[0] || cbf[1] {
+        let luma_cbf = if cu.intra || node.depth != 0 || any_chroma(cbf) {
             e.bin(self.ctx.at(ctx::CBF_LUMA, usize::from(node.depth == 0)))
         } else {
             true
@@ -1081,14 +1385,19 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         cu: &Cu,
         node: TuNode,
         luma_cbf: bool,
-        cbf: [bool; 2],
+        cbf: ChromaCbf,
     ) -> Result<(), DecodeError> {
         let size = 1usize << node.log2;
-        if (luma_cbf || cbf[0] || cbf[1])
-            && self.cx.pps.cu_qp_delta_depth.is_some()
-            && !self.qg.coded
-        {
+        let chroma_cbf = any_chroma(cbf);
+        if (luma_cbf || chroma_cbf) && self.cx.pps.cu_qp_delta_depth.is_some() && !self.qg.coded {
             self.cu_qp_delta(e)?;
+        }
+        if self.cx.header.chroma_qp_offsets
+            && chroma_cbf
+            && !cu.bypass
+            && !self.chroma_qp_offset_coded
+        {
+            self.cu_chroma_qp_offset(e);
         }
         if node.depth > 0 {
             // The root's edges are its coding block's, already marked.
@@ -1108,38 +1417,111 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         if self.s.stats.is_some() {
             self.start_tu(e);
         }
-        self.block(e, cu, (node.x, node.y), node.log2, 0, luma_mode, luma_cbf)?;
-        let chroma_mode = cu.intra.then_some(cu.chroma_mode);
-        if node.log2 > 2 {
-            for c in 1..3 {
-                self.block(
-                    e,
-                    cu,
-                    (node.x / 2, node.y / 2),
-                    node.log2 - 1,
-                    c,
-                    chroma_mode,
-                    cbf[c - 1],
-                )?;
-            }
-        } else if node.blk_idx == 3 {
-            for c in 1..3 {
-                self.block(
-                    e,
-                    cu,
-                    (node.base.0 / 2, node.base.1 / 2),
-                    2,
-                    c,
-                    chroma_mode,
-                    cbf[c - 1],
-                )?;
+        let cross_component = self.cx.pps.range.cross_component_prediction;
+        let keep_luma = if cross_component {
+            CrossComponent::KeepLuma
+        } else {
+            CrossComponent::None
+        };
+        self.block(
+            e,
+            cu,
+            (node.x, node.y),
+            node.log2,
+            0,
+            luma_mode,
+            (luma_cbf, keep_luma),
+        )?;
+        let layout = &self.cx.chroma;
+        if layout.format.is_some() {
+            let chroma_mode = cu
+                .intra
+                .then(|| cu.chroma_modes[if cu.part == Part::PNxN { quadrant } else { 0 }]);
+            let (sx, sy) = (layout.sx, layout.sy);
+            // Chroma blocks of 4x4 luma blocks (4:2:0, 4:2:2) are coded
+            // with the last of the four, at their parent's position.
+            let at = if node.log2 >= layout.own_min_log2 {
+                Some(((node.x >> sx, node.y >> sy), node.log2 - sx as u8))
+            } else {
+                (node.blk_idx == 3).then_some(((node.base.0 >> sx, node.base.1 >> sy), 2))
+            };
+            if let Some(((xc, yc), log2c)) = at {
+                let blocks = layout.blocks;
+                // §7.3.8.10: luma coded, and inter or DM chroma.
+                let predicted = cross_component
+                    && luma_cbf
+                    && (!cu.intra
+                        || cu.chroma_dm[if cu.part == Part::PNxN { quadrant } else { 0 }]);
+                for c in 1..3 {
+                    let cross = if predicted {
+                        match self.cross_component_scale(e, c - 1) {
+                            0 => CrossComponent::None,
+                            scale => CrossComponent::Scale(scale),
+                        }
+                    } else {
+                        CrossComponent::None
+                    };
+                    for (t, &flag) in cbf[c - 1][..blocks].iter().enumerate() {
+                        let y = yc + (t << log2c);
+                        let coded = (flag, cross);
+                        self.block(e, cu, (xc, y), log2c, c, chroma_mode, coded)?;
+                    }
+                }
             }
         }
         #[cfg(feature = "analysis")]
         if self.s.stats.is_some() {
-            self.tu_record(e, cu, node, (luma_cbf, cbf));
+            let coded = cbf.map(|f| f.contains(&true));
+            self.tu_record(e, cu, node, (luma_cbf, coded));
         }
         Ok(())
+    }
+
+    /// `cu_chroma_qp_offset_flag` and `cu_chroma_qp_offset_idx`
+    /// (§7.3.8.10, semantics §7.4.9.14): `CuQpOffsetCb`, `CuQpOffsetCr`.
+    fn cu_chroma_qp_offset(&mut self, e: &mut Engine<'_>) {
+        let list = &self
+            .cx
+            .pps
+            .range
+            .chroma_qp_offsets
+            .as_ref()
+            .expect("the slice enables chroma QP offsets with the PPS lists")
+            .list;
+        self.chroma_qp_offset = if e.bin(self.ctx.at(ctx::CU_CHROMA_QP_OFFSET_FLAG, 0)) {
+            // Truncated unary, every bin on one context.
+            let mut index = 0;
+            while index + 1 < list.len() && e.bin(self.ctx.at(ctx::CU_CHROMA_QP_OFFSET_IDX, 0)) {
+                index += 1;
+            }
+            list[index]
+        } else {
+            [0; 2]
+        };
+        self.chroma_qp_offset_coded = true;
+    }
+
+    /// `cross_comp_pred(x0, y0, c)` (§7.3.8.12): `ResScaleVal` of chroma
+    /// component `c` (0: Cb, 1: Cr).
+    fn cross_component_scale(&mut self, e: &mut Engine<'_>, c: usize) -> i32 {
+        let mut log_plus1 = 0;
+        while log_plus1 < MAX_LOG_RES_SCALE
+            && e.bin(
+                self.ctx
+                    .at(ctx::LOG_RES_SCALE_ABS, 4 * c + log_plus1 as usize),
+            )
+        {
+            log_plus1 += 1;
+        }
+        if log_plus1 == 0 {
+            return 0;
+        }
+        let magnitude = 1 << (log_plus1 - 1);
+        if e.bin(self.ctx.at(ctx::RES_SCALE_SIGN, c)) {
+            -magnitude
+        } else {
+            magnitude
+        }
     }
 
     /// `cu_qp_delta_abs` and `cu_qp_delta_sign_flag` (§7.3.8.14).
@@ -1173,7 +1555,8 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
     }
 
     /// Predict (intra), parse and reconstruct one transform block of
-    /// component `c` at plane position `(x, y)`.
+    /// component `c` at plane position `(x, y)`; `cross`: its part in
+    /// cross-component prediction.
     #[allow(clippy::too_many_arguments)]
     fn block(
         &mut self,
@@ -1183,120 +1566,308 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         log2: u8,
         c: usize,
         intra_mode: Option<u8>,
-        coded: bool,
+        (coded, cross): (bool, CrossComponent),
     ) -> Result<(), DecodeError> {
         let n = 1usize << log2;
         if let Some(mode) = intra_mode {
-            self.intra_predict((x, y), n, c, mode);
+            self.intra_predict(cu, (x, y), n, c, mode);
         }
         if !coded {
+            if let CrossComponent::Scale(_) = cross {
+                // The chroma residual is the luma one's scaled share.
+                let source = ResidualSource::Zero;
+                self.reconstruct_general(cu, (x, y), log2, c, source, None, cross);
+            }
             return Ok(());
         }
-        let scan_kind =
-            intra_mode.map_or(ScanKind::Diagonal, |m| ScanKind::for_intra(m, log2, c == 0));
+        // 4:4:4 chroma takes luma's mode-dependent scans (4x4 and 8x8,
+        // §7.4.9.11).
+        let luma_scans = c == 0 || self.cx.chroma.full;
+        let scan_kind = intra_mode.map_or(ScanKind::Diagonal, |m| {
+            ScanKind::for_intra(m, log2, luma_scans)
+        });
         let scan = self.cx.scans.get(log2, scan_kind);
         let pps = self.cx.pps;
         let options = super::residual::Options {
             luma: c == 0,
             sign_hiding: pps.sign_hiding && !cu.bypass,
-            transform_skip: pps.transform_skip && !cu.bypass,
+            transform_skip: !cu.bypass && log2 <= self.cx.transform_skip_log2,
         };
         self.s.positions.clear();
         let count = n * n;
-        let skip = super::residual::read::<T>(
-            e,
-            &mut self.ctx,
-            scan,
-            options,
-            &mut self.s.levels[..count],
-            &mut self.s.positions,
-        );
-        let Ok(skip) = skip else {
-            // Keep the all-zero invariant for the next block.
-            for &p in &self.s.positions {
-                self.s.levels[usize::from(p)] = 0;
-            }
-            return skip.map(|_| ());
+        let parsed = if self.cx.residual == ResidualPath::Wide {
+            let range = self.range_options(cu, c, intra_mode);
+            super::residual::read::<T, true, i32>(
+                e,
+                &mut self.ctx,
+                scan,
+                (options, &range),
+                &mut self.s.wide_levels[..count],
+                &mut self.s.positions,
+            )
+        } else if self.cx.residual == ResidualPath::Range {
+            let range = self.range_options(cu, c, intra_mode);
+            super::residual::read::<T, true, i16>(
+                e,
+                &mut self.ctx,
+                scan,
+                (options, &range),
+                &mut self.s.levels[..count],
+                &mut self.s.positions,
+            )
+        } else {
+            super::residual::read::<T, false, i16>(
+                e,
+                &mut self.ctx,
+                scan,
+                (options, &RangeOptions::NONE),
+                &mut self.s.levels[..count],
+                &mut self.s.positions,
+            )
+        };
+        let Ok(parsed) = parsed else {
+            self.clear_levels();
+            return parsed.map(|_| ());
         };
         #[cfg(feature = "analysis")]
         if self.s.stats.is_some() {
-            self.note_block(skip);
+            self.note_block(parsed.transform_skip);
         }
-        self.reconstruct(cu, (x, y), log2, c, skip, intra_mode.is_some());
-        for &p in &self.s.positions {
-            self.s.levels[usize::from(p)] = 0;
-        }
+        self.reconstruct(cu, (x, y), log2, c, parsed, intra_mode, cross);
+        self.clear_levels();
         Ok(())
+    }
+
+    /// The range extension tools of a block of component `c` (intra with
+    /// `intra_mode`, else inter).
+    fn range_options(&self, cu: &Cu, c: usize, intra_mode: Option<u8>) -> RangeOptions {
+        let range = &self.cx.sps.range;
+        RangeOptions {
+            bypass: cu.bypass,
+            explicit_rdpcm: !cu.intra && range.explicit_rdpcm,
+            implicit_rdpcm: range.implicit_rdpcm
+                && matches!(intra_mode, Some(predict::HORIZONTAL | predict::VERTICAL)),
+            skip_context: range.transform_skip_context,
+            persistent_rice: range.persistent_rice_adaptation,
+            align: range.cabac_bypass_alignment,
+            limited_prefix: self.cx.wide.is_some_and(|w| w.extended),
+            log2_range: self
+                .cx
+                .wide
+                .map_or(LOG2_TRANSFORM_RANGE, |w| w.log2_range[usize::from(c > 0)]),
+        }
+    }
+
+    /// Keep the all-zero invariant of the level buffers for the next block.
+    fn clear_levels(&mut self) {
+        if self.cx.residual == ResidualPath::Wide {
+            for &p in &self.s.positions {
+                self.s.wide_levels[usize::from(p)] = 0;
+            }
+        } else {
+            for &p in &self.s.positions {
+                self.s.levels[usize::from(p)] = 0;
+            }
+        }
     }
 
     /// Scaling and transformation of the parsed levels (§8.6.2–§8.6.4),
     /// added to the prediction in the picture. DCT and DST blocks go
     /// through the DSP's fused inverse-and-add (all-zero, DC-only and
-    /// zero-region shortcuts inside); transform skip and lossless bypass,
-    /// both rare, build the residual here.
+    /// zero-region shortcuts inside); transform skip, lossless bypass and
+    /// residuals that cross-component prediction reads or changes, all
+    /// rare, build the residual first ([`Self::reconstruct_general`]).
+    #[allow(clippy::too_many_arguments)]
     fn reconstruct(
         &mut self,
         cu: &Cu,
         (x, y): (usize, usize),
         log2: u8,
         c: usize,
-        transform_skip: bool,
-        intra: bool,
+        parsed: Coded,
+        intra_mode: Option<u8>,
+        cross: CrossComponent,
     ) {
         let n = 1usize << log2;
         let count = n * n;
+        let intra = intra_mode.is_some();
+        let transform_skip = parsed.transform_skip;
+        let wide = self.cx.wide;
         let extent = if cu.bypass {
             (n, n)
+        } else if let Some(wide) = wide {
+            self.scale_wide_levels(log2, c, (intra, transform_skip), wide);
+            (n, n)
         } else {
-            self.scale_levels(log2, c, intra)
+            self.scale_levels(log2, c, intra, transform_skip)
         };
+        let source = if cu.bypass {
+            ResidualSource::Bypass
+        } else if transform_skip {
+            ResidualSource::TransformSkip
+        } else {
+            let kind =
+                crate::transform::kind(log2, intra && c == 0).expect("transform sizes 4..32");
+            if cross == CrossComponent::None && wide.is_none() {
+                let depth = self.cx.depths.plane(c);
+                let mut dst = self
+                    .pic
+                    .samples
+                    .plane_mut(PlaneIndex::ALL[c])
+                    .region_mut(x as isize, y as isize, n, n)
+                    .expect("transform blocks lie inside the picture");
+                self.cx.dsp.at(depth).hevc_inverse_add(
+                    kind,
+                    &self.s.levels[..count],
+                    extent,
+                    &mut dst,
+                );
+                return;
+            }
+            ResidualSource::Transform(kind)
+        };
+        // RDPCM of untransformed residuals (§8.6.2): implicit for intra
+        // modes 10 and 26, explicit for inter blocks.
+        let range = &self.cx.sps.range;
+        let rdpcm = if source == ResidualSource::Bypass || source == ResidualSource::TransformSkip {
+            match intra_mode {
+                Some(predict::HORIZONTAL) if range.implicit_rdpcm => Some(Rdpcm::Horizontal),
+                Some(predict::VERTICAL) if range.implicit_rdpcm => Some(Rdpcm::Vertical),
+                Some(_) => None,
+                None => parsed.explicit_rdpcm.map(|vertical| {
+                    if vertical {
+                        Rdpcm::Vertical
+                    } else {
+                        Rdpcm::Horizontal
+                    }
+                }),
+            }
+        } else {
+            None
+        };
+        self.reconstruct_general(cu, (x, y), log2, c, source, rdpcm, cross);
+    }
+
+    /// The residual of a block built in full, then added (`Clip1`):
+    /// transform skip (`tsShift = 5 + Log2(nTbS)`, `bdShift = 20 −
+    /// BitDepth`, §8.6.4.2), lossless bypass, or the inverse transform of
+    /// a block whose residual cross-component prediction reads; then the
+    /// 180° rotation of 4x4 intra residuals
+    /// (`transform_skip_rotation_enabled_flag`), RDPCM (§8.6.2) and
+    /// cross-component prediction (§8.6.6). Kept out of line: inlined
+    /// into the block decoder it pushed the residual parser out of it (+1 %
+    /// decode instructions, callgrind on a 720p stream of ours,
+    /// 2026-11-15).
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_general(
+        &mut self,
+        cu: &Cu,
+        (x, y): (usize, usize),
+        log2: u8,
+        c: usize,
+        source: ResidualSource,
+        rdpcm: Option<Rdpcm>,
+        cross: CrossComponent,
+    ) {
+        let n = 1usize << log2;
+        let count = n * n;
         let depth = self.cx.depths.plane(c);
+        let wide = self.cx.wide;
+        let levels = &self.s.levels[..count];
+        let wide_levels = &self.s.wide_levels[..count];
+        let residual = &mut self.s.residual[..count];
+        match source {
+            ResidualSource::Zero => residual.fill(0),
+            ResidualSource::Bypass | ResidualSource::TransformSkip => {
+                let rotate =
+                    self.cx.sps.range.transform_skip_rotation && n == ROTATED_SIZE && cu.intra;
+                let shifts = (source == ResidualSource::TransformSkip).then(|| match wide {
+                    Some(wide) => wide.transform_skip_shifts(c, log2),
+                    None => (
+                        TRANSFORM_SKIP_SHIFT_BELOW + u32::from(log2),
+                        RESIDUAL_BITS - depth.bits(),
+                    ),
+                });
+                if wide.is_some() {
+                    untransformed(wide_levels, residual, rotate, shifts);
+                } else {
+                    untransformed(levels, residual, rotate, shifts);
+                }
+            }
+            ResidualSource::Transform(kind) => {
+                if let Some(wide) = wide {
+                    let shift = wide.second_shift[usize::from(c > 0)];
+                    let range = wide.coeff_range(c);
+                    crate::transform::inverse_extended(kind, wide_levels, residual, range, shift);
+                } else {
+                    let transformed = &mut self.s.transformed[..count];
+                    self.cx
+                        .dsp
+                        .at(depth)
+                        .hevc_inverse(kind, levels, transformed);
+                    for (r, &t) in residual.iter_mut().zip(transformed.iter()) {
+                        *r = i32::from(t);
+                    }
+                }
+            }
+        }
+        match rdpcm {
+            Some(Rdpcm::Horizontal) => {
+                for row in residual.chunks_exact_mut(n) {
+                    for i in 1..n {
+                        row[i] += row[i - 1];
+                    }
+                }
+            }
+            Some(Rdpcm::Vertical) => {
+                for i in n..count {
+                    residual[i] += residual[i - n];
+                }
+            }
+            None => {}
+        }
+        match cross {
+            CrossComponent::None => {}
+            CrossComponent::KeepLuma => self.s.luma_residual[..count].copy_from_slice(residual),
+            CrossComponent::Scale(scale) => {
+                // rC += (ResScaleVal · ((rY << BitDepthC) >> BitDepthY)) >> 3.
+                let (luma_bits, chroma_bits) =
+                    (self.cx.depths.luma.bits(), self.cx.depths.chroma.bits());
+                // In 64 bits: a 16-bit residual shifted by 16 leaves i32.
+                for (r, &luma) in residual.iter_mut().zip(&self.s.luma_residual[..count]) {
+                    let aligned = (i64::from(luma) << chroma_bits) >> luma_bits;
+                    *r += ((i64::from(scale) * aligned) >> CROSS_COMPONENT_SHIFT) as i32;
+                }
+            }
+        }
         let mut dst = self
             .pic
             .samples
             .plane_mut(PlaneIndex::ALL[c])
             .region_mut(x as isize, y as isize, n, n)
             .expect("transform blocks lie inside the picture");
-        if !cu.bypass && !transform_skip {
-            let kind =
-                crate::transform::kind(log2, intra && c == 0).expect("transform sizes 4..32");
-            self.cx
-                .dsp
-                .at(depth)
-                .hevc_inverse_add(kind, &self.s.levels[..count], extent, &mut dst);
-            return;
+        for (row, line) in residual.chunks_exact(n).enumerate() {
+            for (s, &r) in dst.row_mut(row).iter_mut().zip(line) {
+                *s = depth.clip_to(s.to_i32() + r);
+            }
         }
-        let residual = &mut self.s.residual[..count];
-        untransformed(
-            &self.s.levels[..count],
-            residual,
-            cu.bypass,
-            &mut dst,
-            depth,
-        );
     }
 
     /// Scale the parsed levels in place (§8.6.3, `scaling_list_enabled`
     /// factors or the flat 16), visiting only the coded positions. Returns
     /// the rows and columns that hold them, for the inverse transform.
-    fn scale_levels(&mut self, log2: u8, c: usize, intra: bool) -> (usize, usize) {
+    fn scale_levels(
+        &mut self,
+        log2: u8,
+        c: usize,
+        intra: bool,
+        transform_skip: bool,
+    ) -> (usize, usize) {
         let depths = self.cx.depths;
-        // `qP` is `Qp′Y` or `Qp′Cb` / `Qp′Cr` (§8.6.1): the QP plus the
-        // component's `QpBdOffset`.
-        let qp = if c == 0 {
-            self.qp + qp_bd_offset(depths.luma)
-        } else {
-            let offset = if c == 1 {
-                self.cx.pps.cb_qp_offset + self.cx.header.cb_qp_offset
-            } else {
-                self.cx.pps.cr_qp_offset + self.cx.header.cr_qp_offset
-            };
-            let chroma_offset = qp_bd_offset(depths.chroma);
-            let qpi = (self.qp + offset).clamp(-chroma_offset, MAX_CHROMA_QPI);
-            chroma_qp_table(qpi) + chroma_offset
-        };
-        let matrix = if intra { 0 } else { 3 } + c;
-        let factors = self.cx.scaling().map(|s| s.factors(log2, matrix));
+        let qp = self.component_qp(c);
+        let factors = self.cx.scaling_factors(log2, c, (intra, transform_skip));
         // bdShift = BitDepth + log2(nTbS) + 10 − 15 (§8.6.3).
         let shift = depths.plane(c).bits() + u32::from(log2) - SCALING_SHIFT_BELOW;
         let (level_scale, per) = (LEVEL_SCALE[(qp % 6) as usize], (qp / 6) as u32);
@@ -1312,14 +1883,63 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         (rows, columns)
     }
 
+    /// [`Self::scale_levels`] of the wide levels (§8.6.3 with
+    /// `log2TransformRange`): `bdShift = BitDepth + Log2(nTbS) + 10 −
+    /// log2TransformRange`, clipped to `CoeffMin..=CoeffMax`, in 64 bits.
+    fn scale_wide_levels(&mut self, log2: u8, c: usize, kind: (bool, bool), wide: WideRange) {
+        let qp = self.component_qp(c);
+        let factors = self.cx.scaling_factors(log2, c, kind);
+        let range = wide.log2_range[usize::from(c > 0)];
+        let shift = self.cx.depths.plane(c).bits() + u32::from(log2) + SCALING_SHIFT_ABOVE - range;
+        let level_scale = i64::from(LEVEL_SCALE[(qp % 6) as usize]);
+        let per = (qp / 6) as u32;
+        let (min, max) = wide.coeff_range(c);
+        for &p in &self.s.positions {
+            let p = usize::from(p);
+            let m = factors.map_or(i64::from(FLAT_SCALE), |f| i64::from(f[p]));
+            let level = i64::from(self.s.wide_levels[p]);
+            let scaled = (((level * m * level_scale) << per) + (1 << (shift - 1))) >> shift;
+            self.s.wide_levels[p] = scaled.clamp(i64::from(min), i64::from(max)) as i32;
+        }
+    }
+
+    /// `qP` of component `c` (§8.6.1): `Qp′Y`, `Qp′Cb` or `Qp′Cr`, the QP
+    /// plus the component's `QpBdOffset`.
+    fn component_qp(&self, c: usize) -> i32 {
+        let depths = self.cx.depths;
+        if c == 0 {
+            self.qp + qp_bd_offset(depths.luma)
+        } else {
+            let offset = if c == 1 {
+                self.cx.pps.cb_qp_offset + self.cx.header.cb_qp_offset
+            } else {
+                self.cx.pps.cr_qp_offset + self.cx.header.cr_qp_offset
+            } + self.chroma_qp_offset[c - 1];
+            let chroma_offset = qp_bd_offset(depths.chroma);
+            let qpi = (self.qp + offset).clamp(-chroma_offset, MAX_CHROMA_QPI);
+            let format = self.cx.sps.chroma.expect("chroma blocks only with chroma");
+            chroma_qp(format, qpi) + chroma_offset
+        }
+    }
+
+    /// The subsampling `(sx, sy)` of component `c` (log2 `SubWidthC`,
+    /// `SubHeightC`; 0 for luma).
+    fn subsampling(&self, c: usize) -> (usize, usize) {
+        if c > 0 {
+            (self.cx.chroma.sx, self.cx.chroma.sy)
+        } else {
+            (0, 0)
+        }
+    }
+
     /// Intra sample prediction of an `n`x`n` block of component `c`
     /// (§8.4.4.2) written into the picture.
-    fn intra_predict(&mut self, (x, y): (usize, usize), n: usize, c: usize, mode: u8) {
-        let shift = usize::from(c > 0);
+    fn intra_predict(&mut self, cu: &Cu, (x, y): (usize, usize), n: usize, c: usize, mode: u8) {
+        let (sx, sy) = self.subsampling(c);
         let plane = PlaneIndex::ALL[c];
         let constrained = self.cx.pps.constrained_intra_pred;
         let pic = &*self.pic;
-        let cur = (x << shift, y << shift);
+        let cur = (x << sx, y << sy);
         // Without constrained intra prediction, availability is uniform
         // along each side of the block (see `Refs::gather`).
         let sides = if constrained {
@@ -1332,18 +1952,22 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
             pic.samples.plane(plane),
             (x, y),
             n,
-            4 >> shift,
+            // Availability is uniform over 4x4 luma blocks: the finer
+            // subsampled axis sets the run.
+            4 >> sx.max(sy),
             sides,
             depth,
             |xn, yn| {
-                let nb = ((xn << shift) as isize, (yn << shift) as isize);
+                let nb = ((xn << sx) as isize, (yn << sy) as isize);
                 pic.available(cur, nb, self.cx.slice)
                     && (!constrained
                         || pic.info[pic.block(nb.0 as usize, nb.1 as usize)].flags & flag::INTRA
                             != 0)
             },
         );
-        let strong = self.cx.sps.strong_intra_smoothing;
+        let mut filters = self.cx.chroma.intra_filters[usize::from(c > 0)];
+        // disableIntraBoundaryFilter (§8.4.4.2.6).
+        filters.angular_edges &= !(cu.bypass && self.cx.sps.range.implicit_rdpcm);
         let mut view = self
             .pic
             .samples
@@ -1353,42 +1977,30 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         predict::predict_smoothed_into(
             self.cx.dsp.at(depth),
             &self.s.refs,
-            (mode, c == 0, strong),
+            (mode, filters),
             &mut self.s.pred,
             &mut view,
         );
     }
 }
 
-/// Reconstruct a transform-skip (`bypass` false) or lossless block: its
-/// residual from `levels` into `residual`, added to `dst` with `Clip1` to
-/// `depth`. Both are rare; transformed blocks add inside the inverse
-/// transform kernel. Kept out of line: inlined into the block decoder it
-/// pushed the residual parser out of it (+1 % decode instructions,
-/// callgrind on a 720p stream of ours, 2026-11-15).
-#[cold]
-#[inline(never)]
-fn untransformed<T: Pixel>(
-    levels: &[i16],
-    residual: &mut [i16],
-    bypass: bool,
-    dst: &mut nc_common::PlaneViewMut<'_, T>,
-    depth: BitDepth,
+/// The untransformed residual of `levels` into `residual`: lossless
+/// (`shifts` `None`) or transform skip (`(tsShift, bdShift)`: `r = (d <<
+/// tsShift + 2^(bdShift − 1)) >> bdShift`, §8.6.4.2), read rotated by 180°
+/// when `rotate` (§8.6.2). Computed in 64 bits; the results fit `i32`:
+/// `|d| <= 2^22` and `tsShift - bdShift <= 2`.
+fn untransformed<L: Copy + Into<i64>>(
+    levels: &[L],
+    residual: &mut [i32],
+    rotate: bool,
+    shifts: Option<(u32, u32)>,
 ) {
-    if bypass {
-        residual.copy_from_slice(levels);
-    } else {
-        let shift = RESIDUAL_BITS - depth.bits();
-        for (r, &level) in residual.iter_mut().zip(levels) {
-            // |r| <= (2^15 · 2^7 + 2^9) >> 10 = 4096 at 10 bits (1024 at 8).
-            *r =
-                (((i32::from(level) << TRANSFORM_SKIP_SHIFT) + (1 << (shift - 1))) >> shift) as i16;
-        }
-    }
-    let n = dst.width();
-    for (row, line) in residual.chunks_exact(n).enumerate() {
-        for (s, &r) in dst.row_mut(row).iter_mut().zip(line) {
-            *s = depth.clip_to(s.to_i32() + i32::from(r));
-        }
+    let last = levels.len() - 1;
+    for (i, r) in residual.iter_mut().enumerate() {
+        let level: i64 = levels[if rotate { last - i } else { i }].into();
+        *r = match shifts {
+            None => level,
+            Some((ts_shift, bd_shift)) => ((level << ts_shift) + (1 << (bd_shift - 1))) >> bd_shift,
+        } as i32;
     }
 }

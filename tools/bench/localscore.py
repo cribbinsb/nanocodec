@@ -1,4 +1,4 @@
-"""Score a bench run's streams on this PC's GPU (`fleet.py score --local`, BP-4.0 D16, T25).
+"""Score a bench run's streams on this PC's GPU (`fleet.py score`, BP-4.0 D16, T25).
 
 The scoring is `score.py` itself, with its `vmafx` backend: the same decodes, V9/V10/V23
 checks and record layout as a scoring box. VMAF v1 and MS-SSIM come from the existing GPU
@@ -10,8 +10,8 @@ What this module adds is where and how that runs:
     (aarch64 for a Graviton series); ffmpeg is the pinned 8.0.1 build (procedure section 7),
     put first on PATH;
   - the GPU's guards (`nceval.gpuscore`): a place in the one scoring service, free GPU memory
-    to start, the service's CPU and memory slice; a guard that fails refuses the pass, with
-    the cloud path named, never a silent fallback;
+    to start, the service's CPU and memory slice; a guard that fails refuses the pass, saying how to fix it,
+    never a fallback to the cloud;
   - at most LOCAL_WORKERS_MAX scoring workers (the PC is not to be loaded);
   - the clips a pass needs are decompressed into the pass's own directory, deleted after it;
   - `--follow MINUTES`: passes repeat while streams still arrive (scoring beside encoding),
@@ -182,6 +182,52 @@ def stage_clips(run: Path, clips: set[str], target: Path) -> None:
         out.symlink_to(kept)
 
 
+def link_stream(source: Path, target: Path) -> None:
+    """`target` names the stream file `source`: a hard link, so the pass keeps its streams when
+    a running series' merge moves them out of their box directory (2026-11-27: bp4-fasthist-c8i
+    merged mid-pass; every later stream's symlink dangled, was refused and was listed as a
+    decoder bug); a symbolic link across file systems."""
+    try:
+        os.link(source.resolve(), target)
+    except OSError:
+        target.symlink_to(source.resolve())
+
+
+def one_per_stream(todo: list[dict]) -> list[dict]:
+    """One record per stream SHA-256 (the first): many history days' builds code byte-identical
+    streams for unchanged presets (bp4-fasthist-c8i: 38,949 distinct streams of 60,059), and a
+    pass scores them all at once, before `copy_known` can see the first one's score. The others
+    are copied by SHA-256 on the next round, after this pass merges."""
+    seen: set[str] = set()
+    out = []
+    for r in todo:
+        sha = r.get("stream_sha256")
+        if sha in seen:
+            continue
+        if sha:
+            seen.add(sha)
+        out.append(r)
+    if len(out) < len(todo):
+        print(f"{len(todo) - len(out)} streams are copies of another in this pass (same SHA-256): "
+              f"copied once it is scored", flush=True)
+    return out
+
+
+#: Streams per pass at most (unset: all): a pass merges its scores only at its end, so a long
+#: backlog in one pass held every score (and the twin chip's copies) back for hours, and a
+#: killed pass lost them.
+PASS_STREAMS_ENV = "NC_LOCAL_SCORE_PASS_STREAMS"
+
+
+def pass_share(todo: list[dict]) -> list[dict]:
+    """The first PASS_STREAMS_ENV streams of `todo`, grouped by clip (a clip is then read from
+    disk in one pass, not in several)."""
+    most = int(os.environ.get(PASS_STREAMS_ENV, 0))
+    if not most or len(todo) <= most:
+        return todo
+    return sorted(todo, key=lambda r: r["id"].split("|")[1])[:most]
+
+
 def gpu_refusal() -> str | None:
     """Why the GPU may not score a pass now (gpuscore's start guard), or None."""
     return gpuscore.wait_for_gpu(gpuscore.START_FREE_MIB)
@@ -245,10 +291,10 @@ def run_pass(run: Path, base: Path, encodes: list[dict], work: Path, workers: in
             source = twin
             r["stream_from_twin"] = str(twin)
         target = out / r["stream"]
-        if target.is_symlink() and (not target.exists() or target.resolve() != source.resolve()):
-            target.unlink()  # dangling, or to another file, from an earlier pass (reused dir)
+        if target.is_symlink() or (target.exists() and not target.samefile(source)):
+            target.unlink()  # an earlier pass's link (reused dir), or one to another file
         if not target.exists():
-            target.symlink_to(source.resolve())
+            link_stream(source, target)
         kept.append(r)
     encodes = kept
     if lost:  # never a failed pass: listed, and the rest scored
@@ -263,8 +309,9 @@ def run_pass(run: Path, base: Path, encodes: list[dict], work: Path, workers: in
         raise SystemExit(f"refused: the pinned ffmpeg 8.0.1 is missing ({PINNED_FFMPEG_DIR})")
     reason = gpu_refusal()
     if reason:
-        raise SystemExit(f"refused: {reason}; score on cloud boxes instead "
-                         f"(fleet.py score without --local)")
+        raise SystemExit(f"refused: {reason}; free the GPU (or start the scoring service) "
+                         f"and run again; nothing falls back to the cloud (an explicit "
+                         f"`fleet.py score --cloud` is D16's labelled cloud CPU path)")
     queue = gpuscore.GpuQueue()
     why = queue.acquire()
     if why:
@@ -410,7 +457,7 @@ def run_parity(a, base: Path, scores: Path, jobs: dict[str, dict], index: int,
     ids_file = base / f"v27-{tag}-ids.json"
     ids_file.write_text(json.dumps(ids))
     cloud = copy.copy(a)
-    cloud.local, cloud.ids, cloud.tag, cloud.no_merge, cloud.boxes = False, ids_file, tag, True, 1
+    cloud.cloud, cloud.ids, cloud.tag, cloud.no_merge, cloud.boxes = False, ids_file, tag, True, 1
     cloud.budget, cloud.lifetime = V27_BUDGET_USD, V27_LIFETIME_MIN
     cloud_score(cloud)
     verdict = check_parity(local, read_records(base / f"score{tag}0" / "scores.jsonl"), ids)
@@ -570,7 +617,7 @@ class UnverifiedScorer(RuntimeError):
 
 def score_local(a, scored: Callable[[Path], set[str]], needs_score,
                 cloud_score: Callable[[argparse.Namespace], None]) -> None:
-    """`fleet.py score --local`: passes until nothing is left (or, with --follow, until nothing
+    """`fleet.py score` (the default, on the PC): passes until nothing is left (or, with --follow, until nothing
     new has arrived for that long); each pass is checked by V27, then merged."""
     if not a.verify_scorer and not proven(scorer_identity()):
         raise UnverifiedScorer("refused: this VMAFx build is not in "
@@ -594,6 +641,8 @@ def score_local(a, scored: Callable[[Path], set[str]], needs_score,
         if not a.verify_scorer:
             todo = copy_known(base, a.series, todo)
             todo = defer_to_twin(run, a.series, todo)
+            if ids is None:  # the rest is scored by the next rounds of this loop
+                todo = pass_share(one_per_stream(todo))
         if todo:
             work = base / f"score{a.tag}local-{index}"
             try:

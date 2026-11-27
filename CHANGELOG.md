@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.8.0 (2026-11-27)
+
+Builds published on crates.io carry source only; no PGO.
+
+### Results
+
+- The BP-4 benchmark pages (CBR, low delay, one thread) still measure development build 23c962d8b, as
+  for 0.7.0. The history page adds this release's PGO build as its 2026-11-27 point, on the 30-clip fast
+  subset, on Arm (AWS Graviton 4) and x86 (Intel Granite Rapids): https://cribbinsb.github.io/nanocodec/results/.
+
+### Encoders
+
+- **Rate control:** a stillness-adaptive cap on periodic key frames on every codec and preset
+  (`rate.key_cap_buffer` 1.0, was 0.4): a key frame in still content may take more of the buffer;
+  periodic keys of H.264, HEVC, AV1 and VP9 Default without the reuse offsets (`persist.reuse_keys` 0).
+- **Mode decision:** one shared split test past every early no-split exit (`planner.split_override`, on by
+  default; off on the presets where the final check found it worse).
+- **Presets:** VVC variance AQ (`rate.aq_strength` 0.25), H.264 key-frame intra trellis and a leaner
+  Slower, H.264 Fast key trellis, HEVC Slow with four intra RD candidates.
+- **Transport and output:** RTP payload formats for H.264, HEVC, VVC, AV1 (with the Dependency
+  Descriptor) and VP9 (`encode --rtp`, the C API and the browser module); VP9 spatial SVC in libvpx's
+  layout; MP4, MKV and WebM output; levels chosen from picture size and bit rate; frame timing in every
+  codec's headers; a recovery-point SEI; VVC long-term references and intra refresh starting with a GDR
+  picture.
+- **CLI:** options that would do nothing are refused.
+- **Speed:** many exact hot-path speed-ups across all six codecs (streams unchanged): trellis and
+  coefficient coding, candidate searches, packed H.264 8x8 luma elimination (AVX2, NEON, SIMD128), AV2
+  CCSO search, NEON / SVE2 quantisation.
+
+### Decoders
+
+- **H.264:** interlaced coding (field pictures and MBAFF), High 4:2:2 and High 4:4:4 Predictive (up to
+  14 bits, separate colour planes, lossless), Extended profile (slice data partitioning, SP and SI slices),
+  slice groups (FMO), arbitrary slice order and redundant pictures.
+- **HEVC:** range extensions (4:0:0, 4:2:2 and 4:4:4 at 8 to 16 bits); screen content coding is refused
+  rather than misdecoded.
+- **VVC:** 4:2:2 and 4:4:4, palette mode, adaptive colour transform, the 12-bit range extension profiles.
+- **AV1:** every Main-profile frame tool, High and Professional profiles (4:4:4, 4:2:2, 12-bit, RGB, film
+  grain of every format); `--unbounded 1` lifts the level 6.3 frame-size guard.
+- **VP9:** profiles 1 and 3 (4:2:2, 4:4:0, 4:4:4).
+- **AV2:** 10- and 12-bit streams, monochrome, references of another size, several tiles, bridge frames,
+  multi-frame headers and layer syntax, and fixes from upstream dav2d.
+- Faster decoding: high-bit-depth AV1 loop filters on Ice Lake, VVC ALF, AV2 CCSO and warp.
+- The suites each decoder passes, and the valid streams not decoded yet, are listed per suite in the
+  decoder compliance register (`docs/decoder-compliance.md`).
+
+### Platforms
+
+- The browser module in Chromium, Firefox and WebKit, with a scalar (no SIMD) build for engines without
+  SIMD128.
+- The C API catches panics (its build profile unwinds).
+
 ## 0.7.0 (2026-11-27)
 
 ### Corrections

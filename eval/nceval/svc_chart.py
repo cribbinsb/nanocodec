@@ -60,6 +60,8 @@ bitstreams, deleted once read; results are cached per point by identity.
     python3 -m nceval.svc_chart time --binary BIN
     python3 -m nceval.svc_chart render --binary BIN [--out DIR]
     python3 -m nceval.svc_chart plan --binary BIN [--points a,b] --out DIR
+    python3 -m nceval.svc_chart encode-plan --binary BIN --points a,b --out PLAN
+    python3 -m nceval.svc_chart measure|site ... --prebuilt STREAMS
     python3 -m nceval.svc_chart site --binary BIN [--points a,b] \
         --timing c8i=SUMMARY --timing c8g=SUMMARY [--out DIR]
 
@@ -69,6 +71,12 @@ writes the timing plan (x264 medium's benchmark CBR command, our single-layer De
 non-simulcast point, at the 600 kbps rung) that tools/dev/svc_timing.py times on a rented spot
 box per architecture; `site` writes the results site's record (SITE_FILE, rendered by
 tools/bench/pages/svc.html).
+
+Encodes rented, scoring here (VP9 points of ours): `encode-plan` lists the encodes not yet
+cached as shell commands, tools/dev/aws_svc_encodes.py runs them on a spot box and brings
+the streams back, and `measure` / `site` with `--prebuilt` score each from its stream
+(vpxdec's pictures, proved equal to the encoder's reconstruction) on this PC's GPU, cached
+under the same identity as an encode here.
 """
 
 from __future__ import annotations
@@ -117,7 +125,8 @@ from .realuse import LADDER_KBPS, Runner, main_clips, natural_val, own_family, p
 from .slots import cpu_slots
 from .stages import balanced_parts
 from .svcbase import (BASE_RATE_SHARE, THREE_LAYER_RATE_SHARES, Md5Sink, ScaledFrames,
-                      base_size, decode_scored, ivf_frames, ksvc_receiver_bits, layer_size,
+                      base_decode_command, base_size, decode_scored, ivf_frames,
+                      ksvc_receiver_bits, layer_size,
                       operating_point, operating_point_bits, own_base_layer, per_input,
                       split_rate, split_rate3, stream_layer_bits, vp9_extract_view,
                       vp9_superframe_sizes, write_ivf)
@@ -355,6 +364,9 @@ class SvcBench:
     #: Points of ours measured on another build than `binary` (a preset whose
     #: levers landed later): point name -> binary (--binary-for).
     point_binaries: dict[str, Path] = field(default_factory=dict)
+    #: Our streams encoded elsewhere (`encode-plan`, run on a rented box): a point
+    #: whose stream is here is scored from it instead of encoded (--prebuilt).
+    prebuilt: Path | None = None
 
     def __post_init__(self) -> None:
         self.work = self.paths.work / WORK_SUBDIR / f"f{self.frames}-ip{self.intra}"
@@ -445,17 +457,38 @@ class SvcBench:
                 *own_mode(kbps, None, fairness.conditions()),
                 *self.own_params(preset, codec), *extra]
 
+    def prebuilt_name(self, point: SvcPoint, clip: Clip, kbps: int) -> str:
+        """The file stem of a point's stream encoded elsewhere (`encode-plan`)."""
+        return f"{clip.name}--cbr{kbps}--{self.identity(point, clip, kbps)}"
+
+    def own_encode(self, point: SvcPoint, clip: Clip, kbps: int, files: tuple[Path, Path, Path],
+                   extra: list[str], source: Path | None = None,
+                   binary: Path | None = None) -> list[str]:
+        """Our encode of `point` writing `files` (stream, `--layer-md5`, `--timestamps-out`)."""
+        stream, md5, times = files
+        return self.own_command(
+            clip, kbps, stream, point.preset, point.temporal_layers, source or clip.yuv,
+            (clip.width, clip.height),
+            [*point.params, *extra, "--layer-md5", str(md5), "--timestamps-out", str(times)],
+            binary or self.binary_of(point.name), point.codec)
+
     def _ours(self, point: SvcPoint, clip: Clip, kbps: int, scratch: Path) -> dict:
         stream, md5, times = scratch / "s.ivf", scratch / "layers.csv", scratch / "times.txt"
         full = YuvFormat(clip.width, clip.height)
-        spec = StreamSpec(clip.yuv, full, self.frames, clip.fps, self.paths)
-        outcome = run_point(lambda recon: self.own_command(
-            clip, kbps, stream, point.preset, point.temporal_layers, clip.yuv,
-            (clip.width, clip.height),
-            [*point.params, "--display-recon", recon, "--layer-md5", str(md5),
-             "--timestamps-out", str(times)], self.binary_of(point.name), point.codec),
-            stream, point.codec, spec, self.paths, real_metrics(spec), standard=False)
-        coded = coded_at_times(times, clip.fps, self.frames)
+        built = (self.prebuilt / self.prebuilt_name(point, clip, kbps)
+                 if self.prebuilt is not None else None)
+        if built is not None and built.with_suffix(".ivf").is_file():
+            for target, suffix in ((stream, ".ivf"), (md5, ".layers.csv"), (times, ".times.txt")):
+                shutil.copyfile(built.with_suffix(suffix), target)
+            coded = coded_at_times(times, clip.fps, self.frames)
+            measurement = self.prebuilt_top(point, clip, stream, md5, coded, scratch)
+        else:
+            spec = StreamSpec(clip.yuv, full, self.frames, clip.fps, self.paths)
+            outcome = run_point(lambda recon: self.own_encode(
+                point, clip, kbps, (stream, md5, times), ["--display-recon", recon]),
+                stream, point.codec, spec, self.paths, real_metrics(spec), standard=False)
+            coded = coded_at_times(times, clip.fps, self.frames)
+            measurement = outcome.measurement
         binary = self.binary_of(point.name)
         # The 360p operating point (op 1): the base of two layers, S1 of three.
         base = own_base_layer(stream, point.codec, binary, md5, clip, self.frames, coded,
@@ -464,7 +497,26 @@ class SvcBench:
         lowest = own_base_layer(stream, point.codec, binary, md5, clip, self.frames, coded,
                                 scratch, self.paths, steps=2,
                                 key_mode=point.key_mode) if point.layers == 3 else None
-        return self.result(point, clip, kbps, stream, outcome.measurement, base, coded, lowest)
+        return self.result(point, clip, kbps, stream, measurement, base, coded, lowest)
+
+    def prebuilt_top(self, point: SvcPoint, clip: Clip, stream: Path, md5: Path,
+                     coded: list[bool], scratch: Path):
+        """Operating point 0 of a stream encoded elsewhere, scored here from a standard
+        decoder's pictures (the same as scoring the encoder's: they must equal its
+        reconstruction of each unit's top layer, `md5`)."""
+        if point.codec is not Codec.VP9:
+            raise ValueError("prebuilt streams are VP9's (vpxdec shows each unit's top frame)")
+        top: dict[int, str] = {}
+        with md5.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                top[int(row["tu"])] = row["md5"].strip().lower()
+        measured, md5s = decode_scored(
+            base_decode_command(stream, point.codec, self.paths),
+            clip.yuv, YuvFormat(clip.width, clip.height), self.frames, clip.fps, coded,
+            self.paths)
+        if md5s != [top[tu] for tu in sorted(top)]:
+            raise RuntimeError(f"{stream}: vpxdec's pictures differ from the encoder's")
+        return measured
 
     def _aom(self, point: SvcPoint, clip: Clip, kbps: int, scratch: Path) -> dict:
         stream = scratch / "s.ivf"
@@ -834,7 +886,9 @@ def measure_all(args: argparse.Namespace, clips: list[Clip], points: list[SvcPoi
     anchor, every point and line also gets the LOW_LADDER_KBPS rungs."""
     paths = load_paths()
     binary, presets = Path(args.binary).resolve(), Path(args.presets_dir)
-    bench = SvcBench(paths, binary, presets, point_binaries=binary_overrides(args.binary_for))
+    prebuilt = getattr(args, "prebuilt", None)
+    bench = SvcBench(paths, binary, presets, point_binaries=binary_overrides(args.binary_for),
+                     prebuilt=Path(prebuilt).resolve() if prebuilt else None)
     runner = Runner(paths, EVALUATION_GATE, args.workers, over_budget=True,
                     stored_ms_ssim=True)
     lines_f = line_families(bench, paths) if lines else []
@@ -862,6 +916,39 @@ def measure_all(args: argparse.Namespace, clips: list[Clip], points: list[SvcPoi
         for key in list(lower):
             lower[key] = sorted(lower[key], key=lambda t: t["kbps"])
     return Measured(curves, top_view, base, lowest, families, labels, low, results)
+
+
+#: Environment variables an encode plan's commands read: our encoder, the
+#: directory of the clips' sources (`<clip>.yuv`) and the output directory.
+PLAN_BIN, PLAN_CLIPS, PLAN_OUT = "$NC_SVC_BIN", "$NC_SVC_CLIPS", "$NC_SVC_OUT"
+
+
+def encode_plan(args: argparse.Namespace) -> None:
+    """Our points' encodes not yet cached, as shell commands (one a line) for a rented
+    box: every clip, the ladder and the low rungs (which clips need them is only known
+    once scored). `measure --prebuilt OUT` then scores them here, on the GPU."""
+    points = selected_points(args.points)
+    if not all(p.ours and p.codec is Codec.VP9 for p in points):
+        raise SystemExit("encode-plan takes our VP9 points (prebuilt streams are scored "
+                         "through vpxdec)")
+    paths = load_paths()
+    bench = SvcBench(paths, Path(args.binary).resolve(), Path(args.presets_dir),
+                     point_binaries=binary_overrides(args.binary_for))
+    clips = chart_clips()
+    jobs = jobs_for(points, clips) + jobs_for(points, clips, low_ladder)
+    lines = []
+    for point, clip, kbps in dict.fromkeys(jobs):
+        if bench.cached(point, clip, kbps):
+            continue
+        stem = f"{PLAN_OUT}/{bench.prebuilt_name(point, clip, kbps)}"
+        files = (Path(f"{stem}.ivf"), Path(f"{stem}.layers.csv"), Path(f"{stem}.times.txt"))
+        command = bench.own_encode(point, clip, kbps, files, [],
+                                   source=Path(f"{PLAN_CLIPS}/{clip.name}.yuv"),
+                                   binary=Path(PLAN_BIN))
+        lines.append(" ".join(command) + " >/dev/null 2>&1")
+    out = Path(args.out)
+    out.write_text("".join(f"{line}\n" for line in lines))
+    print(f"wrote {out}: {len(lines)} encodes of {len(points)} points on {len(clips)} clips")
 
 
 def selected_points(spec: str | None) -> list[SvcPoint]:
@@ -1628,7 +1715,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="nceval.svc_chart", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("measure", "time", "time-host", "plan", "merge-jetson", "render", "site"):
+    for name in ("measure", "time", "time-host", "plan", "merge-jetson", "render", "site",
+                 "encode-plan"):
         p = sub.add_parser(name)
         p.add_argument("--binary", required=True, help="our encoder (x86 release build)")
         p.add_argument("--presets-dir", default=str(PRESETS_DIR))
@@ -1637,6 +1725,11 @@ def main(argv: list[str] | None = None) -> None:
                        help="measure one of our points on another build")
         p.add_argument("--out", default=str(Path(__file__).resolve().parents[2]
                                             / "docs/results"))
+        if name in ("measure", "site"):
+            p.add_argument("--prebuilt", help="score our points from the streams in this "
+                           "directory where present (encode-plan, run elsewhere)")
+        if name == "encode-plan":
+            p.add_argument("--points", required=True, help="comma-separated points of ours")
         if name == "measure":
             p.add_argument("--points", help="comma-separated SVC points (default: all)")
             p.add_argument("--clips", help="comma-separated chart clips (default: all)")
@@ -1659,7 +1752,8 @@ def main(argv: list[str] | None = None) -> None:
                            "the others keep their stored counts)")
     args = parser.parse_args(argv)
     {"measure": measure, "time": time_points, "time-host": time_host, "plan": write_plan,
-     "merge-jetson": merge_jetson, "render": render, "site": site}[args.command](args)
+     "merge-jetson": merge_jetson, "render": render, "site": site,
+     "encode-plan": encode_plan}[args.command](args)
 
 
 if __name__ == "__main__":

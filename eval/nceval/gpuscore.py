@@ -19,8 +19,11 @@ box in **encode rounds**:
     the box's own decisions on missing points only decide what else it encodes ahead.
 
 Guards (owner, 2026-11-24: the card is shared, and the PC crashed at 02:19 that night
-on GPU memory exhaustion). A run that cannot meet them falls back to the Graviton CPU
-path, never oversubscribes:
+on GPU memory exhaustion). A run that cannot meet them is refused, with what is wrong and
+how to fix it (`refusal`), and never oversubscribes. Nothing falls back to scoring on a
+cloud CPU (owner, 2026-11-27: quality is scored on the local GPU only; no silent
+fallbacks; until then a guard sent the command to a Graviton CPU box, and a quick did so
+unnoticed when this PC's free disk reached diskguard's floor):
   - one scoring service (`GpuQueue`, SERVICE_SLICE): at most SERVICE_COMMANDS commands,
     one VMAFx server, one CPU quota and memory cap for them all;
   - at least START_FREE_MIB of free GPU memory (nvidia-smi) to start, and at least
@@ -28,18 +31,19 @@ path, never oversubscribes:
     waiting up to VRAM_WAIT_SECONDS for it;
   - the local work directory's disk budget (nceval.diskguard), checked before every
     batch and so before every encode round (2026-11-24: a quick's round encoded its
-    points, then the run died on the budget here with no fallback);
+    points, then the run died on the budget here);
   - no fixed quiet hours (coordinator, 2026-11-24: the other project's nightly cron jobs
     that used the card are disabled; the free-memory gates above cover anything else on
     it, before every batch).
-Mid-run, a guard that fails ends the run with FALLBACK_EXIT; aws_measure then runs the
-command on the CPU path. Each batch gets at most one round; what it still lacks is
+Mid-run, a guard that fails ends the run with UNAVAILABLE_EXIT; aws_measure then refuses
+(its box-encoded streams are kept for the retry). Each batch gets at most one round; what it still lacks is
 encoded here.
 """
 
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -99,16 +103,33 @@ RATE_PROBES = "rate-probes"
 #: score at once, every one in SERVICE_SLICE (one CPU quota and memory cap for them all),
 #: on one VMAFx server, through the machine-wide GPU slots; each gets an equal share of
 #: the workers. A command waits for a place up to QUEUE_WAIT_MINUTES (`--gpu-wait`
-#: overrides), then falls back to CPU scoring.
+#: overrides), then is refused.
 SERVICE_SLICE = "nanocodec-gpu-score.slice"
-SERVICE_COMMANDS = 3
+# 8 since 2026-11-27 18:00 (6 from 15:00, 3 before): a command holds its place through its
+# cloud encode rounds too, so with 6 places the card ran at 25-50 % while a priority screen
+# waited for a place.
+SERVICE_COMMANDS = 8
 QUEUE_WAIT_MINUTES = 10
 QUEUE_POLL_SECONDS = 15
-#: Where a GPU-scored command that falls back writes why (aws_measure records it).
-FALLBACK_REASON_ENV = "NC_GPU_FALLBACK_REASON"
-#: aws_measure's exit status when the GPU path cannot go on (a guard, a failed round):
-#: it then runs the command on the CPU path.
-FALLBACK_EXIT = 75
+#: Where a GPU-scored command that cannot go on writes why (aws_measure reports it).
+UNAVAILABLE_REASON_ENV = "NC_GPU_UNAVAILABLE_REASON"
+#: A GPU-scored command's exit status when it cannot go on (a guard, a failed round):
+#: aws_measure then refuses the measurement.
+UNAVAILABLE_EXIT = 75
+#: How to fix each kind of reason (its prefix) that the GPU path cannot go on (`refusal`).
+FIXES = {
+    "disk floor": "free disk under ~/nanocodec-data/work (tools/dev/retention.py lists what "
+                  "may go; nceval.diskguard wants 200 GiB free), then run again",
+    "GPU memory": "free GPU memory (nvidia-smi: what else holds the card?) or start the "
+                  "card's driver again if nvidia-smi fails, then run again",
+    "queue wait": "wait for the scoring service's other commands to end, or pass a longer "
+                  "--gpu-wait",
+    "service memory": "wait for the scoring service's other commands to end (its slice is "
+                      "full), or run fewer commands at once",
+    "encode round": "read the encode round's log above, fix its cause, then run again (the "
+                    "box-encoded streams are kept for the retry)",
+}
+GENERIC_FIX = "fix the cause above, then run again"
 START_FREE_MIB = 8 * 1024
 BATCH_FREE_MIB = 4 * 1024
 VRAM_WAIT_SECONDS = 180
@@ -321,6 +342,41 @@ def import_rate_probes(source: Path, work: Path) -> int:
     return count
 
 
+def file_sha256(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def write_done(base: Path, suffixes: list[str]) -> None:
+    """A prebuilt point's `.done`, written on the box once its encoder has exited and its
+    files are renamed into place: each file's size and SHA-256 (point_whole checks them
+    after the copy to the PC). Written under a `.partial` name, never copied, and renamed."""
+    files = {}
+    for suffix in suffixes:
+        path = Path(f"{base}{suffix}")
+        if path.exists():
+            files[suffix] = {"bytes": path.stat().st_size, "sha256": file_sha256(path)}
+    partial = Path(f"{base}.done.partial")
+    partial.write_text(json.dumps({"files": files}) + "\n")
+    partial.rename(f"{base}.done")
+
+
+def point_whole(done: Path, base: Path | None = None) -> bool:
+    """Whether the point `done` marks has every file its `.done` records, whole, beside
+    `base` (default: beside `done`). An empty `.done` (written before the manifest) checks
+    nothing."""
+    text = done.read_text()
+    if not text.strip():
+        return True
+    stem = str(base) if base is not None else str(done)[:-len(".done")]
+    for suffix, want in json.loads(text)["files"].items():
+        path = Path(stem + suffix)
+        if (not path.exists() or path.stat().st_size != want["bytes"]
+                or file_sha256(path) != want["sha256"]):
+            return False
+    return True
+
+
 def done_keys(prebuilt: Path) -> list[str]:
     """Every complete prebuilt point under `prebuilt`, as its key."""
     return sorted(str(p.relative_to(prebuilt))[:-len(".done")]
@@ -332,15 +388,26 @@ _PROCESS_ROUNDS: dict[tuple[str, str, str], "EncodeRounds"] = {}
 _PROCESS_ROUNDS_LOCK = threading.Lock()
 
 
+def refusal(reason: str) -> str:
+    """The message that refuses a measurement the GPU cannot score: what is wrong, how to
+    fix it, and that nothing was scored elsewhere."""
+    fix = next((text for prefix, text in FIXES.items() if reason.startswith(prefix)),
+               GENERIC_FIX)
+    return (f"refused: the local GPU cannot score this ({reason}). Fix: {fix}. Nothing was "
+            f"scored on a cloud CPU instead (owner rule: quality is scored on the local GPU "
+            f"only).")
+
+
 class GpuUnavailable(SystemExit):
-    """The GPU path cannot go on: aws_measure falls back to CPU scoring."""
+    """The GPU path cannot go on: the run stops with UNAVAILABLE_EXIT, and aws_measure
+    refuses the measurement (`refusal`)."""
 
     def __init__(self, reason: str):
-        print(f"gpu-score: {reason}: falling back to CPU scoring on a box", flush=True)
-        path = os.environ.get(FALLBACK_REASON_ENV)
+        print(f"gpu-score: {refusal(reason)}", flush=True)
+        path = os.environ.get(UNAVAILABLE_REASON_ENV)
         if path:
             Path(path).write_text(f"{reason}\n")
-        super().__init__(FALLBACK_EXIT)
+        super().__init__(UNAVAILABLE_EXIT)
 
 
 class EncodeRounds:
@@ -497,7 +564,7 @@ class RoundBroker:
     box (2026-11-24: a 26-quick batch whose commands each ran their own round launched 14
     new boxes, $1.19 against ~$0.3). Rounds run one at a time, so a batch holds at most
     one box, which later rounds reuse while it is warm. A round that would pass
-    `budget_usd` (the rounds so far, `rounds_log`) is refused: its commands fall back."""
+    `budget_usd` (the rounds so far, `rounds_log`) is refused, and so are its commands."""
 
     def __init__(self, directory: Path, rounds_log: Path, budget_usd: float | None,
                  call: Callable[[list[str]], int] = subprocess.call,

@@ -110,7 +110,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         if block.has_chroma() {
             // `is_cfl_allowed`: up to 32x32, or 4x4 chroma when lossless.
             let cfl_allowed = if self.block_lossless {
-                chroma_block(block.size) == (MIN_TX_SIDE_LOG2, MIN_TX_SIDE_LOG2)
+                chroma_block(block.size, self.subsampling(PlaneIndex::U))
+                    == (MIN_TX_SIDE_LOG2, MIN_TX_SIDE_LOG2)
             } else {
                 block.size.width_log2().max(block.size.height_log2()) <= SMALL_BLOCK_MAX_LOG2
             };
@@ -240,16 +241,27 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             if alpha != 0 {
                 let dc = self.maps.intra_edges.dc_value();
                 let kernels = self.kernels();
+                let (ss_x, ss_y) = self.subsampling(tx.plane);
+                let luma_size = (w << ss_x, h << ss_y);
                 let [y_plane, uv_planes @ ..] = self.recon.planes_mut();
                 let view = y_plane
-                    .region(2 * x as isize, 2 * y as isize, 2 * w, 2 * h)
+                    .region(
+                        (x << ss_x) as isize,
+                        (y << ss_y) as isize,
+                        luma_size.0,
+                        luma_size.1,
+                    )
                     .expect("chroma blocks lie inside the coded frame");
                 let mut dst = uv_planes[tx.plane as usize - 1]
                     .region_mut(x as isize, y as isize, w, h)
                     .ok_or(DecodeError::Malformed("AV1 intra rectangle"))?;
                 kernels.av1_cfl_predict(
                     &view,
-                    (luma_extent.0.min(2 * w), luma_extent.1.min(2 * h)),
+                    (
+                        luma_extent.0.min(luma_size.0),
+                        luma_extent.1.min(luma_size.1),
+                    ),
+                    (ss_x, ss_y),
                     dc,
                     i32::from(alpha),
                     &mut dst,

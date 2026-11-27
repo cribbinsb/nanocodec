@@ -44,6 +44,8 @@
     reason = "the rounding schemes must inline into the AVX2 kernels"
 )]
 
+pub(crate) mod extended_warp;
+
 use super::avx2_byte_dot::{byte_pairs, row_16, two_rows};
 use super::{
     AnyTaps, Av1Family, Av1MixedFns, Av1Rounding, ConvolveFn, OuterTaps, PREP_LAST_ROUND,

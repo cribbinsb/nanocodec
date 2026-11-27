@@ -1,6 +1,10 @@
 //! Inter prediction of P and B macroblocks (§8.4.2): fractional sample
 //! interpolation through the nc-dsp H.264 kernels, bi-prediction and
-//! default, explicit and implicit weighted prediction (§8.4.2.3).
+//! default, explicit and implicit weighted prediction (§8.4.2.3), for every
+//! chroma format: 4:2:0 chroma at eighth samples on both axes (the hot
+//! path), 4:2:2 at eighth samples across and quarter samples down (eq.
+//! 8-229: `mvCLX[1]` in units of `1 / (4 · SubHeightC)`), 4:4:4 chroma
+//! interpolated as luma (§8.4.2.2).
 //!
 //! A reference field is every other row of its frame buffer. Its padded
 //! border is the frame's (an edge extension of frame rows), which is right
@@ -18,6 +22,7 @@ use nc_common::{BitDepth, BitDepths, Plane, PlaneIndex, PlaneView, PlaneViewMut,
 use nc_dsp::{BlockSize, Dsp, Filter, H264Predictor};
 use nc_encoder::Mv;
 
+use super::chroma::ChromaArray;
 use super::dpb::RefPicture;
 use super::mbstate::{LISTS, MbKind, MbState, Partition};
 use super::sample::{H264Sample, McKernel};
@@ -49,9 +54,12 @@ const MIN_KERNEL_SIDE: usize = 4;
 pub(super) struct InterKernels {
     luma: [H264Predictor; SHAPES.len()],
     chroma: [H264Predictor; SHAPES.len()],
+    /// 4:2:2 chroma: half the width, the full height.
+    chroma_422: [H264Predictor; SHAPES.len()],
     /// The kernels' block sizes.
     luma_sizes: [BlockSize; SHAPES.len()],
     chroma_sizes: [BlockSize; SHAPES.len()],
+    chroma_422_sizes: [BlockSize; SHAPES.len()],
 }
 
 impl InterKernels {
@@ -60,11 +68,22 @@ impl InterKernels {
         let chroma_side = |side: usize| (side / 2).max(MIN_KERNEL_SIDE);
         let luma_sizes = SHAPES.map(size);
         let chroma_sizes = SHAPES.map(|(w, h)| size((chroma_side(w), chroma_side(h))));
+        let chroma_422_sizes = SHAPES.map(|(w, h)| size((chroma_side(w), h)));
         Self {
             luma: luma_sizes.map(|s| dsp.h264_predictor(Filter::H264Luma, s)),
             chroma: chroma_sizes.map(|s| dsp.h264_predictor(Filter::H264Chroma, s)),
+            chroma_422: chroma_422_sizes.map(|s| dsp.h264_predictor(Filter::H264Chroma, s)),
             luma_sizes,
             chroma_sizes,
+            chroma_422_sizes,
+        }
+    }
+
+    fn chroma_422(&self, shape: usize) -> McKernel<'_> {
+        McKernel {
+            predictor: &self.chroma_422[shape],
+            filter: Filter::H264Chroma,
+            size: self.chroma_422_sizes[shape],
         }
     }
 
@@ -177,10 +196,12 @@ type BlockMotion = [Option<(Mv, i8)>; LISTS];
 pub(super) struct InterContext<'a, T: Sample> {
     kernels: &'a InterKernels,
     dsp: &'a Dsp,
-    /// Each list entry's picture.
+    /// Each list entry's picture (a separately coded colour plane's own
+    /// plane first).
     refs: [Vec<Option<Reference<'a, T>>>; LISTS],
     weighting: Weighting<'a>,
-    monochrome: bool,
+    /// `ChromaArrayType`.
+    chroma: ChromaArray,
     depths: BitDepths,
 }
 
@@ -212,6 +233,10 @@ struct Target<'k> {
 /// constants, so the window arithmetic folds in each instantiation).
 trait Grid {
     const FRAC_BITS: i32;
+    /// Fractional bits of the vertical component, if fewer, and the shift
+    /// that brings its fraction to the kernel's units.
+    const FRAC_BITS_Y: i32 = Self::FRAC_BITS;
+    const FRAC_SHIFT_Y: u32 = 0;
     const TAPS: usize;
     const BEFORE: usize;
 }
@@ -232,22 +257,41 @@ impl Grid for ChromaGrid {
     const BEFORE: usize = 0;
 }
 
+/// 4:2:2 chroma: eighth samples across, quarter samples down (the full
+/// vertical resolution: eq. 8-229 with `SubHeightC` 1), each read by the
+/// bilinear kernel in eighths (§8.4.2.2.2: `yFracC` is `(mvCLX[1] & 3) << 1`).
+struct Chroma422Grid;
+impl Grid for Chroma422Grid {
+    const FRAC_BITS: i32 = CHROMA_FRAC_BITS;
+    const FRAC_BITS_Y: i32 = LUMA_FRAC_BITS;
+    const FRAC_SHIFT_Y: u32 = (CHROMA_FRAC_BITS - LUMA_FRAC_BITS) as u32;
+    const TAPS: usize = 2;
+    const BEFORE: usize = 0;
+}
+
 impl<'a, T: H264Sample> InterContext<'a, T> {
-    /// The prediction of a slice of picture `current` from `refs`.
+    /// The prediction of a slice of picture `current` from `refs`, of
+    /// chroma format `chroma`; `colour_plane` is the `colour_plane_id` of
+    /// separately coded planes (its reference plane predicts the decoded
+    /// one), else 0.
     pub fn new(
         (kernels, dsp): (&'a InterKernels, &'a Dsp),
         (refs, current): ([&'a [Option<RefPicture<T>>]; LISTS], Structure),
         weighting: Weighting<'a>,
-        monochrome: bool,
+        (chroma, colour_plane): (ChromaArray, usize),
         depths: BitDepths,
     ) -> Self {
         let planes = |list: &'a [Option<RefPicture<T>>]| {
             list.iter()
                 .map(|r| {
-                    r.as_ref().map(|r| Reference {
-                        planes: PlaneIndex::ALL
-                            .map(|p| Source::new(r.picture.plane(p), r.structure)),
-                        chroma_dy: chroma_offset(current, r.structure),
+                    r.as_ref().map(|r| {
+                        let mut planes =
+                            PlaneIndex::ALL.map(|p| Source::new(r.picture.plane(p), r.structure));
+                        planes.rotate_left(colour_plane);
+                        Reference {
+                            planes,
+                            chroma_dy: chroma_offset(current, r.structure),
+                        }
                     })
                 })
                 .collect()
@@ -257,7 +301,7 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
             dsp,
             refs: refs.map(planes),
             weighting,
-            monochrome,
+            chroma,
             // Folds to the 8-bit constants in the 8-bit instance.
             depths: depths.of::<T>(),
         }
@@ -265,6 +309,12 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
 
     /// Predict the inter macroblock `mb` at macroblock position (`mx`,
     /// `my`).
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: out of line from `reconstruct` (gate build) it cost \
+                  about 2 % of the instructions of a 720p P stream (callgrind)"
+    )]
+    #[inline(always)]
     pub fn predict(
         &self,
         dst: &mut Planes<'_, T>,
@@ -283,6 +333,13 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
 
     /// [`InterContext::predict`] of a macroblock that predicts from list 1
     /// (`L1`) or not.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: left out of `reconstruct` by the inliner (gate \
+                  build), the P instance cost about 1.8 % of the instructions of \
+                  a 720p P stream (callgrind)"
+    )]
+    #[inline(always)]
     fn predict_mb<const L1: bool>(
         &self,
         dst: &mut Planes<'_, T>,
@@ -454,14 +511,19 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         if let Some((table, weights)) = weight {
             apply_weight(luma_dst, &luma, weights[0], table.luma_log2_denom);
         }
-        if self.monochrome {
-            return Ok(());
+        match self.chroma {
+            ChromaArray::Yuv420 => {}
+            ChromaArray::Mono => return Ok(()),
+            ChromaArray::Yuv422 | ChromaArray::Yuv444 => {
+                self.single_chroma([cb_dst, cr_dst], sources, (mv, pos, shape), weight);
+                return Ok(());
+            }
         }
         let chroma = self.chroma_target(pos, shape);
         let mv = chroma_mv(mv, reference.chroma_dy);
         if shape == SHAPE_4X4 {
             for (source, plane_dst) in [(&sources[1], &mut *cb_dst), (&sources[2], &mut *cr_dst)] {
-                corner_2x2(&chroma, source, plane_dst, mv);
+                corner_block::<ChromaGrid, T>(&chroma, source, plane_dst, mv);
             }
         } else {
             interpolate_pair(&chroma, [&sources[1], &sources[2]], [cb_dst, cr_dst], mv);
@@ -505,8 +567,13 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         interpolate::<LumaGrid, T>(&luma, &sources[0][0], luma_dst, mv0);
         predict::<LumaGrid, T>(&luma, &sources[1][0], mv1, &mut scratch.luma, LUMA_SCRATCH);
         combine(luma_dst, &luma, &scratch.luma, LUMA_SCRATCH, weights[0]);
-        if self.monochrome {
-            return Ok(());
+        match self.chroma {
+            ChromaArray::Yuv420 => {}
+            ChromaArray::Mono => return Ok(()),
+            ChromaArray::Yuv422 | ChromaArray::Yuv444 => {
+                self.bi_chroma([cb_dst, cr_dst], sources, ([mv0, mv1], pos, shape), weights);
+                return Ok(());
+            }
         }
         // The smallest kernel predicts 4x4 chroma; 2x2 blocks use its corner.
         let kernel_target = Target {
@@ -518,7 +585,12 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         };
         for (comp, plane_dst) in [cb_dst, cr_dst].into_iter().enumerate() {
             if shape == SHAPE_4X4 {
-                corner_2x2(&chroma, &sources[0][1 + comp], plane_dst, chroma_mvs[0]);
+                corner_block::<ChromaGrid, T>(
+                    &chroma,
+                    &sources[0][1 + comp],
+                    plane_dst,
+                    chroma_mvs[0],
+                );
             } else {
                 interpolate::<ChromaGrid, T>(
                     &chroma,
@@ -538,6 +610,116 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
             combine(plane_dst, &chroma, out, CHROMA_SCRATCH, weights[1 + comp]);
         }
         Ok(())
+    }
+
+    /// The chroma target of a 4:2:2 block (half the luma width, all its
+    /// height) or a 4:4:4 one (the luma block at the chroma depth).
+    fn other_chroma_target(&self, (x, y): (usize, usize), shape: usize) -> Target<'_> {
+        let (w, h) = SHAPES[shape];
+        if self.chroma == ChromaArray::Yuv444 {
+            return Target {
+                depth: self.depths.chroma,
+                ..self.luma_target((x, y), shape)
+            };
+        }
+        Target {
+            kernel: self.kernels.chroma_422(shape),
+            dsp: self.dsp,
+            depth: self.depths.chroma,
+            pos: (x / 2, y),
+            size: (w / 2, h),
+        }
+    }
+
+    /// Predict a 4:2:2 or 4:4:4 chroma `target` from `source` with `mv`
+    /// (the luma vector: Table 8-10's field offset is 4:2:0's only)
+    /// straight into `dst`.
+    fn other_chroma(
+        &self,
+        target: &Target<'_>,
+        source: &Source<'_, T>,
+        dst: &mut PlaneViewMut<'_, T>,
+        (mv, shape): (Mv, usize),
+    ) {
+        if self.chroma == ChromaArray::Yuv444 {
+            interpolate::<LumaGrid, T>(target, source, dst, mv);
+        } else if shape == SHAPE_4X4 {
+            corner_block::<Chroma422Grid, T>(target, source, dst, mv);
+        } else {
+            interpolate::<Chroma422Grid, T>(target, source, dst, mv);
+        }
+    }
+
+    /// The Cb and Cr of a 4:2:2 or 4:4:4 block predicted from one list,
+    /// out of line: the 4:2:0 path stays as it was.
+    #[inline(never)]
+    fn single_chroma(
+        &self,
+        dst: [&mut PlaneViewMut<'_, T>; 2],
+        sources: &[Source<'a, T>; 3],
+        (mv, pos, shape): (Mv, (usize, usize), usize),
+        weight: Option<(&WeightTable, [Weight; 3])>,
+    ) {
+        let target = self.other_chroma_target(pos, shape);
+        for (comp, plane_dst) in dst.into_iter().enumerate() {
+            self.other_chroma(&target, &sources[1 + comp], plane_dst, (mv, shape));
+            if let Some((table, weights)) = weight {
+                apply_weight(
+                    plane_dst,
+                    &target,
+                    weights[1 + comp],
+                    table.chroma_log2_denom,
+                );
+            }
+        }
+    }
+
+    /// The Cb and Cr of a bi-predicted 4:2:2 or 4:4:4 block.
+    #[inline(never)]
+    fn bi_chroma(
+        &self,
+        dst: [&mut PlaneViewMut<'_, T>; 2],
+        sources: [&[Source<'a, T>; 3]; 2],
+        ([mv0, mv1], pos, shape): ([Mv; 2], (usize, usize), usize),
+        weights: [BiWeight; 3],
+    ) {
+        let target = self.other_chroma_target(pos, shape);
+        // The kernel's block: a 2x4 4:2:2 block is the corner of a 4x4 one.
+        let kernel_target = Target {
+            size: (
+                target.size.0.max(MIN_KERNEL_SIDE),
+                target.size.1.max(MIN_KERNEL_SIDE),
+            ),
+            ..target
+        };
+        let mut scratch = [T::default(); LUMA_SCRATCH * LUMA_SCRATCH];
+        for (comp, plane_dst) in dst.into_iter().enumerate() {
+            self.other_chroma(&target, &sources[0][1 + comp], plane_dst, (mv0, shape));
+            if self.chroma == ChromaArray::Yuv444 {
+                predict::<LumaGrid, T>(
+                    &kernel_target,
+                    &sources[1][1 + comp],
+                    mv1,
+                    &mut scratch,
+                    LUMA_SCRATCH,
+                );
+            } else {
+                predict::<Chroma422Grid, T>(
+                    &kernel_target,
+                    &sources[1][1 + comp],
+                    mv1,
+                    &mut scratch,
+                    LUMA_SCRATCH,
+                );
+            }
+            combine(
+                plane_dst,
+                &target,
+                &scratch,
+                LUMA_SCRATCH,
+                weights[1 + comp],
+            );
+        }
     }
 
     /// The bi-prediction weights of entries `ref0` and `ref1`, per
@@ -688,9 +870,9 @@ fn interpolate_pair<T: H264Sample>(
     }
 }
 
-/// A 2x2 chroma block: the top-left corner of a 4x4 prediction (the
-/// smallest kernel).
-fn corner_2x2<T: H264Sample>(
+/// A chroma block smaller than the smallest kernel (2x2 in 4:2:0, 2x4 in
+/// 4:2:2): the top-left corner of a 4x4 prediction.
+fn corner_block<G: Grid, T: H264Sample>(
     target: &Target<'_>,
     source: &Source<'_, T>,
     dst: &mut PlaneViewMut<'_, T>,
@@ -701,7 +883,7 @@ fn corner_2x2<T: H264Sample>(
         ..*target
     };
     let mut block = [T::default(); MIN_KERNEL_SIDE * MIN_KERNEL_SIDE];
-    predict::<ChromaGrid, T>(&corner, source, mv, &mut block, MIN_KERNEL_SIDE);
+    predict::<G, T>(&corner, source, mv, &mut block, MIN_KERNEL_SIDE);
     let (w, h) = target.size;
     let mut out = dst
         .sub_view_mut(target.pos.0, target.pos.1, w, h)
@@ -733,9 +915,10 @@ impl<G: Grid> Window<G> {
     fn new<T: Sample>(target: &Target<'_>, source: &Source<'_, T>, mv: Mv) -> Self {
         let (mvx, mvy) = (i32::from(mv.x), i32::from(mv.y));
         let mask = (1 << G::FRAC_BITS) - 1;
+        let mask_y = (1 << G::FRAC_BITS_Y) - 1;
         let (w, h) = (target.size.0 + G::TAPS - 1, target.size.1 + G::TAPS - 1);
         let left = target.pos.0 as isize + (mvx >> G::FRAC_BITS) as isize - G::BEFORE as isize;
-        let top = target.pos.1 as isize + (mvy >> G::FRAC_BITS) as isize - G::BEFORE as isize;
+        let top = target.pos.1 as isize + (mvy >> G::FRAC_BITS_Y) as isize - G::BEFORE as isize;
         let padded = &source.padded;
         let (col, row) = (
             left + source.border.0 as isize,
@@ -748,7 +931,10 @@ impl<G: Grid> Window<G> {
         Self {
             corner: (left, top),
             start: inside.then(|| row as usize * padded.stride() + col as usize),
-            frac: ((mvx & mask) as usize, (mvy & mask) as usize),
+            frac: (
+                (mvx & mask) as usize,
+                ((mvy & mask_y) << G::FRAC_SHIFT_Y) as usize,
+            ),
             grid: core::marker::PhantomData,
         }
     }

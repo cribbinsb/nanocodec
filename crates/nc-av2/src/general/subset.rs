@@ -75,6 +75,9 @@ fn check_frame_tools(sequence: &SequenceHeader, header: &FrameHeader) -> Result<
     if header.tip.mode != 0 {
         return unsupported("AV2 temporal interpolated prediction");
     }
+    if header.bridge_slot.is_some() {
+        return unsupported("AV2 bridge frames");
+    }
     if header.intra_block_copy.is_some() {
         return unsupported("AV2 intra block copy");
     }

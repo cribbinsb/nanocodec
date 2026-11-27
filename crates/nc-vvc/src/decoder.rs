@@ -1,10 +1,12 @@
-//! The VVC decoder: general Main 10 streams, with a fast path for our own.
-//! Not yet per §7.4.2.2: reserved NAL unit types and `nuh_layer_id > 0`
-//! units are rejected instead of ignored (docs/FAQ.md#conformance).
+//! The VVC decoder: general Main 10 and Main 10 4:4:4 streams (4:0:0,
+//! 4:2:0, 4:2:2 and 4:4:4, palette and ACT), with a fast path for our own.
+//! Not yet: the 12/16-bit range extensions and multilayer profiles
+//! (docs/decoder-compliance.md, docs/FAQ.md#conformance).
 //!
-//! Canonical parameter sets retain the own-stream fast path (8-bit). General
-//! Main 10 streams (8 to 10 bits) use bounded syntax parsing and the general
-//! decoding process at the sequence's sample type (`general::Instance`);
+//! Canonical parameter sets retain the own-stream fast path (8-bit 4:2:0).
+//! General streams (8 to 10 bits) use bounded syntax parsing and the general
+//! decoding process at the sequence's sample type (`general::Instance`) and
+//! chroma format (`Sequence::format`, docs/handoff/chroma-formats.md);
 //! unsupported reconstruction fails explicitly.
 use crate::quant_group::{QpMap, QuantGroup};
 use crate::{
@@ -795,13 +797,13 @@ impl Decoder {
                     }
                     general_done = self.general_slice(&rbsp, kind, unit[1] & 7)?;
                 }
-                kind @ (headers::IDR_N_LP | headers::TRAIL_NUT)
+                kind @ (headers::IDR_N_LP | headers::TRAIL_NUT | headers::GDR_NUT)
                     if picture.is_none() && self.pps.is_some() =>
                 {
                     if unit[1] & 7 != 1 {
                         return Err(DecodeError::Unsupported("VVC subset temporal layer"));
                     }
-                    picture = Some(self.decode_own(&rbsp, kind == headers::TRAIL_NUT)?);
+                    picture = Some(self.decode_own(&rbsp, kind != headers::IDR_N_LP)?);
                 }
                 _ => {
                     return Err(DecodeError::Unsupported(
@@ -924,6 +926,10 @@ fn parse_own_pps(bytes: &[u8], geometry: &headers::Geometry) -> Result<headers::
 
 fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
     let mut r = BitReader::new(bytes);
+    // The level is informative here: the SPS is compared whole below.
+    r.skip_bits(headers::SPS_BITS_BEFORE_LEVEL)?;
+    let level_idc = r.read_bits(8)?;
+    let mut r = BitReader::new(bytes);
     // The subset has a fixed 48-bit prefix (IDs, PTL without GCI/subprofiles),
     // which holds `sps_log2_ctu_size_minus5` after its first 13 bits.
     r.skip_bits(SPS_BITS_BEFORE_CTU_SIZE)?;
@@ -932,7 +938,8 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
         return Err(DecodeError::Unsupported("VVC CTU size"));
     }
     r.skip_bits(SPS_PREFIX_BITS - SPS_BITS_BEFORE_CTU_SIZE - 2)?;
-    r.skip_bits(2)?; // GDR and resampling
+    let gdr = r.read_bit()?; // sps_gdr_enabled_flag
+    r.skip_bits(1)?; // resampling
     let cw = r.read_ue()? as usize;
     let ch = r.read_ue()? as usize;
     // CTUs crossing the right or bottom edge split implicitly (§7.3.11.4).
@@ -974,7 +981,7 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
         ..headers::Tools::default()
     };
     let mut r = BitReader::new(bytes);
-    r.skip_bits(headers::sps_head(&geometry, transforms, None).bit_len())?;
+    r.skip_bits(headers::sps_head(&geometry, transforms, 0).bit_len())?;
     let chroma_qp = ChromaQpTable::parse(&mut r)?;
     let tools = headers::Tools {
         mts: transforms.mts,
@@ -990,9 +997,12 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
         .into_iter()
         .flat_map(|listed| [(listed, false), (listed, true)])
         .map(|(listed, held)| headers::Tools {
+            gdr,
             ..tools.with_long_term_slot(listed, held)
         })
-        .find(|&tools| bytes == headers::sps(&geometry, colour, &chroma_qp, tools, timing))
+        .find(|&tools| {
+            bytes == headers::sps(&geometry, colour, &chroma_qp, tools, timing, level_idc)
+        })
         .ok_or(DecodeError::Unsupported("VVC SPS tools"))?;
     Ok(SequenceInfo {
         geometry,
@@ -1273,8 +1283,20 @@ fn parse_slice_header<'a, 'b>(
     alf_banks: &'b [Option<Box<crate::alf_aps::SignalledFilters>>; ALF_APS_IDS],
 ) -> Result<(OwnSliceHeader<'b>, &'a [u8])> {
     let mut r = BitReader::new(bytes);
-    r.skip_bits(6)?; // embedded PH flags and PPS id
+    r.skip_bits(1)?; // ph in slice header
+    let gdr_or_irap = r.read_bit()?;
+    r.skip_bits(1)?; // ph_non_ref_pic_flag
+    let gdr = gdr_or_irap && r.read_bit()?;
+    // Inter (and intra) slices allowed, PPS id 0.
+    r.skip_bits(if inter_frame { 3 } else { 2 })?;
     let poc = r.read_bits(tools.poc_bits)? as u16;
+    let kind = match (inter_frame, gdr) {
+        (false, _) => headers::PictureKind::Idr,
+        (true, false) => headers::PictureKind::Trailing,
+        (true, true) => headers::PictureKind::Gdr {
+            recovery_poc_cnt: r.read_ue()?,
+        },
+    };
     if block_qp {
         // ph_cu_qp_delta_subdiv_intra_slice (and _inter_slice), ue(v) 0:
         // one bit each, validated by the canonical header below.
@@ -1289,6 +1311,9 @@ fn parse_slice_header<'a, 'b>(
         return Err(DecodeError::Malformed("VVC IDR POC"));
     } else {
         r.skip_bits(1)?; // no-output flag
+    }
+    if gdr && inter_frame {
+        r.skip_bits(1)?; // sh_no_output_of_prior_pics_flag (GDR_NUT)
     }
     let (alf, bank) = slice_alf(&mut r, tools, alf_banks)?;
     let references = if inter_frame {
@@ -1307,15 +1332,7 @@ fn parse_slice_header<'a, 'b>(
     let qp = qp as u32;
     r.skip_bits(3)?; // SAO luma/chroma and sign hiding flags, validated by canonical header
     r.trailing_bits()?;
-    let prefix = headers::slice_layered(
-        qp,
-        inter_frame,
-        poc,
-        alf,
-        block_qp,
-        temporal_mvp,
-        &references,
-    );
+    let prefix = headers::slice_layered(qp, kind, poc, alf, block_qp, temporal_mvp, &references);
     if !bytes.starts_with(&prefix) {
         return Err(DecodeError::Unsupported("VVC slice header"));
     }

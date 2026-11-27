@@ -1,6 +1,6 @@
-//! H.266 §7.3.2.4 single-layer Main 10 sequence parameter sets (8 to 10
-//! bits). Geometry, DPB and coding tools are parsed before any picture
-//! allocation.
+//! H.266 §7.3.2.4 single-layer sequence parameter sets of the Main 10 and
+//! Main 10 4:4:4 profiles (8 to 10 bits; 4:0:0, 4:2:0, 4:2:2 and 4:4:4).
+//! Geometry, DPB and coding tools are parsed before any picture allocation.
 use super::{
     DecodeError, Reader, Result,
     ptl::Profile,
@@ -8,11 +8,19 @@ use super::{
     tools::{Tools, Transforms},
     vui,
 };
-use nc_common::{BitDepth, ColourInfo};
+use nc_common::{BitDepth, ChromaFormat, ColourInfo};
 
-/// The deepest samples of the Main 10 profiles (H.266 A.3.1:
-/// `sps_bitdepth_minus8` in 0..=2).
-const MAX_BIT_DEPTH: u32 = 10;
+/// The deepest samples of the decoded profiles (H.266 A.3.5: Main 16 4:4:4,
+/// `sps_bitdepth_minus8` in 0..=8).
+const MAX_BIT_DEPTH: u32 = 16;
+/// The deepest samples without the range extension (H.266 §7.4.3.22:
+/// `sps_range_extension_flag` is 0 up to 10 bits).
+const MAX_BASE_BIT_DEPTH: u32 = 10;
+/// `log2TransformRange` without extended precision (H.266 §7.4.3.22).
+const BASE_LOG2_RANGE: u32 = 15;
+/// Extended precision's `log2TransformRange` margin over the depth, and cap.
+const EXTENDED_RANGE_MARGIN: u32 = 6;
+const MAX_LOG2_RANGE: u32 = 20;
 /// `QpBdOffset = 6 · sps_bitdepth_minus8` (H.266 §7.4.3.4).
 const QP_BD_OFFSET_STEP: i32 = 6;
 
@@ -56,7 +64,13 @@ impl Partition {
 pub(crate) struct Sequence {
     pub id: u8,
     pub profile: Profile,
+    /// Whether the pictures have chroma planes (`sps_chroma_format_idc` 1
+    /// to 3).
     pub chroma: bool,
+    /// The chroma format of the pictures (`sps_chroma_format_idc`, Table 2);
+    /// a monochrome sequence's pictures are 4:2:0 pictures whose chroma is
+    /// never coded or output.
+    pub format: ChromaFormat,
     pub ctu_log2: u8,
     pub dimensions: [u32; 2],
     pub crop: [u32; 4],
@@ -82,6 +96,57 @@ pub(crate) struct Sequence {
     pub tools: Tools,
     pub field_pictures: bool,
     pub colour: ColourInfo,
+    /// The range extension's tools (all off without it).
+    pub range: RangeExtension,
+}
+
+/// `sps_range_extension()` (H.266 §7.3.2.22, §7.4.3.22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::struct_excessive_bools)] // Independent flags mandated by SPS syntax.
+pub(crate) struct RangeExtension {
+    /// `sps_extended_precision_flag`: coefficients and transforms span
+    /// `Max(15, BitDepth + 6)` bits.
+    pub extended_precision: bool,
+    /// `sps_ts_residual_coding_rice_present_in_sh_flag`.
+    pub ts_rice_in_slice: bool,
+    /// `sps_rrc_rice_extension_flag`: the extended Rice parameter
+    /// derivation of regular residual coding.
+    pub rice_extension: bool,
+    /// `sps_persistent_rice_adaptation_enabled_flag`: `StatCoeff` across
+    /// transform blocks.
+    pub persistent_rice: bool,
+    /// `sps_reverse_last_sig_coeff_enabled_flag`.
+    pub reverse_last: bool,
+}
+
+impl RangeExtension {
+    /// `sps_extension_present_flag` onward (§7.3.2.4): the range extension
+    /// when flagged; the other extensions' data is skipped by `finish`.
+    fn parse(r: &mut Reader<'_>, transform_skip: bool, depth: BitDepth) -> Result<(Self, bool)> {
+        if !r.flag()? {
+            return Ok((Self::default(), false));
+        }
+        let range = r.flag()?;
+        let others = r.bits(7)? != 0;
+        if !range {
+            return Ok((Self::default(), others));
+        }
+        if depth.bits() <= MAX_BASE_BIT_DEPTH {
+            return Err(DecodeError::Malformed("VVC range extension at 10 bits"));
+        }
+        let extended_precision = r.flag()?;
+        let ts_rice_in_slice = transform_skip && r.flag()?;
+        Ok((
+            Self {
+                extended_precision,
+                ts_rice_in_slice,
+                rice_extension: r.flag()?,
+                persistent_rice: r.flag()?,
+                reverse_last: r.flag()?,
+            },
+            others,
+        ))
+    }
 }
 /// The error of an SPS without `profile_tier_level`: a layer whose PTL is
 /// in the VPS is not the base layer (§7.4.3.4); without a VPS it is invalid.
@@ -105,11 +170,7 @@ impl Sequence {
         if max_layer > 6 {
             return Err(DecodeError::Malformed("VVC temporal sublayers"));
         }
-        let chroma = match r.bits(2)? {
-            0 => false,
-            1 => true,
-            _ => return Err(DecodeError::Unsupported("VVC non-Main chroma format")),
-        };
+        let (chroma, format) = chroma_format(r.bits(2)?);
         let ctu_log2 = r.bits(2)? + 5;
         if ctu_log2 > 7 {
             return Err(DecodeError::Malformed("VVC CTU size"));
@@ -121,7 +182,8 @@ impl Sequence {
         let gdr = r.flag()?;
         let resampling = r.flag()?;
         let resolution_change = resampling && r.flag()?;
-        let (dimensions, crop, subpictures, depth) = geometry(&mut r, chroma, ctu_log2 as u8)?;
+        let (dimensions, crop, subpictures, depth) =
+            geometry(&mut r, crop_units(chroma, format), ctu_log2 as u8)?;
         let entropy_sync = r.flag()?;
         let entry_offsets = r.flag()?;
         let (poc_bits, poc_msb_bits) = poc_widths(&mut r)?;
@@ -148,7 +210,7 @@ impl Sequence {
         let transforms = Transforms::parse(&mut r, chroma, qp_bd_offset(depth))?;
         let tools = Tools::parse(
             &mut r,
-            (chroma, depth),
+            (chroma.then_some(format), depth, max_transform_log2),
             ctu_log2,
             poc_bits,
             dimensions,
@@ -164,12 +226,14 @@ impl Sequence {
         } else {
             ColourInfo::default()
         };
-        let extension = r.flag()?;
+        let (range, extension) =
+            RangeExtension::parse(&mut r, transforms.skip_log2.is_some(), depth)?;
         r.finish(extension)?;
         Ok(Self {
             id,
             profile,
             chroma,
+            format,
             ctu_log2: ctu_log2 as u8,
             dimensions,
             crop,
@@ -194,6 +258,7 @@ impl Sequence {
             tools,
             field_pictures,
             colour,
+            range,
         })
     }
 
@@ -201,6 +266,61 @@ impl Sequence {
     pub fn qp_bd_offset(&self) -> i32 {
         qp_bd_offset(self.depth)
     }
+
+    /// `log2TransformRange` (§7.4.3.22): 15, or with extended precision
+    /// `Max(15, Min(20, BitDepth + 6))`: coefficients span
+    /// `−2^range ..= 2^range − 1`.
+    pub fn log2_transform_range(&self) -> u32 {
+        if self.range.extended_precision {
+            (self.depth.bits() + EXTENDED_RANGE_MARGIN).clamp(BASE_LOG2_RANGE, MAX_LOG2_RANGE)
+        } else {
+            BASE_LOG2_RANGE
+        }
+    }
+
+    /// Log2 of `SubWidthC` and `SubHeightC` (Table 2): the chroma planes'
+    /// subsampling.
+    #[inline]
+    pub fn subsampling(&self) -> (usize, usize) {
+        self.format.subsampling()
+    }
+
+    /// A luma-sample size or position `(x, y)` in the samples of channel
+    /// `chroma` (luma when false): divided by `SubWidthC` and `SubHeightC`
+    /// for chroma.
+    #[inline]
+    pub fn scaled(&self, chroma: bool, (x, y): (usize, usize)) -> (usize, usize) {
+        if chroma {
+            let (sx, sy) = self.subsampling();
+            (x >> sx, y >> sy)
+        } else {
+            (x, y)
+        }
+    }
+
+    /// `SubWidthC` and `SubHeightC` (Table 2; 1 for monochrome): the unit
+    /// of conformance and scaling window offsets.
+    #[inline]
+    pub fn crop_units(&self) -> [u32; 2] {
+        crop_units(self.chroma, self.format)
+    }
+}
+
+/// Whether `sps_chroma_format_idc` codes chroma, and the pictures' format
+/// (Table 2; a monochrome sequence's pictures are 4:2:0).
+fn chroma_format(idc: u32) -> (bool, ChromaFormat) {
+    match idc {
+        0 => (false, ChromaFormat::Yuv420),
+        1 => (true, ChromaFormat::Yuv420),
+        2 => (true, ChromaFormat::Yuv422),
+        _ => (true, ChromaFormat::Yuv444),
+    }
+}
+
+/// `SubWidthC` and `SubHeightC` of a format (Table 2; 1 when monochrome).
+fn crop_units(chroma: bool, format: ChromaFormat) -> [u32; 2] {
+    let (x, y) = if chroma { format.subsampling() } else { (0, 0) };
+    [1 << x, 1 << y]
 }
 
 /// `QpBdOffset` of samples of `depth` (H.266 §7.4.3.4).
@@ -217,13 +337,10 @@ fn field_pictures(r: &mut Reader<'_>, profile: &Profile) -> Result<bool> {
     Ok(field)
 }
 
-/// `sps_bitdepth_minus8` (H.266 §7.3.2.4): 8 to 10 bits.
+/// `sps_bitdepth_minus8` (H.266 §7.3.2.4): 8 to 16 bits.
 fn bit_depth(r: &mut Reader<'_>) -> Result<BitDepth> {
-    let bits = r.ue(8, "VVC bit depth")? + 8;
-    if bits > MAX_BIT_DEPTH {
-        return Err(DecodeError::Unsupported("VVC bit depth above 10"));
-    }
-    Ok(BitDepth::new(bits).expect("8 to 10 bits"))
+    let bits = r.ue(MAX_BIT_DEPTH - 8, "VVC bit depth")? + 8;
+    Ok(BitDepth::new(bits).expect("8 to 16 bits"))
 }
 
 /// `sps_log2_max_pic_order_cnt_lsb_minus4 + 4` and, with
@@ -271,7 +388,7 @@ const MAX_PICTURE_SIDE: u32 = 16_888;
 /// The picture size, conformance window, subpictures and bit depth.
 fn geometry(
     r: &mut Reader<'_>,
-    chroma: bool,
+    units: [u32; 2],
     ctu_log2: u8,
 ) -> Result<([u32; 2], [u32; 4], Subpictures, BitDepth)> {
     let dimensions = [
@@ -286,9 +403,8 @@ fn geometry(
         for value in &mut crop {
             *value = r.ue(4096, "VVC conformance crop")?;
         }
-        let scale = if chroma { 2 } else { 1 };
-        if scale * (crop[0] + crop[1]) >= dimensions[0]
-            || scale * (crop[2] + crop[3]) >= dimensions[1]
+        if units[0] * (crop[0] + crop[1]) >= dimensions[0]
+            || units[1] * (crop[2] + crop[3]) >= dimensions[1]
         {
             return Err(DecodeError::Malformed(
                 "VVC conformance crop exceeds picture",
@@ -320,6 +436,7 @@ mod tests {
                 &map,
                 headers::Tools::default(),
                 None,
+                0,
             );
             let s = Sequence::parse(&bytes).unwrap();
             assert_eq!(
@@ -355,6 +472,7 @@ mod tests {
                     &ChromaQpTable::hevc(0),
                     headers::Tools::default(),
                     Some(timing),
+                    0,
                     layers,
                 );
                 let s = Sequence::parse(&bytes).unwrap();
@@ -364,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_twelve_bit_before_parsing_coding_tools() {
+    fn rejects_depth_beyond_sixteen_bits_before_parsing_coding_tools() {
         let mut w = nc_common::BitWriter::new();
         w.put_bits(0, 8); // SPS/VPS ids.
         w.put_bits(0, 3);
@@ -385,11 +503,11 @@ mod tests {
         w.put_ue(32);
         w.put_bit(false);
         w.put_bit(false);
-        w.put_ue(4);
+        w.put_ue(9);
         w.trailing_bits();
         assert!(matches!(
             Sequence::parse(&w.into_bytes()),
-            Err(DecodeError::Unsupported("VVC bit depth above 10"))
+            Err(DecodeError::Malformed("VVC bit depth"))
         ));
     }
 

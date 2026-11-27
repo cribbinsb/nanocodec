@@ -38,13 +38,16 @@ Ours is development build 23c962d8b, measured before 0.7.0's last encoder change
   an encoder can make; the benchmark itself does not cross-decode. Our decoders also decode other encoders'
   streams, but not yet every valid one:
   - HEVC: 147/147 of the official ITU-T/ISO HEVC_v1 suite (Main, Main 10); no known gap in those profiles.
-  - VVC: 226/283 of the official H.266.1 suite (all its Main 10 streams but two); reserved NAL types,
-    layer ids above 0 and a VPS id above 0 are rejected, not yet ignored.
-  - H.264: 150/190 of the official H.264.1 suite (its AVCv1, FRExt and High 10 sets), field pictures
-    included; not yet MBAFF frames (38 streams) or pictures above level 5.2.
+    Range extensions (4:0:0, 4:2:2, 4:4:4, up to 16 bits): 49/49 of the JCT-VC RExt set.
+  - VVC: 272/283 of the official H.266.1 suite (Main 10 and Main 10 4:4:4: 4:2:2, 4:4:4, palette and
+    ACT included; all its single-layer streams but two); not its nine multilayer streams (other
+    profiles). Range extensions: 72/116 of the second-edition set (every 12-bit stream; 16-bit not yet).
+  - H.264: 190/190 of the official H.264.1 suite (its AVCv1, FRExt and High 10 sets), interlaced
+    streams (field pictures, MBAFF) included. Its 4:2:2 / 4:4:4 sets (High 4:2:2, High 4:4:4
+    Predictive, up to 14 bits, separate colour planes, lossless): 34/38, not yet the 4 MBAFF ones.
   - AV1 and VP9: 242/242 libaom and 314/314 libvpx test vectors (encoder project vectors, not official
-    suites). AV1 not yet: quantizer matrices, loop-filter deltas, segment features other than the
-    quantizer, lossless segments in mixed frames, odd frame sizes, switch frames. VP9: all four profiles.
+    suites). AV1: all three profiles (27/27 High and Professional streams we made with aomenc, 4:2:2,
+    4:4:4, 12-bit, RGB). VP9: all four profiles.
   - AV2 (a draft): 30 streams (12 dav2d vectors, 18 we made with avmenc); no suite exists. Not yet:
     10-bit, monochrome, several tiles, reference scaling.
 
@@ -55,8 +58,9 @@ Ours is development build 23c962d8b, measured before 0.7.0's last encoder change
   the standard decoders.
 - **RTP / WebRTC transport.** Packetizers and depacketizers for all five standard formats (`nanocodec-rtp`;
   AV1 with the Dependency Descriptor for SVC forwarding), tested against GStreamer and Pion. Headless Chrome
-  decodes our H.264, AV1 (including two-layer SVC) and VP9 packets over a real WebRTC session, bit-exact. VP9
-  spatial layers are not carried yet ([details](docs/handoff/rtp.md)).
+  decodes our H.264, AV1 (including SVC) and VP9 packets (including two- and three-layer spatial SVC and K-SVC,
+  whole or forwarded to a lower layer by the payload descriptor alone) over a real WebRTC session, bit-exact
+  ([details](docs/handoff/rtp.md)).
 - **Built for loss.** Temporal layers and key frames on request (all six formats), long-term references with
   loss feedback (all six) and intra refresh (H.264, HEVC, VVC, AV1), combinable with each other and with
   temporal layers. Recovery from a lost frame is tested with the standard decoders for all six formats

@@ -138,8 +138,9 @@ pub use cdef::band::{
 };
 pub use cdef::{CDEF_PADDING, CDEF_UNAVAILABLE, CdefBlock, CdefSource};
 pub use codec_txfm::{
-    H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer, HevcTransform, VvcLfnst,
-    VvcQuantizer, VvcTransformKind, scale_coefficient,
+    H264_ZIGZAG_4X4, H264_ZIGZAG_8X8, H264Quantizer, HevcForwardMode, HevcForwardStaging,
+    HevcQuantizer, HevcTransform, VvcExtendedBlock, VvcLfnst, VvcQuantizer, VvcTransformKind,
+    h264_blocks_of_8x8, h264_coefficient_cost, scale_coefficient,
 };
 pub use convert::DisplayMatrix;
 pub use cpu::Isa;
@@ -193,7 +194,7 @@ mod vvc_refinement;
 pub use vvc_lmcs::VvcLmcs;
 
 mod vvc_recon;
-pub use vvc_recon::vvc_joint_chroma;
+pub use vvc_recon::{vvc_act_inverse, vvc_joint_chroma};
 mod vvc_intra;
 pub use vvc_intra::rectangular::vvc_intra_filter_references;
 pub use vvc_intra::{
@@ -204,9 +205,9 @@ mod vvc_alf;
 pub use vvc_alf::{
     VVC_ALF_BLOCK, VVC_ALF_CLIP_INDICES, VVC_ALF_DOT_LANES, VVC_ALF_GRAM_ALIGN,
     VVC_ALF_GRAM_COLUMNS, VVC_ALF_GRAM_MAX_MAGNITUDE, VVC_ALF_GRAM_MAX_SAMPLES, VVC_ALF_GRAM_TERMS,
-    VVC_ALF_MAX_BIT_DEPTH, VVC_ALF_MAX_GROUP_SUM, VVC_ALF_REACH, VVC_ALF_SAMPLE_LANES,
-    VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, VVC_ALF_TRANSPOSES,
-    vvc_alf_clip_value, vvc_alf_gram_index, vvc_alf_max_group_sum,
+    VVC_ALF_MAX_BIT_DEPTH, VVC_ALF_MAX_GROUP_SUM, VVC_ALF_MAX_SCALAR_BIT_DEPTH, VVC_ALF_REACH,
+    VVC_ALF_SAMPLE_LANES, VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS,
+    VVC_ALF_TRANSPOSES, vvc_alf_clip_value, vvc_alf_gram_index, vvc_alf_max_group_sum,
 };
 
 mod vvc_geo;

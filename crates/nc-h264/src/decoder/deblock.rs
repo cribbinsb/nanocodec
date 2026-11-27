@@ -4,6 +4,10 @@
 //!
 //! Boundary strengths (§8.7.2.1) come from the macroblock states; the
 //! sample filters of each edge (§8.7.2.3, §8.7.2.4) are the nc-dsp kernels.
+//! Chroma: 4:2:0 edges on luma edges 0 and 2; 4:2:2 the same vertically and
+//! all four horizontal edges (filtered as two 8x8 halves by the 4:2:0
+//! kernel); 4:4:4 Cb and Cr with the luma filter on the luma edges (§8.7:
+//! `chromaStyleFilteringFlag` 0 when `ChromaArrayType` is 3).
 //! A field picture is filtered as a picture of its own rows; its
 //! macroblocks are field macroblocks, so horizontal intra edges take bS 3,
 //! not 4, and vertical vector differences count in field rows (a
@@ -16,17 +20,21 @@
 //! `r + 1` is complete. Rows are filtered in order, so the result is the
 //! standard's whole-picture raster order.
 
+mod mbaff;
+
 use core::ops::Range;
 
-use nc_common::BitDepths;
+use nc_common::{BitDepths, PlaneViewMut};
 use nc_dsp::{Dsp, H264EdgeParams, H264MbEdges, Pixel};
 use nc_encoder::Mv;
 
 use super::Planes;
+use super::chroma::ChromaArray;
 use super::mbstate::{MbKind, MbState};
 use super::transform::chroma_qp_at;
 use crate::deblock::{DEBLOCK_IDC_NO_SLICE_EDGES, DeblockControl};
 use crate::tables::{DEBLOCK_ALPHA, DEBLOCK_BETA, DEBLOCK_TC0};
+pub(super) use mbaff::filter_mbaff;
 
 /// Vector difference (quarter samples) from which `bS` is 1 (§8.7.2.1).
 const MV_THRESHOLD: i32 = 4;
@@ -34,9 +42,9 @@ const MV_THRESHOLD: i32 = 4;
 const FIELD_MV_THRESHOLD_Y: i32 = 2;
 /// Largest `indexA` / `indexB` (eqs. 8-461, 8-462).
 const MAX_INDEX: i32 = 51;
-/// Luma and chroma QPs run from `−QpBdOffset` (−12 at 10 bits) to 51; the
+/// Luma and chroma QPs run from `−QpBdOffset` (−36 at 14 bits) to 51; the
 /// threshold table is indexed by their average plus [`QP_BIAS`].
-const QP_BIAS: i32 = 12;
+const QP_BIAS: i32 = 36;
 const QP_COUNT: usize = 52 + QP_BIAS as usize;
 /// `bS` of macroblock edges and internal edges next to intra samples.
 const BS_INTRA_MB_EDGE: u8 = 4;
@@ -175,7 +183,8 @@ pub(super) struct DeblockContext<'a> {
     /// `MbState::slice` of `slices[0]`.
     pub first_slice: u32,
     pub slices: &'a [SliceFilter],
-    pub monochrome: bool,
+    /// `ChromaArrayType`.
+    pub chroma: ChromaArray,
     pub depths: BitDepths,
     /// A field picture.
     pub field: bool,
@@ -217,7 +226,7 @@ fn deblock_rows_of<const BI: bool, const FIELD: bool, const SW: bool, T: Pixel>(
         width_mbs,
         first_slice,
         slices,
-        monochrome,
+        chroma,
         depths,
         field: _,
     } = *ctx;
@@ -227,8 +236,12 @@ fn deblock_rows_of<const BI: bool, const FIELD: bool, const SW: bool, T: Pixel>(
         return;
     }
     let [luma, cb, cr] = planes;
+    // 4:2:2 chroma has horizontal edges on every luma edge, which need
+    // their strengths even where the 8x8 transform leaves luma unfiltered.
+    let all_horizontal = chroma == ChromaArray::Yuv422;
     for addr in rows.start * width_mbs..rows.end * width_mbs {
-        let Some(bs) = strengths::<BI, FIELD, SW, T>(mbs, width_mbs, (first_slice, slices), addr)
+        let at = (first_slice, slices);
+        let Some(bs) = strengths::<BI, FIELD, SW, T>(mbs, width_mbs, at, addr, all_horizontal)
         else {
             continue;
         };
@@ -240,14 +253,27 @@ fn deblock_rows_of<const BI: bool, const FIELD: bool, const SW: bool, T: Pixel>(
         let neighbour_qp = [addr.wrapping_sub(1), addr.wrapping_sub(width_mbs)]
             .map(|n| mbs.get(n).map_or(0, filter_qp));
         let qp = filter_qp(mb);
-        let luma_edges = mb_edges::<T>(&bs, LUMA_EDGES, |edge_0, dir| {
+        // With the 8x8 transform luma edges 1 and 3 are not filtered (their
+        // strengths are 0 unless 4:2:2 chroma needs them).
+        let luma_mask = if mb.transform_8x8 {
+            TRANSFORM_8X8_EDGES
+        } else {
+            LUMA_EDGES
+        };
+        let luma_edges = mb_edges::<T>(&bs, luma_mask, |edge_0, dir| {
             let qp_p = if edge_0 { neighbour_qp[dir] } else { qp };
             filter.thresholds(qp_p, qp)
         });
         dsp.at(depths.luma)
             .h264_deblock_mb_luma(luma, (mx * 16, my * 16), &luma_edges);
-        if monochrome {
-            continue;
+        match chroma {
+            ChromaArray::Yuv420 => {}
+            ChromaArray::Mono => continue,
+            ChromaArray::Yuv422 | ChromaArray::Yuv444 => {
+                let at = (mx, my);
+                other_chroma::<T>(ctx, [&mut *cb, &mut *cr], (at, mb), &bs, neighbour_qp);
+                continue;
+            }
         }
         // 4:2:0 chroma edges lie on luma edges 0 and 2 and take their bS
         // (§8.7.2.1); QPs map through each component's offset.
@@ -274,8 +300,68 @@ fn deblock_rows_of<const BI: bool, const FIELD: bool, const SW: bool, T: Pixel>(
 
 /// Luma edges of a macroblock: all four of each direction.
 const LUMA_EDGES: u8 = 0b1111;
+/// The luma edges of an 8x8 transform: 0 and 2.
+const TRANSFORM_8X8_EDGES: u8 = 0b0101;
 /// 4:2:0 chroma edges: luma edges 0 and 2 of each direction.
 const CHROMA_EDGES: u8 = 0b0101;
+/// Chroma rows of a 4:2:2 macroblock filtered per call of the 8x8 kernel.
+const HALF_422: usize = 8;
+
+/// The chroma of a 4:2:2 or 4:4:4 macroblock at (`mx`, `my`) with
+/// strengths `bs`, out of line (the 4:2:0 path stays inlined).
+#[inline(never)]
+fn other_chroma<T: Pixel>(
+    ctx: &DeblockContext<'_>,
+    [cb, cr]: [&mut PlaneViewMut<'_, T>; 2],
+    ((mx, my), mb): ((usize, usize), &MbState),
+    bs: &Strengths,
+    neighbour_qp: [i32; 2],
+) {
+    let filter = &ctx.slices[(mb.slice - ctx.first_slice) as usize];
+    let qp = filter_qp(mb);
+    let kernels = ctx.dsp.at(ctx.depths.of::<T>().chroma);
+    for (comp, plane) in [cb, cr].into_iter().enumerate() {
+        let q = filter.chroma_qp(qp, comp);
+        let p = neighbour_qp.map(|n| filter.chroma_qp(n, comp));
+        if ctx.chroma == ChromaArray::Yuv444 {
+            // The luma filter at the chroma QP on the luma edges (§8.7.2.3
+            // with chromaStyleFilteringFlag 0).
+            let mask = if mb.transform_8x8 {
+                TRANSFORM_8X8_EDGES
+            } else {
+                LUMA_EDGES
+            };
+            let edges = mb_edges::<T>(bs, mask, |edge_0, dir| {
+                filter.thresholds(if edge_0 { p[dir] } else { q }, q)
+            });
+            kernels.h264_deblock_mb_luma(plane, (mx * 16, my * 16), &edges);
+            continue;
+        }
+        // 4:2:2: an 8x16 block. Each 8-row half is a 4:2:0 macroblock to the
+        // kernel: vertical edges 0 and 2 with each luma segment (4 rows)
+        // as two of the kernel's 2-row segments, horizontal edges at rows 0
+        // and 4 of the half on luma edges 0 and 1 (upper half) or 2 and 3.
+        for half in 0..2 {
+            let rows = |seg: [u8; 4]| {
+                let (a, b) = (seg[2 * half], seg[2 * half + 1]);
+                [a, a, b, b]
+            };
+            let mut half_bs = [[[0u8; 4]; 4]; 2];
+            for edge in [0, 2] {
+                half_bs[0][edge] = rows(bs[0][edge]);
+            }
+            half_bs[1][0] = bs[1][2 * half];
+            half_bs[1][2] = bs[1][2 * half + 1];
+            let edges = mb_edges::<T>(&half_bs, CHROMA_EDGES, |edge_0, dir| {
+                // Only the macroblock's own top edge has the neighbour's QP.
+                let outer = edge_0 && (dir == 0 || half == 0);
+                filter.thresholds(if outer { p[dir] } else { q }, q)
+            });
+            let at = (mx * 8, my * 16 + half * HALF_422);
+            kernels.h264_deblock_mb_chroma_plane(plane, at, &edges);
+        }
+    }
+}
 
 /// The edges `edges` (a mask of edge indices, per direction) of a
 /// macroblock with strengths `bs` as nc-dsp's macroblock form, with the
@@ -324,6 +410,7 @@ fn strengths<const BI: bool, const FIELD: bool, const SW: bool, T>(
     width_mbs: usize,
     (first_slice, slices): (u32, &[SliceFilter]),
     addr: usize,
+    all_horizontal: bool,
 ) -> Option<Strengths> {
     let mb = &mbs[addr];
     let control = slices[(mb.slice - first_slice) as usize].control;
@@ -344,8 +431,8 @@ fn strengths<const BI: bool, const FIELD: bool, const SW: bool, T>(
     let mut out = [[[0u8; 4]; 4]; 2];
     let q_uniform = is_uniform_inter(mb);
     let [vertical, horizontal] = &mut out;
-    direction_strengths::<0, BI, FIELD, T>(mb, left, q_uniform, vertical);
-    direction_strengths::<1, BI, FIELD, T>(mb, above, q_uniform, horizontal);
+    direction_strengths::<0, BI, FIELD, T>(mb, left, q_uniform, false, vertical);
+    direction_strengths::<1, BI, FIELD, T>(mb, above, q_uniform, all_horizontal, horizontal);
     if SW {
         switching_strengths::<FIELD>(&mut out, (mb, [left, above]), (first_slice, slices));
     }
@@ -377,11 +464,13 @@ fn switching_strengths<const FIELD: bool>(
 
 /// The strengths of the four luma edges of direction `DIR` (0 vertical) of
 /// `mb`, with `neighbour` across edge 0; only edge 0 when `mb` is a
-/// uniform inter macroblock.
+/// uniform inter macroblock. `all`: every edge, even those the 8x8
+/// transform leaves unfiltered in luma (4:2:2 chroma filters them).
 fn direction_strengths<const DIR: usize, const BI: bool, const FIELD: bool, T>(
     mb: &MbState,
     neighbour: Option<&MbState>,
     q_uniform: bool,
+    all: bool,
     out: &mut [[u8; 4]; 4],
 ) {
     if let Some(p_mb) = neighbour {
@@ -392,7 +481,7 @@ fn direction_strengths<const DIR: usize, const BI: bool, const FIELD: bool, T>(
     }
     // With the 8x8 transform the luma edges 1 and 3 are not transform
     // block edges and are not filtered (§8.7).
-    let step = if mb.transform_8x8 { 2 } else { 1 };
+    let step = if mb.transform_8x8 && !all { 2 } else { 1 };
     for edge in (step..4).step_by(step) {
         out[edge] = edge_strengths::<DIR, BI, FIELD, T>(mb, mb, edge);
     }

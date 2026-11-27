@@ -9,7 +9,7 @@
 //! Samples are random and extreme (0 and 1023 runs, the filters' largest
 //! overshoot).
 use crate::{check::CheckReport, rng::Rng};
-use nc_common::{BitDepth, Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, ChromaFormat, Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::av1_film_grain::{Av1FilmGrainParams, Av1ScalingPoints};
 use nc_dsp::av1_mc::blend::{Av1CompoundPred, Av1Mask, Av1ObmcEdge, av1_distance_weights};
 use nc_dsp::av1_mc::convolve::Av1McAxis;
@@ -1079,7 +1079,7 @@ fn check_av1_intra_high(
                     let mut out = [vec![0u16; w * h], vec![0u16; w * h]];
                     for (k, kernels) in [cand, refer].into_iter().enumerate() {
                         let mut view = PlaneViewMut::new(&mut out[k], w, w, h).expect("dst");
-                        kernels.av1_cfl_predict(&luma, extent, dc, alpha, &mut view);
+                        kernels.av1_cfl_predict(&luma, extent, (1, 1), dc, alpha, &mut view);
                     }
                     report.cases += 1;
                     if out[0] != out[1] {
@@ -1126,7 +1126,7 @@ fn check_av1_intra_u8_rect_and_cfl(
                 let mut out = [vec![0u8; w * h], vec![0u8; w * h]];
                 for (k, kernels) in [cand, refer].into_iter().enumerate() {
                     let mut view = PlaneViewMut::new(&mut out[k], w, w, h).expect("dst");
-                    kernels.av1_cfl_predict(&luma, extent, dc, alpha, &mut view);
+                    kernels.av1_cfl_predict(&luma, extent, (1, 1), dc, alpha, &mut view);
                 }
                 report.cases += 1;
                 if out[0] != out[1] {
@@ -1145,9 +1145,17 @@ fn check_av1_grain_high(
     rng: &mut Rng,
     report: &mut CheckReport,
 ) {
+    // Each round's chroma format (the synthesis driver's per-axis layout
+    // over the same row kernels).
+    const FORMATS: [ChromaFormat; 4] = [
+        ChromaFormat::Yuv420,
+        ChromaFormat::Yuv422,
+        ChromaFormat::Yuv444,
+        ChromaFormat::Yuv420,
+    ];
     for &(w, h) in &[(64, 64), (70, 38), (98, 66)] {
-        for round in 0..4 {
-            let mut src = Picture::<u16>::new(128, 96, 0).expect("src");
+        for (round, &format) in FORMATS.iter().enumerate() {
+            let mut src = Picture::<u16>::with_format(128, 96, format, 0).expect("src");
             for plane in [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V] {
                 let len = src.plane(plane).view().data().len();
                 let vals = samples_at(depth, len, round, rng);
@@ -1208,8 +1216,8 @@ fn check_av1_grain_high(
                 mc_identity: false,
             };
             let mut out = [
-                Picture::<u16>::new(128, 96, 0).expect("out0"),
-                Picture::<u16>::new(128, 96, 0).expect("out1"),
+                Picture::<u16>::with_format(128, 96, format, 0).expect("out0"),
+                Picture::<u16>::with_format(128, 96, format, 0).expect("out1"),
             ];
             let (sy, su, sv) = (
                 src.plane(PlaneIndex::Y).view(),
@@ -1220,7 +1228,7 @@ fn check_av1_grain_high(
                 let [oy, ou, ov] = out[k].planes_mut();
                 let (mut vy, mut vu, mut vv) = (oy.view_mut(), ou.view_mut(), ov.view_mut());
                 kernels.av1_add_film_grain(
-                    &params,
+                    (&params, format),
                     [&sy, &su, &sv],
                     (w, h),
                     [&mut vy, &mut vu, &mut vv],
@@ -1230,7 +1238,7 @@ fn check_av1_grain_high(
             for p in [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V] {
                 if out[0].plane(p).view().data() != out[1].plane(p).view().data() {
                     report.failures.push(format!(
-                        "u16 AV1 film grain {depth:?} {w}x{h} round={round} plane={p:?}: differs"
+                        "u16 AV1 film grain {depth:?} {format:?} {w}x{h} round={round} plane={p:?}: differs"
                     ));
                 }
             }

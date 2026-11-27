@@ -382,11 +382,16 @@ fn typed_luma_blocks_round_trip_in_every_set() {
             }
             for (tx, ctx, block, tx_type) in &cases {
                 let mut decoded = vec![0; tx.coded_len()];
-                let read_type =
+                let read =
                     read_typed(&mut reader, &mut decoded, *tx, *ctx, 100, (set, coding)).unwrap();
+                let expected = ReadBlock {
+                    tx_type: *tx_type,
+                    eob: levels::end_of_block(&nc_dsp::Dsp::new(), block, *tx),
+                    context: entropy_context(block),
+                };
                 assert_eq!(
-                    (&decoded, read_type),
-                    (block, *tx_type),
+                    (&decoded, read),
+                    (block, expected),
                     "{set:?} {coding:?} {tx:?} {ctx:?}"
                 );
             }

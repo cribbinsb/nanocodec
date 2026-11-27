@@ -10,7 +10,9 @@
 
 use core::cell::Cell;
 
-use nc_common::nal::{SEI_USER_DATA_UNREGISTERED, sei_rbsp, write_nal_unit};
+use nc_common::nal::{
+    SEI_RECOVERY_POINT, SEI_USER_DATA_UNREGISTERED, sei_payload_bytes, sei_rbsp, write_nal_unit,
+};
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_dsp::{BlockSize, Dsp};
 use nc_encoder::chroma_policy::ChromaPolicy;
@@ -39,7 +41,7 @@ use crate::mbqp::QpTracker;
 use crate::mc::{MacroblockViews, McKernels, whole_sample_macroblock};
 use crate::mvpred::{predict_16x16, skip_mv_from};
 use crate::params::{
-    Entropy, StreamParams, idr_slice_header, p_slice_header, picture_parameter_set,
+    Entropy, MAX_FRAME_NUM, StreamParams, idr_slice_header, p_slice_header, picture_parameter_set,
     sequence_parameter_set,
 };
 use crate::partition::{Motion, SplitSearch, choose_partition, mvd_bits};
@@ -430,6 +432,9 @@ pub struct H264Backend {
     /// The motion search's 8x8 vectors of the macroblock about to be coded
     /// (`sub_block_motion`).
     sub_vectors: Option<[Mv; 4]>,
+    /// The engine's split override opens the macroblock about to be coded
+    /// (`sub_block_motion`).
+    split_forced: bool,
     /// Predicted vectors of the macroblock being decided; cleared when a
     /// macroblock is coded (its neighbours' state changes).
     predicted: Cell<Option<PredictionCache>>,
@@ -1211,6 +1216,7 @@ impl H264Backend {
                 refine_steps: self.tuning.split_refine_steps.round() as usize,
                 refine_mv16: self.tuning.split_refine_mv16 >= 0.5,
                 range: self.params.mv_range(),
+                forced: self.split_forced,
             },
         );
         let best_split = best_split.filter(|(_, mvs)| self.refresh_allows_quadrants(x, mvs));
@@ -2141,6 +2147,25 @@ impl H264Backend {
         }
     }
 
+    /// The recovery point SEI (§D.1.8) of a frame starting an intra-refresh
+    /// sweep: decoding from it, pictures are exact from the one the sweep
+    /// completes on. `recovery_frame_cnt` counts `frame_num`, which advances
+    /// at most once a frame, so the sweep's frame count reaches that picture
+    /// or a later one; none when it passes `MaxFrameNum`.
+    fn recovery_point(&self) -> Option<Vec<u8>> {
+        let window = self.refresh.as_ref().filter(|w| w.sweep_start)?;
+        let frames = window.recovery_frames;
+        if frames >= MAX_FRAME_NUM {
+            return None;
+        }
+        let mut w = BitWriter::new();
+        w.put_ue(frames); // recovery_frame_cnt
+        w.put_bit(true); // exact_match_flag: clean blocks never read dirty samples
+        w.put_bit(false); // broken_link_flag
+        w.put_bits(0, 2); // changing_slice_group_idc
+        Some(sei_rbsp(SEI_RECOVERY_POINT, &sei_payload_bytes(w)))
+    }
+
     /// The squared-error and SATD weights at `qp`, with the frame's λ scale.
     fn weights_at(&self, qp: u8) -> (f32, f32) {
         let (rd, satd) = frame_weights(qp);
@@ -2495,6 +2520,13 @@ impl CodecBackend for H264Backend {
     const SECOND_REFERENCE_WITH_LAYERS: bool = true;
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Periodic keys at their own quantizer, without the reuse term's finer
+        // still cells (`reuse.rs`; owner, 2026-11-27: smaller periodic keys at
+        // neutral J). Final check (medium, 600 f keys every 150 and 900 f keys
+        // every 300, draw 2026-11-27, --strict-buffer): J -0.05% [-0.13, +0.02],
+        // no guard; FourPeople 854x480 400 kbps, keys every 150: 25.3 -> 18.2 KB.
+        // The other presets pin 2 until screened.
+        ("persist.reuse_keys", 0.0),
         // Periodic keys at the engine's `rate.key_cap_buffer` 1.0, the first key at 0.8
         // (`rate.key_cap_buffer_first`). Cap 1.0 on the first key too passed the train (L3 -0.14 %,
         // final check -0.77 %) but failed `static_recovery`'s layered H.264 Default check (the
@@ -2828,6 +2860,7 @@ impl CodecBackend for H264Backend {
             access_unit: Vec::new(),
             encoder_info: None,
             sub_vectors: None,
+            split_forced: false,
             predicted: Cell::new(None),
             residual: Box::new(Residual::empty(ResidualKind::Inter)),
             alt_residual: None,
@@ -3095,9 +3128,10 @@ impl CodecBackend for H264Backend {
             })
     }
 
-    fn sub_block_motion(&mut self, _block: &Block, vectors: &[Mv]) {
+    fn sub_block_motion(&mut self, _block: &Block, vectors: &[Mv], split: bool) {
         // A macroblock has four 8x8 sub-blocks.
         self.sub_vectors = vectors.try_into().ok();
+        self.split_forced = split;
     }
 
     fn wants_sub_block_motion(&self) -> bool {
@@ -3184,6 +3218,12 @@ impl CodecBackend for H264Backend {
     /// parameter sets.
     fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
         self.encoder_info = payload.map(|payload| sei_rbsp(SEI_USER_DATA_UNREGISTERED, &payload));
+    }
+
+    /// The SPS level from the next IDR picture on covers `rate`
+    /// (`StreamParams::with_rate`; the vectors keep the size level's range).
+    fn set_stream_rate(&mut self, rate: Option<nc_encoder::StreamRate>) {
+        self.params = self.params.with_rate(rate);
     }
 
     fn set_refresh(&mut self, window: Option<&RefreshWindow>) {
@@ -3330,6 +3370,9 @@ impl CodecBackend for H264Backend {
             NAL_TYPE_NON_IDR_SLICE
         };
         let nal = (self.nal_ref_idc << NAL_REF_IDC_SHIFT) | nal_type;
+        if let Some(sei) = self.recovery_point() {
+            write_nal_unit(&[NAL_SEI], &sei, &mut self.access_unit);
+        }
         write_nal_unit(&[nal], &slice_data, &mut self.access_unit);
         std::mem::take(&mut self.access_unit)
     }

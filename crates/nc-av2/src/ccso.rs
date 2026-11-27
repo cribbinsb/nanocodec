@@ -21,7 +21,11 @@
 //! finishes ([`crate::entropy::Writer::replay`]).
 
 use nc_common::decode::{BitReader, DecodeError, Result};
-use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
+use nc_common::{BitDepth, BitWriter, Picture, PlaneIndex, PlaneView, Sample};
+use nc_dsp::Dsp;
+use nc_dsp::av2_dec::ccso::{CcsoFilter, CcsoMode};
+
+use crate::general::sample::Av2Sample;
 
 use crate::cdf_models::TileCdfs;
 use crate::entropy::{Reader, Writer};
@@ -67,8 +71,6 @@ const TWO_LEVEL: usize = 2;
 /// Entries of the look-up table the filter indexes as
 /// `band << 4 | class0 << 2 | class1` (`filter_offset`).
 pub const LUT_LEN: usize = (1 << MAX_BAND_LOG2) << 4;
-/// Largest 8-bit sample.
-const MAX_SAMPLE: i32 = 255;
 /// Planes CCSO may filter.
 const PLANES: usize = 3;
 /// Context of a unit whose left unit is filtered (the left and bottom-left
@@ -190,9 +192,47 @@ impl PlaneFilter {
         lut
     }
 
-    /// The classifier of this filter's syntax.
+    fn dsp_filter(&self) -> CcsoFilter {
+        let threshold = self.threshold().min(255) as u8;
+        let mode = if self.band_only {
+            CcsoMode::Bands
+        } else if self.two_level {
+            CcsoMode::Two(threshold)
+        } else {
+            CcsoMode::Three(threshold)
+        };
+        let mut codes = [0; 64];
+        for band in 0..self.bands() {
+            for first in 0..self.intervals() {
+                for second in 0..self.intervals() {
+                    let index = if self.band_only {
+                        band
+                    } else {
+                        band << 4 | first << 2 | second
+                    };
+                    codes[index / 2] |=
+                        self.offset(self.entry(band, first, second)) << (4 * (index & 1));
+                }
+            }
+        }
+        let mut offsets = [0; 16];
+        for (code, offset) in offsets[..OFFSET_STEPS.len()].iter_mut().enumerate() {
+            *offset = self.offset_value(code as u8) as i8;
+        }
+        CcsoFilter::new(mode, 8 - self.band_log2, codes, offsets)
+    }
+
+    /// The classifier of this filter's syntax for 8-bit luma.
     #[must_use]
     pub fn classifier(&self) -> Classifier {
+        self.classifier_at(BitDepth::EIGHT)
+    }
+
+    /// The classifier for luma of `depth`: the bands split the deeper
+    /// range (dav2d `ccso_prep_*`'s `shift = bitdepth - max_band_log2`);
+    /// the edge threshold and offsets stay as coded.
+    #[must_use]
+    pub fn classifier_at(&self, depth: BitDepth) -> Classifier {
         Classifier {
             neighbours: neighbour_pair(self.support),
             threshold: self.threshold(),
@@ -200,7 +240,7 @@ impl PlaneFilter {
             band_shift: if self.band_log2 == 0 {
                 None
             } else {
-                Some(8 - u32::from(self.band_log2))
+                Some(depth.bits() - u32::from(self.band_log2))
             },
         }
     }
@@ -327,12 +367,14 @@ impl Classifier {
 
     /// The look-up index of a luma sample `centre` with neighbours `a`, `b`.
     #[must_use]
-    pub fn lut_index(&self, centre: u8, a: u8, b: u8) -> usize {
+    #[inline]
+    pub fn lut_index<T: Sample>(&self, centre: T, a: T, b: T) -> usize {
+        let centre = centre.to_i32();
         let band = self
             .band_shift
-            .map_or(0, |shift| usize::from(centre >> shift));
-        let class0 = self.class(i32::from(a) - i32::from(centre));
-        let class1 = self.class(i32::from(b) - i32::from(centre));
+            .map_or(0, |shift| (centre >> shift) as usize);
+        let class0 = self.class(a.to_i32() - centre);
+        let class1 = self.class(b.to_i32() - centre);
         band << 4 | class0 << 2 | class1
     }
 }
@@ -534,14 +576,14 @@ pub(crate) fn read_flags(
 /// The deblocked luma CCSO classifies, copied before CDEF changes it and
 /// padded by [`PADDING`] replicated samples (`extend_ccso_border`).
 #[derive(Debug, Default)]
-pub struct CcsoSource {
+pub struct CcsoSource<T: Sample = u8> {
     stride: usize,
     width: usize,
     height: usize,
-    samples: Vec<u8>,
+    samples: Vec<T>,
 }
 
-impl CcsoSource {
+impl<T: Sample> CcsoSource<T> {
     /// An empty source; [`Self::fill_from`] sizes it.
     #[must_use]
     pub fn new() -> Self {
@@ -549,12 +591,13 @@ impl CcsoSource {
     }
 
     /// Copy and pad the deblocked luma plane.
-    pub fn fill_from(&mut self, luma: &PlaneView<'_>) {
+    pub fn fill_from(&mut self, luma: &PlaneView<'_, T>) {
         let (width, height) = (luma.width(), luma.height());
         self.stride = width + 2 * PADDING;
         self.width = width;
         self.height = height;
-        self.samples.resize(self.stride * (height + 2 * PADDING), 0);
+        self.samples
+            .resize(self.stride * (height + 2 * PADDING), T::default());
         for y in 0..height {
             let row = luma.row(y);
             let start = (y + PADDING) * self.stride;
@@ -579,10 +622,15 @@ impl CcsoSource {
     /// The luma sample at (`x`, `y`), which may lie up to [`PADDING`]
     /// samples outside the picture.
     #[must_use]
-    pub fn at(&self, x: isize, y: isize) -> u8 {
+    pub fn at(&self, x: isize, y: isize) -> T {
         let px = (x + PADDING as isize) as usize;
         let py = (y + PADDING as isize) as usize;
         self.samples[py * self.stride + px]
+    }
+
+    pub(crate) fn span(&self, x: isize, y: isize, count: usize) -> &[T] {
+        let start = (y + PADDING as isize) as usize * self.stride + (x + PADDING as isize) as usize;
+        &self.samples[start..start + count]
     }
 
     /// Luma width.
@@ -618,25 +666,37 @@ pub fn filter_picture(
     params: &CcsoParams,
     flag: impl Fn(PlaneIndex, usize, usize) -> bool,
 ) {
-    filter_picture_runs(picture, source, params, 1, flag);
+    filter_picture_runs(
+        picture,
+        source,
+        params,
+        (1, BitDepth::EIGHT),
+        &Dsp::new(),
+        flag,
+    );
 }
 
-/// The frame flag is constant across each aligned span of `flag_width`
-/// luma samples. Sample it once for that span, as dav2d does per filter
-/// block and lossless sub-block.
-pub(crate) fn filter_picture_runs(
-    picture: &mut Picture,
-    source: &CcsoSource,
+/// [`filter_picture`] for samples of `depth`, where the frame flag is
+/// constant across each aligned span of `flag_width` luma samples: it is
+/// sampled once per span, as dav2d does per filter block and lossless
+/// sub-block.
+pub(crate) fn filter_picture_runs<T: Av2Sample>(
+    picture: &mut Picture<T>,
+    source: &CcsoSource<T>,
     params: &CcsoParams,
-    flag_width: usize,
+    (flag_width, depth): (usize, BitDepth),
+    dsp: &Dsp,
     flag: impl Fn(PlaneIndex, usize, usize) -> bool,
 ) {
+    let depth = depth.of::<T>();
     for plane in PlaneIndex::ALL {
         let Some(filter) = params.plane(plane) else {
             continue;
         };
+        let kernel = filter.dsp_filter();
+        let neighbours = filter.classifier().neighbours;
         let lut = filter.lut();
-        let classifier = filter.classifier();
+        let classifier = filter.classifier_at(depth);
         let shift = usize::from(plane != PlaneIndex::Y);
         let span = (flag_width >> shift).max(1);
         let mut view = picture.plane_mut(plane).view_mut();
@@ -648,9 +708,25 @@ pub(crate) fn filter_picture_runs(
                 if !flag(plane, left << shift, ly) {
                     continue;
                 }
-                for (x, sample) in (left..).zip(output) {
-                    let offset = i32::from(lut[source.lut_index(&classifier, x << shift, ly)]);
-                    *sample = (i32::from(*sample) + offset).clamp(0, MAX_SAMPLE) as u8;
+                let lx = (left << shift) as isize;
+                let len = output.len() << shift;
+                let center = source.span(lx, ly as isize, len);
+                let [first, second] = if filter.band_only {
+                    [center; 2]
+                } else {
+                    neighbours.map(|(dx, dy)| source.span(lx + dx, ly as isize + dy, len))
+                };
+                let eight = [center, first, second].map(T::eight);
+                if let (Some(output), [Some(center), Some(first), Some(second)]) =
+                    (T::eight_mut(output), eight)
+                {
+                    kernel.apply(dsp, output, [center, first, second], shift == 1);
+                } else {
+                    // Deeper samples: the scalar classification at their depth.
+                    for (x, sample) in (left..).zip(output) {
+                        let index = source.lut_index(&classifier, x << shift, ly);
+                        *sample = depth.clip_to(sample.to_i32() + i32::from(lut[index]));
+                    }
                 }
             }
         }
@@ -748,12 +824,12 @@ mod tests {
         assert_eq!(c.class(-65), 0);
         assert_eq!(c.class(-64), 1);
         assert_eq!(c.class(200), 1);
-        assert_eq!(c.lut_index(200, 100, 200), (3 << 4) | 1);
+        assert_eq!(c.lut_index(200_u8, 100, 200), (3 << 4) | 1);
     }
 
     #[test]
     fn aligned_flag_spans_match_pixel_flags() {
-        let mut original = Picture::new(264, 72, 0).unwrap();
+        let mut original = Picture::new(263, 73, 0).unwrap();
         for plane in PlaneIndex::ALL {
             let mut view = original.plane_mut(plane).view_mut();
             for y in 0..view.height() {
@@ -764,19 +840,59 @@ mod tests {
         }
         let mut source = CcsoSource::default();
         source.fill_from(&original.plane(PlaneIndex::Y).view());
-        let params = CcsoParams::new([Some(filter()); 3]).unwrap();
-        for width in [4, 64, UNIT] {
-            let mut expected = original.clone();
-            let mut actual = original.clone();
-            let flag = |plane: PlaneIndex, x: usize, y: usize| {
-                !(x / width + y / 4 + plane as usize).is_multiple_of(3)
-            };
-            filter_picture(&mut expected, &source, &params, flag);
-            filter_picture_runs(&mut actual, &source, &params, width, flag);
-            for plane in PlaneIndex::ALL {
-                let (a, b) = (actual.plane(plane).view(), expected.plane(plane).view());
-                for y in 0..a.height() {
-                    assert_eq!(a.row(y), b.row(y), "span {width}, {plane:?}, row {y}");
+        let filters = [
+            PlaneFilter::zero(true, 3, 0, 0, false, 6),
+            PlaneFilter::zero(false, 1, 2, 5, true, 3),
+            PlaneFilter::zero(false, 0, 3, 2, false, 3),
+            PlaneFilter::zero(false, 3, 3, 4, false, 0),
+        ];
+        for mut filter in filters {
+            for i in 0..filter.entries() {
+                filter.set_offset(i, ((i + i / 11) % 8) as u8);
+            }
+            let params = CcsoParams::new([Some(filter); 3]).unwrap();
+            let lut = filter.lut();
+            let classifier = filter.classifier();
+            for width in [4, 64, UNIT] {
+                let flag = |plane: PlaneIndex, x: usize, y: usize| {
+                    !(x / width + y / 4 + plane as usize).is_multiple_of(3)
+                };
+                let mut expected = original.clone();
+                for plane in PlaneIndex::ALL {
+                    let shift = usize::from(plane != PlaneIndex::Y);
+                    let mut view = expected.plane_mut(plane).view_mut();
+                    for y in 0..view.height() {
+                        let ly = y << shift;
+                        for (x, sample) in view.row_mut(y).iter_mut().enumerate() {
+                            let lx = x << shift;
+                            if flag(plane, lx, ly) {
+                                let index = source.lut_index(&classifier, lx, ly);
+                                *sample = sample.saturating_add_signed(lut[index]);
+                            }
+                        }
+                    }
+                }
+                for dsp in nc_dsp::Isa::ALL.into_iter().filter_map(Dsp::with_isa) {
+                    let mut actual = original.clone();
+                    filter_picture_runs(
+                        &mut actual,
+                        &source,
+                        &params,
+                        (width, BitDepth::EIGHT),
+                        &dsp,
+                        flag,
+                    );
+                    for plane in PlaneIndex::ALL {
+                        let (a, b) = (actual.plane(plane).view(), expected.plane(plane).view());
+                        for y in 0..a.height() {
+                            assert_eq!(
+                                a.row(y),
+                                b.row(y),
+                                "{:?}, span {width}, {plane:?}, row {y}, {filter:?}",
+                                dsp.isa()
+                            );
+                        }
+                    }
                 }
             }
         }

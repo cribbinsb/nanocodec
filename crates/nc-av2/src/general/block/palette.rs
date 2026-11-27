@@ -10,15 +10,15 @@
 use super::Tile;
 use super::context;
 use super::size::BlockSize;
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 
 /// Palettes hold 2..=8 colours.
 pub const MAX_COLORS: usize = 8;
 const MIN_COLORS: usize = 2;
-/// Bits of a colour (8-bit only) and of the first delta's extra width.
-const COLOR_BITS: u32 = 8;
-const MAX_COLOR: u8 = u8::MAX;
-const DELTA_BASE_BITS: u32 = COLOR_BITS - 3;
+/// The first delta's width is the colour's (the sample depth) less this,
+/// plus a coded extra of this many bits (dav2d `read_pal_plane`'s `bpc - 3`).
+const DELTA_BITS_BELOW_DEPTH: u32 = 3;
 const DELTA_EXTRA_BITS: u32 = 2;
 /// The above palette is reused only inside the same 64x64 row band (AVM
 /// `MIN_SB_SIZE_LOG2`), in 4x4 units.
@@ -43,11 +43,11 @@ const INDEX_BITS: u32 = 4;
 pub struct Palette {
     /// 0 without a palette, else 2..=8.
     pub size: u8,
-    /// The colours in ascending order.
-    pub colors: [u8; MAX_COLORS],
+    /// The colours in ascending order, samples of the sequence's depth.
+    pub colors: [u16; MAX_COLORS],
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// A luma palette's size and colours (dav2d `read_pal_plane`): reuse
     /// flags over the neighbours' colours, then new colours as ascending
     /// deltas; the palette is the sorted union.
@@ -110,20 +110,22 @@ impl Tile<'_, '_> {
 
     /// Colours not taken from the cache: the first as a literal, each
     /// next as a delta above it, its width shrinking with the room left.
-    fn new_colors(&mut self, colors: &mut [u8]) -> Result<()> {
-        let mut previous = self.reader.literal(COLOR_BITS)?;
-        colors[0] = previous as u8;
+    fn new_colors(&mut self, colors: &mut [u16]) -> Result<()> {
+        let color_bits = self.depth().bits();
+        let mut previous = self.reader.literal(color_bits)?;
+        colors[0] = previous as u16;
         if colors.len() == 1 {
             return Ok(());
         }
-        let mut bits = DELTA_BASE_BITS + self.reader.literal(DELTA_EXTRA_BITS)?;
-        let max = u32::from(MAX_COLOR);
+        let mut bits =
+            color_bits - DELTA_BITS_BELOW_DEPTH + self.reader.literal(DELTA_EXTRA_BITS)?;
+        let max = self.depth().max() as u32;
         for i in 1..colors.len() {
             let delta = self.reader.literal(bits)?;
             previous = (previous + delta + 1).min(max);
-            colors[i] = previous as u8;
+            colors[i] = previous as u16;
             if previous + 1 >= max {
-                colors[i..].fill(MAX_COLOR);
+                colors[i..].fill(max as u16);
                 break;
             }
             bits = bits.min(1 + (max - previous - 1).ilog2());
@@ -318,11 +320,12 @@ impl Tile<'_, '_> {
         let (bw4, bh4) = size.units();
         let offset = self.planes.offset(0, self.row, self.column);
         let stride = self.planes.stride[0];
+        let colors = palette.colors.map(|color| T::from_i32(i32::from(color)));
         nc_dsp::av2_dec::ipred::pal_pred(
             &mut self.planes.data[0],
             offset,
             stride,
-            &palette.colors,
+            &colors,
             &self.palette_indices,
             (bw4 as usize) << 2,
             (bh4 as usize) << 2,
@@ -359,7 +362,7 @@ fn pack_indices(
 }
 
 /// `[aa,bb,...]` in two-digit hex, as dav2d's trace prints colours.
-fn hex_list(values: &[u8]) -> String {
+fn hex_list(values: &[u16]) -> String {
     let items: Vec<String> = values.iter().map(|v| format!("{v:02x}")).collect();
     format!("[{}]", items.join(","))
 }

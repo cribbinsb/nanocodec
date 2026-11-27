@@ -306,3 +306,5 @@ fixed_qp.light.planner.depth_removal_min_quantizer = 0.8
 # Pinned before AV1 medium adopted proactive in-frame steering (Brief 21, 2026-11-24):
 # not screened at L3/FC on this rung.
 rate.in_frame = 0
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2

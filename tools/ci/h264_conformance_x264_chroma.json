@@ -1,0 +1,375 @@
+{
+ "suite": "h264-x264-chroma",
+ "reference": "the suite's reference decoder (SUITES)",
+ "streams": [
+  {
+   "name": "x264_420_lossless_cavlc",
+   "bitstream": "x264_420_lossless_cavlc/x264_420_lossless_cavlc.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 152064,
+   "scan": "progressive",
+   "features": [
+    "lossless"
+   ],
+   "md5": "3b98acdb196b54291816cdae5cb5bef1",
+   "frames": 12,
+   "frame_md5": [
+    "f89f87d7fa7ac299700384930a9863ce",
+    "a65db2cf029e242b645002f7258ea06f",
+    "6a5ab8448f4636f900e39c45aae5e3e9",
+    "0aca89563e27298d576d265cb598e4e4",
+    "b9aecbac39253ca6e709608a15db2fd6",
+    "7797e95650ccf3b67e870d220d96d65e",
+    "8693df000e9c4b4b15988a01f96a266a",
+    "d4736dbc910bc88a4af69fd96240deb6",
+    "b790d44d26413c1d87b8f6c1722b8dc2",
+    "7b88a0e2d37f2e77efd3add7c5f44388",
+    "985b5a8db7f10c86189c4c62908b511c",
+    "142d49cedc4a5d1fe994ccd26c5cf2ba"
+   ],
+   "sha256": "99075d5f168272f9404d165b2142c1c3cf961d869820a8aa69970fc42da7c280",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_422_cabac_8x8_bframes",
+   "bitstream": "x264_422_cabac_8x8_bframes/x264_422_cabac_8x8_bframes.264",
+   "profile": "High 4:2:2",
+   "chroma_format": "4:2:2",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 202752,
+   "scan": "progressive",
+   "features": [
+    "B slices (spatial direct)",
+    "implicit bi-pred weights"
+   ],
+   "md5": "e40cd47be455885dabcb5576138867db",
+   "frames": 12,
+   "frame_md5": [
+    "a9496df114b919e45707087ddb9a2cd1",
+    "e79560baec3f9d6733e0082ea090b259",
+    "65a87ccb75b95712f61dc36d573ac00b",
+    "a6d676c8792c353560b59a2fc20381b7",
+    "2c7cc952aebd400a1e174a54587eda18",
+    "0519cc789ab1b9a280993ebfae9ee913",
+    "93e1262cc99ddddc3bfb3f9163bfa42e",
+    "44331feda9e146df3e47082e0e9bc190",
+    "120667056f7331e4e22d8f7d0070dcbc",
+    "d5c2465cca312bcd85c098318a612d1c",
+    "86a561097bc03b65996956bb1215bf36",
+    "d1adb07c97471c9ee1672fd179864716"
+   ],
+   "sha256": "3e21ab6bec2a59978c9d43b81d09f6c77f1df70a6b192ce4930e46167bbaac1f",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_422_cavlc_10bit",
+   "bitstream": "x264_422_cavlc_10bit/x264_422_cavlc_10bit.264",
+   "profile": "High 4:2:2",
+   "chroma_format": "4:2:2",
+   "bit_depth": [
+    10,
+    10
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 405504,
+   "scan": "progressive",
+   "features": [
+    "B slices (spatial direct)",
+    "implicit bi-pred weights",
+    "bit depth above 8"
+   ],
+   "md5": "06cb11185ad050fe88469558cc7b5f0e",
+   "frames": 12,
+   "frame_md5": [
+    "32b15769eb7baeca46ac1b0bcd6ff179",
+    "7c1692724110282515a645bac5ae93b3",
+    "fbb019014136cd515433d4a8c54a2d6e",
+    "efc9698c60e116aec30079a851cccc24",
+    "28284a3ceaf2d2e3c0dc3c72bec6b43e",
+    "914e440df326fc7069295f547032dd5f",
+    "59d2990ef00d96005ad2fc6c6260b09c",
+    "6c263cc6a2779d9e1d648de21c421214",
+    "be700e4178db98806b9aed4f6656d34b",
+    "bd12506802d45efe04edef013367224b",
+    "b82ce5fee3fa8b89923384f0e9eb0f36",
+    "ccbe1d6a091aa7c369af50131dc1bb4b"
+   ],
+   "sha256": "5872d87e2e0b4a35e4fbf3a12f40d5f6bce9de9324fb97eb114a06a61cb1af0a",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_422_lossless_cabac",
+   "bitstream": "x264_422_lossless_cabac/x264_422_lossless_cabac.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:2:2",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 202752,
+   "scan": "progressive",
+   "features": [
+    "lossless"
+   ],
+   "md5": "c11a6bdec4cdd1782b51b35239c501d0",
+   "frames": 12,
+   "frame_md5": [
+    "7d262ba8386f41f9bb7da50607a79479",
+    "3b16b676da815e95e703a486ee9e3e78",
+    "23ef5b9f2aab0897088aca8d486a5303",
+    "93a59ada11a2f7e85731065467af6abb",
+    "8a731aa395068f498fbae9d987857519",
+    "2aa347f6768401efe8c3355ca73d12ce",
+    "5438582cc753ce2473efd05d010845da",
+    "76d10d775aa4ae4e852c9dc4b3cf58bc",
+    "e021e6bde7a2db6ef7078047a319bee4",
+    "deb10f09c6022bc49bb89a9647158a9f",
+    "f5e1af8b47d18b82e7028573045b15c7",
+    "a65c5de08189148c6dc6b9377b5c962c"
+   ],
+   "sha256": "b1ab9669fb808560d7da47a37d52193115d329cf9cc115086fc07ab1b2c483b4",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_444_cabac_10bit_cqm",
+   "bitstream": "x264_444_cabac_10bit_cqm/x264_444_cabac_10bit_cqm.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    10,
+    10
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 608256,
+   "scan": "progressive",
+   "features": [
+    "B slices (spatial direct)",
+    "implicit bi-pred weights",
+    "bit depth above 8"
+   ],
+   "md5": "0c2b626132bca99def6726762ccfd435",
+   "frames": 12,
+   "frame_md5": [
+    "29a84b44c2fc13ca837431514c116a3b",
+    "a8853ca77ff7318b7f477006214982e9",
+    "b57cbd8698af43e9043526ef0b967f94",
+    "58b03227f31f10a73cb376c67bbc02b7",
+    "2c5e64aa0a42b87975e2e4ba06ddef8a",
+    "9e4cc175dd07656afc0530419f25ea74",
+    "a0fc3038c0abaf23c3205f7931bdb0f7",
+    "4548d7784d856644dada317ceb16eb23",
+    "8b49c132ac4f000b34f5c4d508dccd02",
+    "cdccbbd5854b064f6b15ce6759241618",
+    "42b17c15c3babd9a7efbbc8f518e9646",
+    "4b1e52120cd3faefda6aad88e8e5c369"
+   ],
+   "sha256": "0c97fb8751ce745cf526ec8696c9e1ce54f04c5ee3d186593faf317696422ccd",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_444_cabac_8x8_bframes",
+   "bitstream": "x264_444_cabac_8x8_bframes/x264_444_cabac_8x8_bframes.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 304128,
+   "scan": "progressive",
+   "features": [
+    "B slices (temporal direct)",
+    "implicit bi-pred weights"
+   ],
+   "md5": "afb0fe5ffbfa09bacf2faaa279cc2f62",
+   "frames": 12,
+   "frame_md5": [
+    "b9a8581a23e521024221511c90fdb02b",
+    "abde8a7449cf602fa25fedd90693d849",
+    "9194846fca7b4fc742730d50588435c0",
+    "0a7aa8abb6214bb93814784569d4eff0",
+    "ecd5d56f743be2080c524c39056563ab",
+    "8cd0014cc8fb399a953c71868fe8171f",
+    "e38b622e9cfeb1c4876cf50712175471",
+    "0f4f16790546edf0b0e0b4649640c5a3",
+    "9a8fa29e3ef797eb1e8d8adfebe69f4f",
+    "f069730cd400a31a5376a9d4e4d68de3",
+    "690c8b3ad1e64d10a1196d9973c7a28a",
+    "fdfd83c99561c3cc0bc31b1f6ec5e38a"
+   ],
+   "sha256": "18cd7d8d1e379857e7b47fbb072551fa6164abcaa0a4264001b5e3a6a87b6ea9",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_444_cabac_odd_size",
+   "bitstream": "x264_444_cabac_odd_size/x264_444_cabac_odd_size.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 351,
+   "height": 199,
+   "frame_bytes": 209547,
+   "scan": "progressive",
+   "features": [
+    "B slices (spatial direct)",
+    "implicit bi-pred weights"
+   ],
+   "md5": "92fcc08227e5fb024d8f491197d90e20",
+   "frames": 12,
+   "frame_md5": [
+    "551a9ca3ffa07996081e2b59bba3af82",
+    "d35658b2f237b91abb3c52e7149365fd",
+    "f65c79d39bdf9a2afa8b33df7b00f062",
+    "f7c3bdde8c877e19d638b24ebd7082a0",
+    "71c648269555872515859d7cf7e81424",
+    "025e58deb3a2ed0fe5d07cf818705ac2",
+    "42e564d6e04a03c9d103bc0fc485abbf",
+    "a25cf117f83e4efa004cf83a0d585bd4",
+    "19916f73b056a6dacaa6ea6e49a602d4",
+    "a6d3deb002e35a61822834a44f3eae22",
+    "f4e3bf1484eb8c03cbbce1913b64bc3c",
+    "6f584697d64ddfb7831f61819d01980e"
+   ],
+   "sha256": "8e9cbc6bcb199dc38f6f8667c13b53c1d010875ce8e5a049430c51c18036ad88",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_444_cavlc_slices",
+   "bitstream": "x264_444_cavlc_slices/x264_444_cavlc_slices.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 304128,
+   "scan": "progressive",
+   "features": [
+    "B slices (spatial direct)",
+    "implicit bi-pred weights"
+   ],
+   "md5": "252b9125fb0e6bf0652913fba7564dfc",
+   "frames": 12,
+   "frame_md5": [
+    "21d32190bd2fb75e8d5b00354828253e",
+    "e29187d40e103f7330bea0994bc6d2df",
+    "e455b0eeb1c6836d3634e6c34d2cc53f",
+    "47d3fe894c818c1a170dd03b1f132953",
+    "1bd2eb749fa858391dd975b41b71043e",
+    "7fa11855fe8e990be89694a32489f8e5",
+    "e4b1b383008e133ac6ac215a29a0a166",
+    "22466cd34e1fc2bfb2234ceebeabf3f1",
+    "00e6d08aff7d1bcbdb2fb9f8da08cdac",
+    "0753215d5a9455c8b55edc6576f1a8ea",
+    "3cb7a98f8e1c794cf52c5ae2ed586080",
+    "bfe4b4e6179e84fe90ddfbe9669a084c"
+   ],
+   "sha256": "c5840004946c1bcfa04e9c7910118e82f516c65a26266a7c32915aeb004d9502",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_444_lossless_cabac",
+   "bitstream": "x264_444_lossless_cabac/x264_444_lossless_cabac.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 304128,
+   "scan": "progressive",
+   "features": [
+    "lossless"
+   ],
+   "md5": "710c3efc01d7578b54954bc81528c665",
+   "frames": 12,
+   "frame_md5": [
+    "00b0d7ccb730fc7141ada9bfb02434e5",
+    "b747e1ffc87433592f7b739ecc335ee1",
+    "b8729f1c3a9b02e12def7e67dc645b08",
+    "91538cf1d46ded1a9aecb2474e857702",
+    "a5bc5146089b756ac05b928340d21019",
+    "abab2bdf2f3fe441322e7c0d61f64564",
+    "17418b4987457656a9d224aa8e9e05fa",
+    "237ba4f702fa683af7f9c103a02b0f1b",
+    "f9ccc1dd827f6ea1ec47bc34fd973ce8",
+    "a5a0400d6e97c7d7b1c35480c4973fed",
+    "078effee72456b4d39818089de74fb84",
+    "01415a07992cd03bd474659a46fa1d87"
+   ],
+   "sha256": "3dc689691332e9598fbb91f6619e7f39f82d658033baba83dbdd91f8df4ca276",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "x264_444_lossless_cavlc_10bit",
+   "bitstream": "x264_444_lossless_cavlc_10bit/x264_444_lossless_cavlc_10bit.264",
+   "profile": "High 4:4:4 Predictive",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    10,
+    10
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 608256,
+   "scan": "progressive",
+   "features": [
+    "lossless",
+    "bit depth above 8"
+   ],
+   "md5": "59d84810227a2b1d8fdd9ddcf5402d5a",
+   "frames": 12,
+   "frame_md5": [
+    "dd73bbe14281968168b0057047112bcb",
+    "27e6977b050def4d01dc171dda3c7830",
+    "b62c699e0c6bef3ed5773f24234335c3",
+    "91e8962f046da557e2d24c2d425c4882",
+    "f3bf52ee011d3e18306cc221135409e7",
+    "d6ed92d5760d4fd937cd932e0c5ca2d2",
+    "847a0e82030bc19a4b58852bd8dbcedc",
+    "d36e763303c0018d0defbc1be2a0abeb",
+    "d50755bb3fe63243ab96911dc7998800",
+    "a71887219871c45de0d1a5a380e45be2",
+    "b1125c4dbfbc6d6eeb564088948a02ff",
+    "763a03028cea29acab4eec0cf945cd67"
+   ],
+   "sha256": "fc422d44485872a2eb8a6e96a336fbf563e54f88376cf4961d32a435df26322c",
+   "shipped_md5_agrees": null,
+   "cross_check_agrees": true
+  }
+ ]
+}

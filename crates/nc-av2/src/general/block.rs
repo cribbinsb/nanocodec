@@ -8,8 +8,13 @@
 //! reader, [`crate::entropy::Cdf`] (models in [`super::cdfs`]), and in time
 //! the coefficient reader, transforms and kernels.
 //!
+//! A frame's tiles are decoded one after another in raster order, each
+//! from the frame's initial models with its own symbol reader and
+//! contexts (dav2d `setup_tile`); the models later frames inherit are one
+//! tile's or the average of the first tiles' ([`FinalModels`]).
+//!
 //! Each tool group reached from a block (intra, inter, residual, loop
-//! filters, segmentation and tiles) answers
+//! filters, segmentation) answers
 //! [`nc_common::decode::DecodeError::Unsupported`] naming itself until it
 //! is built; docs/handoff/av2.md "The general block layer" lists the
 //! interfaces each group plugs into.
@@ -48,6 +53,7 @@ mod syntax;
 pub mod transform;
 mod warp_motion;
 
+use crate::general::sample::{Av2Sample, Coefficient};
 use std::fmt;
 
 use std::rc::Rc;
@@ -58,16 +64,17 @@ use super::frame_header::{FrameHeader, FrameType, TIP_FRAME_MODE};
 use super::references::MAX_REFERENCES;
 use super::sequence::{MAX_SEGMENTS, SequenceHeader};
 use crate::entropy::{Cdf, Reader};
+use crate::transform::dequantizer_step;
 use coefficients::LEVELS;
 use context::{AboveCache, Contexts};
-use frame_refs::FrameReferences;
+use frame_refs::{FrameReferences, ReferenceScale};
 use inter_pred::{InterPrediction, InterScratch};
 use intra::LUMA_MAP_SIDE;
 use motion::frame::{FrameMotion, ReferenceMotion, TemporalField};
 use motion::vector::REFERENCES;
 use motion::{MotionStore, StoreGeometry};
-use nc_common::Picture;
 use nc_common::decode::{DecodeError, Result};
+use nc_common::{BitDepth, Picture};
 use nc_dsp::av2_dec::wedge::InterMasks;
 use pixels::Planes;
 use reconstruction::ChromaResiduals;
@@ -84,6 +91,9 @@ const UNIT_LOG2: u32 = 2;
 
 /// The data of a tile without symbols (TIP frames).
 const NO_SYMBOLS: &[u8] = &[0];
+/// At most this many tiles (as a log2) take part in the average of the
+/// final models (dav2d `dav2d_decode_frame_update_cdf`: eight).
+const MAX_AVERAGED_TILES_LOG2: u32 = 3;
 /// Coefficients of one transform (at most 32x32 are coded).
 const COEFFICIENTS: usize = 32 * 32;
 /// A block copy's source window: up to 64x64 samples and a column and a
@@ -118,8 +128,10 @@ struct Bounds {
 /// `Dav2dTileState`): the symbol reader and models, the contexts, and
 /// where the current block is.
 #[allow(clippy::struct_excessive_bools, reason = "the tile's running flags")]
-struct Tile<'a, 't> {
+struct Tile<'a, 't, T: Av2Sample> {
     dsp: &'a nc_dsp::Dsp,
+    /// The sequence's sample depth (read through [`Tile::depth`]).
+    bit_depth: BitDepth,
     frame: &'a FrameHeader,
     sequence: &'a SequenceHeader,
     reader: Reader<'a>,
@@ -170,51 +182,55 @@ struct Tile<'a, 't> {
     luma_type_map: [u8; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
     /// Coefficient scratch: one luma transform, a block's chroma, the
     /// level buffer, the scans.
-    luma_coefficients: Vec<i16>,
-    chroma_residuals: ChromaResiduals,
+    luma_coefficients: Vec<Coefficient<T>>,
+    chroma_residuals: ChromaResiduals<Coefficient<T>>,
     levels: Vec<i8>,
     /// Whether the last U transform had coefficients (V's skip context).
     u_has_coefficients: bool,
     /// The frame being reconstructed.
-    planes: Planes,
+    planes: Planes<T>,
     /// The current palette block's index map, unpacked and packed (dav2d
     /// `scratch.pal_idx_y`).
     palette_map: Vec<u8>,
     palette_indices: Vec<u8>,
     /// Intra prediction's edge buffer (dav2d `scratch.edge`).
-    edge: Vec<u8>,
+    edge: Vec<T>,
     /// The motion of decoded blocks, in frames whose blocks may predict
     /// vectors (inter frames, or frames allowing intra block copy).
     motion: Option<MotionStore>,
     /// A block copy's source window (dav2d `scratch.emu_edge`).
-    window: Vec<u8>,
+    window: Vec<T>,
     /// What inter blocks know of the frame's references.
     references: FrameReferences,
     /// Per plane, a reference's CCSO flags per 64x64 filter block, where
     /// the frame reuses them.
     reused_ccso: [Option<&'a [[bool; 3]]>; 3],
     /// The pictures of the reference ranks.
-    reference_pictures: [Option<&'a Picture>; MAX_REFERENCES],
+    reference_pictures: [Option<&'a Picture<T>>; MAX_REFERENCES],
     /// The wedge and inter-intra masks.
     masks: &'a InterMasks,
     /// The inter block being reconstructed.
     inter_prediction: Option<InterPrediction>,
     /// Inter prediction's scratch.
-    inter_scratch: InterScratch,
+    inter_scratch: InterScratch<T>,
     /// The current inter block's sub-PU deblocking level.
     sub_pu_level: u8,
     /// The above references and motion modes at the current superblock's
     /// start (inter frames).
     above_cache: AboveCache,
+    /// The deblocking contexts at tile boundaries.
+    boundary_levels: loop_filters::TileEdges,
+    /// The tile's row and column in the frame's tile grid.
+    grid_position: (usize, usize),
     trace: Option<BlockTrace<'t>>,
 }
 
-/// A decoded tile: the reconstructed planes (padded to whole
+/// A frame's decoded tiles: the reconstructed planes (padded to whole
 /// superblocks), what the loop filters need, and the final models.
 #[derive(Debug)]
-pub struct DecodedTile {
+pub struct DecodedTile<T: Av2Sample> {
     /// The reconstruction before loop filters.
-    pub planes: Planes,
+    pub planes: Planes<T>,
     /// The loop filters' maps.
     pub filters: FilterMaps,
     /// The models after the tile.
@@ -226,12 +242,12 @@ pub struct DecodedTile {
 
 /// What a frame's tile reads beyond its headers and data.
 #[derive(Debug, Clone, Copy)]
-pub struct FrameInputs<'a> {
+pub struct FrameInputs<'a, T: Av2Sample> {
     /// Per plane, a reference's CCSO flags per 64x64 filter block, where
     /// the frame reuses them.
     pub reused_ccso: [Option<&'a [[bool; 3]]>; 3],
     /// The pictures of the reference ranks (inter frames).
-    pub references: [Option<&'a Picture>; MAX_REFERENCES],
+    pub references: [Option<&'a Picture<T>>; MAX_REFERENCES],
     /// The wedge and inter-intra masks.
     pub masks: &'a InterMasks,
     /// Cached diagonal transform scan tables.
@@ -242,26 +258,37 @@ pub struct FrameInputs<'a> {
     /// The primary reference's segment map, where the frame predicts
     /// segment ids from it (dav2d `prev_segmap`).
     pub previous_segments: Option<&'a SegmentMap>,
+    /// The scale of each reference rank of another size than the frame.
+    pub scales: [Option<ReferenceScale>; MAX_REFERENCES],
 }
 
-/// Decode the one tile of a frame through the general block layer.
+/// Decode a frame's tiles through the general block layer: `tiles` holds
+/// each tile's data in raster order (none in TIP frames, which code no
+/// symbols).
 /// # Errors
 /// Names the first tool the layer does not have yet; malformed and
 /// truncated data.
-pub fn decode_tile(
+pub fn decode_tiles<T: Av2Sample>(
     sequence: &SequenceHeader,
     frame: &FrameHeader,
     mut cdfs: Rc<Cdfs>,
-    data: &[u8],
-    inputs: FrameInputs<'_>,
+    tiles: &[&[u8]],
+    inputs: FrameInputs<'_, T>,
     trace: Option<BlockTrace<'_>>,
-) -> Result<DecodedTile> {
-    if frame.tiles.columns() * frame.tiles.rows() != 1 {
-        return Err(DecodeError::Unsupported("AV2 multiple tiles"));
+) -> Result<DecodedTile<T>> {
+    let count = frame.tiles.columns() * frame.tiles.rows();
+    let coded = frame.codes_symbols();
+    if coded && tiles.len() != count {
+        return Err(DecodeError::Malformed("AV2 tile count"));
     }
-    // A coded tile borrows its unique working models for the entire
-    // decode. A TIP frame has no symbols and keeps the inherited models.
-    let models = (frame.tip.mode != TIP_FRAME_MODE).then(|| Rc::make_mut(&mut cdfs));
+    let data = |index: usize| if coded { tiles[index] } else { NO_SYMBOLS };
+    // Every tile starts from the frame's initial models; a single tile
+    // adapts them in place.
+    let initial = (coded && count > 1).then(|| (*cdfs).clone());
+    let mut final_models = FinalModels::new(sequence, frame, count);
+    // The tiles borrow their unique working models for the entire decode.
+    // A TIP frame has no symbols and keeps the inherited models.
+    let models = coded.then(|| Rc::make_mut(&mut cdfs));
     let units = |size: u32| ((size + 7) >> 3) << 1;
     let root = BlockSize::superblock(frame.superblock_log2);
     let geometry = Geometry {
@@ -270,31 +297,22 @@ pub fn decode_tile(
         root,
         superblock_units: root.units().0,
     };
-    let size = data.len();
     let mut filters = FilterMaps::new(geometry.columns, geometry.rows, frame.quantizer.base);
     filters.segments = SegmentMaps::of_frame(frame, (geometry.columns, geometry.rows));
     let previous_segments =
         SegmentMaps::predicting(filters.segments.as_ref(), inputs.previous_segments);
+    let bounds = Bounds::of_tile(frame, geometry, 0);
     let mut tile = Tile {
         dsp: inputs.dsp,
+        bit_depth: sequence.depth(),
         frame,
         sequence,
-        // TIP frames code no symbols: their reader is never read.
-        reader: Reader::new(if frame.tip.mode == TIP_FRAME_MODE {
-            NO_SYMBOLS
-        } else {
-            data
-        })?,
+        reader: Reader::new(data(0))?,
         cdfs: models,
         adapt: !frame.disable_cdf_update,
         contexts: Contexts::new(geometry.columns as usize),
         geometry,
-        bounds: Bounds {
-            column_start: 0,
-            column_end: geometry.columns,
-            row_start: 0,
-            row_end: geometry.rows,
-        },
+        bounds,
         row: 0,
         column: 0,
         chroma_row: 0,
@@ -312,30 +330,25 @@ pub fn decode_tile(
         luma_direction_map: [context::NO_DIRECTION; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
         luma_fsc_map: [0; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
         luma_type_map: [0; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
-        luma_coefficients: vec![0; COEFFICIENTS],
+        luma_coefficients: vec![<Coefficient<T>>::default(); COEFFICIENTS],
         chroma_residuals: ChromaResiduals::new(),
         levels: vec![0; LEVELS],
         u_has_coefficients: false,
         planes: Planes::new(geometry.columns, geometry.rows, geometry.superblock_units),
         palette_map: Vec::with_capacity(palette::MAX_SIDE * palette::MAX_SIDE),
         palette_indices: Vec::with_capacity(palette::PACKED_INDICES),
-        edge: vec![0; nc_dsp::av2_dec::ipred::EDGE_LEN],
+        edge: vec![T::default(); nc_dsp::av2_dec::ipred::EDGE_LEN],
         motion: (!frame.is_intra() || frame.intra_block_copy.is_some()).then(|| {
             MotionStore::new(
-                StoreGeometry {
-                    columns: geometry.columns,
-                    rows: geometry.rows,
-                    superblock_log2: frame.superblock_log2,
-                    column_start: 0,
-                    column_end: geometry.columns,
-                    row_start: 0,
-                    row_end: geometry.rows,
-                },
-                FrameMotion::new(sequence, frame, inputs.motion),
+                bounds.store_geometry(geometry, frame.superblock_log2),
+                FrameMotion::new(sequence, frame, inputs.motion, &inputs.scales),
             )
         }),
-        window: vec![0; BLOCK_COPY_WINDOW],
-        references: FrameReferences::new(sequence, frame),
+        window: vec![T::default(); BLOCK_COPY_WINDOW],
+        references: FrameReferences {
+            scales: inputs.scales,
+            ..FrameReferences::new(sequence, frame)
+        },
         reused_ccso: inputs.reused_ccso,
         reference_pictures: inputs.references,
         masks: inputs.masks,
@@ -343,32 +356,179 @@ pub fn decode_tile(
         inter_scratch: InterScratch::default(),
         sub_pu_level: super::filters::edges::NO_SUB_PU,
         above_cache: AboveCache::default(),
+        boundary_levels: loop_filters::TileEdges::new(geometry, count),
+        grid_position: (0, 0),
         trace,
     };
     tile.dequant = tile.dequantizers(tile.qindex);
-    tile.decode(size)?;
+    for index in 0..count {
+        tile.decode_tile(index, data(index), initial.as_ref(), &mut final_models)?;
+    }
     let motion_field = tile
         .motion
         .filter(|_| !frame.is_intra())
         .and_then(|motion| motion.frame.into_field());
+    let (planes, filters) = (tile.planes, tile.filters);
+    if let Some(models) = final_models.into_models() {
+        *Rc::make_mut(&mut cdfs) = models;
+    }
     Ok(DecodedTile {
-        planes: tile.planes,
-        filters: tile.filters,
+        planes,
+        filters,
         cdfs,
         motion_field,
     })
 }
 
-impl Tile<'_, '_> {
+impl Bounds {
+    /// The extent of tile `index` (raster order) of `frame`.
+    fn of_tile(frame: &FrameHeader, geometry: Geometry, index: usize) -> Self {
+        let layout = &frame.tiles;
+        let (row, column) = (index / layout.columns(), index % layout.columns());
+        let units = |superblocks: u16| u32::from(superblocks) * geometry.superblock_units;
+        Self {
+            column_start: units(layout.column_starts[column]),
+            column_end: units(layout.column_starts[column + 1]).min(geometry.columns),
+            row_start: units(layout.row_starts[row]),
+            row_end: units(layout.row_starts[row + 1]).min(geometry.rows),
+        }
+    }
+
+    /// The motion store's geometry for a tile of these bounds.
+    fn store_geometry(self, geometry: Geometry, superblock_log2: u8) -> StoreGeometry {
+        StoreGeometry {
+            columns: geometry.columns,
+            rows: geometry.rows,
+            superblock_log2,
+            column_start: self.column_start,
+            column_end: self.column_end,
+            row_start: self.row_start,
+            row_end: self.row_end,
+        }
+    }
+}
+
+/// The models a frame leaves for later frames, collected tile by tile
+/// (dav2d `dav2d_decode_frame_update_cdf`): with several tiles, the
+/// average of the first (up to eight, a power of two) tiles' final models
+/// when the sequence averages them (`avg_cdf_type`), else the final models
+/// of the frame's `context_update_tile_id`.
+enum FinalModels {
+    /// The only tile's working models are the result.
+    Single,
+    /// The final models of tile `tile`, once decoded.
+    Tile { tile: usize, models: Option<Cdfs> },
+    /// The sum of the first `1 << shift` tiles' models, each divided by
+    /// `1 << shift`.
+    Average { shift: u32, sum: Option<Cdfs> },
+}
+
+impl FinalModels {
+    fn new(sequence: &SequenceHeader, frame: &FrameHeader, count: usize) -> Self {
+        if count == 1 {
+            Self::Single
+        } else if sequence.transform.average_cdf_type {
+            Self::Average {
+                shift: count.ilog2().min(MAX_AVERAGED_TILES_LOG2),
+                sum: None,
+            }
+        } else {
+            Self::Tile {
+                tile: usize::from(frame.context_update_tile),
+                models: None,
+            }
+        }
+    }
+
+    /// Take in tile `index`'s final `models`.
+    fn collect(&mut self, index: usize, models: &Cdfs) {
+        match self {
+            Self::Single => {}
+            Self::Tile { tile, models: kept } => {
+                if index == *tile {
+                    *kept = Some(models.clone());
+                }
+            }
+            Self::Average { shift, sum } => {
+                if index >= 1 << *shift {
+                    return;
+                }
+                if let Some(sum) = sum {
+                    sum.add_scaled(models, *shift);
+                } else {
+                    let mut first = models.clone();
+                    first.scale_down(*shift);
+                    *sum = Some(first);
+                }
+            }
+        }
+    }
+
+    /// The models later frames inherit, unless they are the working models.
+    fn into_models(self) -> Option<Cdfs> {
+        match self {
+            Self::Single => None,
+            Self::Tile { models, .. } => models,
+            Self::Average { sum, .. } => sum,
+        }
+    }
+}
+
+impl<'a, T: Av2Sample> Tile<'a, '_, T> {
+    /// Move on to tile `index` (raster order), coded in `data`: its extent,
+    /// symbol reader, models (from the frame's `initial` ones), quantizer
+    /// and restoration filter banks start afresh (dav2d `setup_tile`).
+    fn start_tile(&mut self, index: usize, data: &'a [u8], initial: Option<&Cdfs>) -> Result<()> {
+        let columns = self.frame.tiles.columns();
+        self.grid_position = (index / columns, index % columns);
+        self.bounds = Bounds::of_tile(self.frame, self.geometry, index);
+        self.reader = Reader::new(data)?;
+        if let (Some(models), Some(initial)) = (self.cdfs.as_deref_mut(), initial) {
+            models.clone_from(initial);
+        }
+        self.qindex = self.frame.quantizer.base;
+        self.dequant = self.dequantizers(self.qindex);
+        self.restoration_banks = restoration::Banks::new();
+        self.boundary_levels.next_tile();
+        let store = self
+            .bounds
+            .store_geometry(self.geometry, self.frame.superblock_log2);
+        if let Some(motion) = &mut self.motion {
+            motion.set_tile(store);
+        }
+        Ok(())
+    }
+
+    /// Decode tile `index` from `data` (the first is set up already) and
+    /// take in its final models.
+    fn decode_tile(
+        &mut self,
+        index: usize,
+        data: &'a [u8],
+        initial: Option<&Cdfs>,
+        final_models: &mut FinalModels,
+    ) -> Result<()> {
+        if index > 0 {
+            self.start_tile(index, data, initial)?;
+        }
+        self.decode(data.len())?;
+        self.finish_tile_edges();
+        if let Some(models) = self.cdfs.as_deref() {
+            final_models.collect(index, models);
+        }
+        Ok(())
+    }
+
     /// Every superblock of the tile in raster order.
     fn decode(&mut self, size: usize) -> Result<()> {
         let range = self.reader.range();
         // dav2d traces no tile of a TIP frame (it has no symbols).
-        if self.frame.tip.mode != TIP_FRAME_MODE {
+        if self.frame.codes_symbols() {
+            let (tile_row, tile_column) = self.grid_position;
             trace!(
                 self,
                 0,
-                "decode_tile[tilerow=0/col=0,y={}-{},x={}-{},size={size}]: r={range}",
+                "decode_tile[tilerow={tile_row}/col={tile_column},y={}-{},x={}-{},size={size}]: r={range}",
                 self.bounds.row_start,
                 self.bounds.row_end,
                 self.bounds.column_start,
@@ -411,6 +571,7 @@ impl Tile<'_, '_> {
                 }
                 column += step;
             }
+            self.save_right_edge(row);
             row += step;
         }
         Ok(())
@@ -487,15 +648,22 @@ impl Tile<'_, '_> {
         matches!(self.frame.frame_type, FrameType::Key | FrameType::Intra)
     }
 
+    /// The sample depth, folded by [`BitDepth::of`] (the constant 8 bits
+    /// in 8-bit tiles, so shifts and clips fold there).
+    #[inline]
+    fn depth(&self) -> BitDepth {
+        self.bit_depth.of::<T>()
+    }
+
     /// The index of the 64x64 filter block holding unit (`row`, `column`).
     fn filter_block(&self, row: u32, column: u32) -> usize {
         self.filters.filter_block(row, column)
     }
 }
 
-impl<'a> Tile<'a, '_> {
+impl<'a, T: Av2Sample> Tile<'a, '_, T> {
     /// The picture of reference rank `rank`.
-    fn reference_picture(&self, rank: usize) -> &'a Picture {
+    fn reference_picture(&self, rank: usize) -> &'a Picture<T> {
         self.reference_pictures[rank].expect("inter blocks name decoded references")
     }
 }
@@ -505,46 +673,28 @@ fn samples(units: u32) -> u32 {
     units << UNIT_LOG2
 }
 
-/// The dequantizer step of a quantizer index (dav2d `dav2d_dq_lookup`):
-/// 64 for lossless, else a 24-entry mantissa table doubling every 24
-/// indices.
-pub(crate) fn dequantizer_step(qindex: i32) -> u32 {
-    const LOSSLESS_STEP: u32 = 64;
-    const OCTAVE: i32 = 24;
-    const MANTISSAS: [u32; 24] = [
-        40, 41, 43, 44, 45, 47, 48, 49, 51, 52, 54, 55, 57, 59, 60, 62, 64, 66, 68, 70, 72, 74, 76,
-        78,
-    ];
-    if qindex == 0 {
-        return LOSSLESS_STEP;
-    }
-    let index = qindex - 1;
-    MANTISSAS[(index % OCTAVE) as usize] << (index / OCTAVE)
-}
-
 /// A segment's luma AC quantizer index at superblock quantizer `qindex`:
-/// with its segmentation quantizer delta (dav2d `init_quant_tables`,
-/// `init_deblock_thr_lut_*`).
-pub(crate) fn segment_qindex(frame: &FrameHeader, qindex: u16, segment: usize) -> i32 {
-    const MAX: i32 = 255;
+/// with its segmentation quantizer delta, up to the sequence's largest
+/// index `max` (dav2d `init_quant_tables`, `init_deblock_thr_lut_*`).
+pub(crate) fn segment_qindex(frame: &FrameHeader, qindex: u16, segment: usize, max: i32) -> i32 {
     let qindex = i32::from(qindex);
     frame.segmentation.map_or(qindex, |segmentation| {
-        (qindex + i32::from(segmentation.features.delta_q[segment])).clamp(0, MAX)
+        (qindex + i32::from(segmentation.features.delta_q[segment])).clamp(0, max)
     })
 }
 
-/// A plane quantizer index from the luma AC index and a delta (dav2d
-/// `clip_qidx`): lossless stays lossless unless the delta is positive.
-pub(crate) fn delta_qindex(qindex: i32, delta: i32) -> i32 {
-    const MAX: i32 = 255;
+/// A plane quantizer index from the luma AC index and a delta, up to the
+/// sequence's largest index `max` (dav2d `clip_qidx`): lossless stays
+/// lossless unless the delta is positive.
+pub(crate) fn delta_qindex(qindex: i32, delta: i32, max: i32) -> i32 {
     if qindex == 0 && delta <= 0 {
         0
     } else {
-        (qindex + delta).clamp(1, MAX)
+        (qindex + delta).clamp(1, max)
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// The quantizer matrix of a plane's transforms of size `tx`, when the
     /// frame weights that plane (dav2d `f->qm[tx][plane]`: the first
     /// set's levels; level 15 is flat).
@@ -559,8 +709,9 @@ impl Tile<'_, '_> {
     /// quantizer delta applies first.
     fn dequantizers(&self, qindex: u16) -> [Dequantizers; MAX_SEGMENTS] {
         let mut steps = [[[0; 2]; 3]; MAX_SEGMENTS];
+        let max = i32::from(self.sequence.max_qindex());
         for (segment, steps) in steps.iter_mut().enumerate() {
-            *steps = self.plane_dequantizers(segment_qindex(self.frame, qindex, segment));
+            *steps = self.plane_dequantizers(segment_qindex(self.frame, qindex, segment, max));
         }
         steps
     }
@@ -574,7 +725,8 @@ impl Tile<'_, '_> {
     fn plane_dequantizers(&self, yac: i32) -> Dequantizers {
         let quantizer = &self.frame.quantizer;
         let base = &self.sequence.quant;
-        let step = |delta: i32| dequantizer_step(delta_qindex(yac, delta));
+        let max = i32::from(self.sequence.max_qindex());
+        let step = |delta: i32| dequantizer_step(delta_qindex(yac, delta, max));
         [
             [
                 step(i32::from(quantizer.y_dc) + i32::from(base.base_y_dc_delta)),

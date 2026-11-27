@@ -33,7 +33,7 @@ use crate::tx_size::TxSize;
 use crate::tx_type::{TxSetMode, TxType};
 use crate::{coeff, motion, prediction, transform};
 use nc_common::decode::Result;
-use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::intra_prediction::av2::Av2IntraEdges;
 use nc_dsp::{BlockSize, Dsp, Residual16};
 use nc_encoder::symbol_cost::symbol_bits;
@@ -4090,7 +4090,7 @@ impl BlockCoder {
                     recon,
                     |x, y| cdef::skipped_or_set(blocks, passes_over, (x, y)),
                     params,
-                    dsp,
+                    dsp.at(BitDepth::EIGHT),
                     scratch.unsearched_source(),
                 );
                 params
@@ -4141,6 +4141,7 @@ impl BlockCoder {
         source: &Picture,
         recon: &mut Picture,
         deblocked: &CcsoSource,
+        dsp: &Dsp,
     ) -> CcsoParams {
         if !self.options.ccso || self.lossless() {
             return CcsoParams::OFF;
@@ -4165,7 +4166,8 @@ impl BlockCoder {
             recon,
             deblocked,
             &self.ccso_params,
-            ccso::UNIT,
+            (ccso::UNIT, BitDepth::EIGHT),
+            dsp,
             |plane, x, y| flags.get(plane, x, y),
         );
         self.ccso_params

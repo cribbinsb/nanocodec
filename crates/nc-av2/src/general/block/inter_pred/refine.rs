@@ -12,6 +12,7 @@ use crate::general::block::inter_record::{CompoundType, InterMode, Reference};
 use crate::general::block::motion::Mv;
 use crate::general::block::size::BlockSize;
 use crate::general::frame_header::filter_mode;
+use crate::general::sample::Av2Sample;
 use crate::general::warp;
 
 /// Vectors in sixteenth samples are rounded to eighths with the
@@ -47,7 +48,7 @@ struct Correction {
 
 /// The reference distances of an optical-flow pair as its weights
 /// (dav2d `union aliasi16 d`): zero when either distance is.
-fn flow_weights(tile: &Tile<'_, '_>, references: [Reference; 2]) -> [i8; 2] {
+fn flow_weights<T: Av2Sample>(tile: &Tile<'_, '_, T>, references: [Reference; 2]) -> [i8; 2] {
     let refs = &tile.references;
     let [r0, r1] = references.map(|r| r as usize);
     let (d0, d1) = (refs.abs_distance[r0], refs.abs_distance[r1]);
@@ -145,7 +146,7 @@ fn to_eighths(mv: Mv, delta: Mv) -> Mv {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// The index of the refined-vector grid at luma unit (`row`,
     /// `column`) (dav2d `t->rmv`).
     fn refined_index(row: u32, column: u32) -> usize {
@@ -195,8 +196,11 @@ impl Tile<'_, '_> {
             && self.sequence.inter.optical_flow != 0
             && self.frame.has_future_references
             && self.frame.has_past_references;
-        let implicit =
-            self.sequence.inter.implicit_masked_blend && block.inter.weight == EQUAL_WEIGHT;
+        // Not from references of another size (dav2d `bacp`'s `svc` test).
+        let implicit = self.sequence.inter.implicit_masked_blend
+            && block.inter.weight == EQUAL_WEIGHT
+            && !self.references.scaled(r0)
+            && !self.references.scaled(r1);
         if implicit {
             self.inter_scratch.mask[0] = DEFERRED_MASK;
         }
@@ -404,6 +408,7 @@ impl Tile<'_, '_> {
                 ),
                 ((step << UNIT_LOG2) as usize, (step << UNIT_LOG2) as usize),
                 implicit_search,
+                self.depth(),
             );
             cmv[0].y += 8 * dy;
             cmv[1].y -= 8 * dy;
@@ -420,6 +425,7 @@ impl Tile<'_, '_> {
                 (&self.inter_scratch.refine[0], first),
                 (&self.inter_scratch.refine[1], second),
                 stride,
+                self.depth(),
             )
         } else {
             0
@@ -430,10 +436,13 @@ impl Tile<'_, '_> {
                 &mut regression,
                 (&self.inter_scratch.refine[0], first),
                 (&self.inter_scratch.refine[1], second),
-                stride,
-                ((step << UNIT_LOG2) as usize, (step << UNIT_LOG2) as usize),
-                8,
+                (
+                    stride,
+                    ((step << UNIT_LOG2) as usize, (step << UNIT_LOG2) as usize),
+                    8,
+                ),
                 d,
+                self.depth(),
             );
             flow_correction(&regression[0], d)
         } else {
@@ -542,6 +551,7 @@ impl Tile<'_, '_> {
                         ),
                         ((sw4 << UNIT_LOG2) as usize, (sh4 << UNIT_LOG2) as usize),
                         inter.refine_mv == 2,
+                        self.depth(),
                     );
                     if flow {
                         let at = |dy: i32, dx: i32| {
@@ -553,10 +563,13 @@ impl Tile<'_, '_> {
                             &mut regression,
                             (&self.inter_scratch.refine[0], at(dy, dx)),
                             (&self.inter_scratch.refine[1], at(-dy, -dx)),
-                            window_stride,
-                            ((sw4 << UNIT_LOG2) as usize, (sh4 << UNIT_LOG2) as usize),
-                            (flow_block << UNIT_LOG2) as usize,
+                            (
+                                window_stride,
+                                ((sw4 << UNIT_LOG2) as usize, (sh4 << UNIT_LOG2) as usize),
+                                (flow_block << UNIT_LOG2) as usize,
+                            ),
                             d,
+                            self.depth(),
                         );
                         let mut r = 0;
                         for by in (0..sh4).step_by(2) {
@@ -750,10 +763,13 @@ impl Tile<'_, '_> {
             &mut regression,
             (&self.inter_scratch.refine[0], 0),
             (&self.inter_scratch.refine[1], 0),
-            window_stride,
-            ((bw4 << UNIT_LOG2) as usize, (sh4 << UNIT_LOG2) as usize),
-            (flow_block << UNIT_LOG2) as usize,
+            (
+                window_stride,
+                ((bw4 << UNIT_LOG2) as usize, (sh4 << UNIT_LOG2) as usize),
+                (flow_block << UNIT_LOG2) as usize,
+            ),
             d,
+            self.depth(),
         );
         let mut have_mask = false;
         let mut corrections = [Correction::default(); 4];

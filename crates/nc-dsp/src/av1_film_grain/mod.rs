@@ -1,5 +1,6 @@
-//! AV1 film grain synthesis (AV1 §7.18.3), 4:2:0, 8-bit with the ISA's
-//! row kernels and deeper samples with the scalar ones
+//! AV1 film grain synthesis (AV1 §7.18.3) of 4:2:0, 4:2:2 and 4:4:4
+//! frames, 8-bit with the ISA's row kernels and deeper samples with the
+//! scalar ones
 //! ([`crate::Dsp::av1_add_film_grain_at`]): pseudo-random
 //! grain templates shaped by an auto-regressive filter, laid over the
 //! output frame in 32x32 luma blocks at random offsets (with optional
@@ -26,7 +27,7 @@ mod synthesis;
 
 pub use kernels::Av1GrainScaling;
 
-use nc_common::{BitDepth, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, ChromaFormat, PlaneView, PlaneViewMut};
 
 use gaussian::GAUSSIAN_SEQUENCE;
 
@@ -103,8 +104,9 @@ const GRAIN_MIN: i32 = -128;
 const GRAIN_MAX: i32 = 127;
 /// Luma grain template size (`73` rows of `82`).
 const LUMA_TEMPLATE: (usize, usize) = (73, 82);
-/// 4:2:0 chroma grain template size (`38` rows of `44`).
-const CHROMA_TEMPLATE: (usize, usize) = (38, 44);
+/// Chroma grain template rows and columns along a subsampled axis
+/// (`38`, `44`); a full-resolution axis has luma's.
+const SUBSAMPLED_TEMPLATE: (usize, usize) = (38, 44);
 /// Template rows and columns before the auto-regressive filter starts
 /// (its largest lag).
 const AR_PADDING: usize = 3;
@@ -268,8 +270,24 @@ const MAX_TEMPLATE_SAMPLES: usize = LUMA_TEMPLATE.0 * LUMA_TEMPLATE.1;
 const MAX_AR_ABOVE: usize = 24;
 const MAX_AR_LEFT: usize = AR_PADDING;
 const MAX_SHAPED_COLS: usize = LUMA_TEMPLATE.1 - 2 * AR_PADDING;
-const CHROMA_SHAPED_ROWS: usize = CHROMA_TEMPLATE.0 - AR_PADDING;
-const CHROMA_SHAPED_COLS: usize = CHROMA_TEMPLATE.1 - 2 * AR_PADDING;
+const MAX_SHAPED_ROWS: usize = LUMA_TEMPLATE.0 - AR_PADDING;
+
+/// The chroma grain template size of a format subsampled by `(sub_x,
+/// sub_y)` (§7.18.3.3 `chromaW`, `chromaH`).
+fn chroma_template((sub_x, sub_y): (usize, usize)) -> (usize, usize) {
+    (
+        if sub_y == 1 {
+            SUBSAMPLED_TEMPLATE.0
+        } else {
+            LUMA_TEMPLATE.0
+        },
+        if sub_x == 1 {
+            SUBSAMPLED_TEMPLATE.1
+        } else {
+            LUMA_TEMPLATE.1
+        },
+    )
+}
 
 /// A grain template: `rows` x `columns` grain values. The white noise is
 /// within `round2(±1752, 12 − BitDepth)` (the extremes of
@@ -438,14 +456,19 @@ fn finish_ar_row<G: Grain, const REACH: usize>(
     }
 }
 
-/// The 8-bit grain templates of the three planes (AV1 §7.18.3.3).
-fn templates(p: &Av1FilmGrainParams) -> [Template<i8>; 3] {
-    templates_at(p, BitDepth::EIGHT)
+/// The 8-bit grain templates of the three planes of a frame in `format`
+/// (AV1 §7.18.3.3).
+fn templates(p: &Av1FilmGrainParams, format: ChromaFormat) -> [Template<i8>; 3] {
+    templates_at(p, BitDepth::EIGHT, format)
 }
 
-/// The grain templates of the three planes at `depth` (AV1 §7.18.3.3:
-/// `shift = 12 − BitDepth + grain_scale_shift`).
-fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<G>; 3] {
+/// The grain templates of the three planes of a frame in `format` at
+/// `depth` (AV1 §7.18.3.3: `shift = 12 − BitDepth + grain_scale_shift`).
+fn templates_at<G: Grain>(
+    p: &Av1FilmGrainParams,
+    depth: BitDepth,
+    format: ChromaFormat,
+) -> [Template<G>; 3] {
     let shift = GAUSSIAN_PRECISION - depth.bits() + u32::from(p.grain_scale_shift);
     let ar = (u32::from(p.ar_coeff_shift_minus_6) + 6, grain_range(depth));
     let lag = usize::from(p.ar_coeff_lag);
@@ -463,17 +486,26 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
     let cb_enabled = p.cb_points.count > 0 || p.chroma_scaling_from_luma;
     let cr_enabled = p.cr_points.count > 0 || p.chroma_scaling_from_luma;
     let with_luma = p.y_points.count > 0 && (cb_enabled || cr_enabled);
-    let mut luma_sub = [[0i32; CHROMA_SHAPED_COLS]; CHROMA_SHAPED_ROWS];
+    let (sub_x, sub_y) = format.subsampling();
+    let chroma_size = chroma_template((sub_x, sub_y));
+    let (shaped_rows, shaped_cols) = (chroma_size.0 - AR_PADDING, chroma_size.1 - 2 * AR_PADDING);
+    // The luma grain at each shaped chroma position: the rounded mean of
+    // the luma samples it covers (`luma` of the chroma AR filter), within
+    // the grain range (at most ±2048 at 12 bits), so `i16` holds it.
+    let mut luma_sub = [[0i16; MAX_SHAPED_COLS]; MAX_SHAPED_ROWS];
     if with_luma {
         let lcols = luma.columns;
-        for (cy, dst_row) in luma_sub.iter_mut().enumerate() {
-            let ly = (cy << 1) + AR_PADDING;
-            let r0 = &luma.values[ly * lcols + AR_PADDING..][..2 * CHROMA_SHAPED_COLS];
-            let r1 = &luma.values[(ly + 1) * lcols + AR_PADDING..][..2 * CHROMA_SHAPED_COLS];
-            for (col, avg) in dst_row.iter_mut().enumerate() {
-                let (tl, tr): (i32, i32) = (r0[2 * col].into(), r0[2 * col + 1].into());
-                let (bl, br): (i32, i32) = (r1[2 * col].into(), r1[2 * col + 1].into());
-                *avg = (tl + tr + bl + br + 2) >> 2;
+        for (cy, dst_row) in luma_sub[..shaped_rows].iter_mut().enumerate() {
+            let ly = (cy << sub_y) + AR_PADDING;
+            for (col, avg) in dst_row[..shaped_cols].iter_mut().enumerate() {
+                let lx = (col << sub_x) + AR_PADDING;
+                let mut sum = 0i32;
+                for row in ly..=ly + sub_y {
+                    for column in lx..=lx + sub_x {
+                        sum += luma.values[row * lcols + column].into();
+                    }
+                }
+                *avg = round2(sum, (sub_x + sub_y) as u32) as i16;
             }
         }
     }
@@ -481,7 +513,7 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
     let chroma = |seed_xor: u16, enabled: bool, coefficients: &[u8; 25]| -> Template<G> {
         let mut grain = white_noise::<G>(
             &mut Random(p.grain_seed ^ seed_xor),
-            CHROMA_TEMPLATE,
+            chroma_size,
             shift,
             enabled,
         );
@@ -498,7 +530,7 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
                 return;
             }
             for (sum, &avg) in sums.iter_mut().zip(&luma_sub[y - AR_PADDING]) {
-                *sum += luma_coefficient * avg;
+                *sum += luma_coefficient * i32::from(avg);
             }
         });
         grain
@@ -514,7 +546,7 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
 /// scaling points for a target noise level. Zero for a plane without grain.
 #[must_use]
 pub fn av1_grain_template_rms(p: &Av1FilmGrainParams) -> [f64; 3] {
-    templates(p).map(|t| {
+    templates(p, ChromaFormat::Yuv420).map(|t| {
         let cols = t.columns - 2 * AR_PADDING;
         let count = (t.rows - AR_PADDING) * cols;
         let mut energy = 0.0f64;

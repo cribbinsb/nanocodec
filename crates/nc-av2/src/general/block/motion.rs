@@ -200,6 +200,11 @@ impl MotionStore {
         }
     }
 
+    /// Move on to the next tile of the frame, of `geometry`.
+    pub fn set_tile(&mut self, geometry: StoreGeometry) {
+        self.geometry = geometry;
+    }
+
     /// The tile's geometry.
     #[must_use]
     pub fn geometry(&self) -> &StoreGeometry {

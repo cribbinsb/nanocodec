@@ -1769,11 +1769,1170 @@ impl Cdfs {
             v0.average_with(w0);
         }
     }
+    /// Divide every model by `1 << shift`: the first term of the average
+    /// of several tiles' final models (dav2d `dav2d_cdf_shift`).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "generated: one loop per model family"
+    )]
+    pub fn scale_down(&mut self, shift: u32) {
+        for v0 in &mut self.part_split {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.part_square {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.part_dir {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.part_ext {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.part_4way {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.region_type {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.skip_mode {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.is_inter {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.intrabc {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.skip_txfm {
+            v0.scale_down(shift);
+        }
+        self.gdf.scale_down(shift);
+        for v0 in &mut self.cdef_index0 {
+            v0.scale_down(shift);
+        }
+        self.cdef_index3.scale_down(shift);
+        self.cdef_index4.scale_down(shift);
+        self.cdef_index5.scale_down(shift);
+        self.cdef_index6.scale_down(shift);
+        self.cdef_index7.scale_down(shift);
+        self.cdef_index8.scale_down(shift);
+        for v0 in &mut self.ccso {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        self.delta_q.scale_down(shift);
+        for v0 in &mut self.seg_pred {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.seg_id_ext {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.seg_id {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.seg_id_upper {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.rst_switchable {
+            v0.scale_down(shift);
+        }
+        self.rst_ns_wiener.scale_down(shift);
+        self.rst_pc_wiener.scale_down(shift);
+        for v0 in &mut self.wiener_ns_len {
+            v0.scale_down(shift);
+        }
+        self.wiener_ns_sym.scale_down(shift);
+        self.wiener_ns_cf.scale_down(shift);
+        self.dpcm_y.scale_down(shift);
+        self.dpcm_dir_y.scale_down(shift);
+        self.dpcm_uv.scale_down(shift);
+        self.dpcm_dir_uv.scale_down(shift);
+        self.y_mode_set.scale_down(shift);
+        for v0 in &mut self.y_mode_index {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.y_mode_offset {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.fsc {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.mrl_index {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.multi_mrl {
+            v0.scale_down(shift);
+        }
+        self.palette_y.scale_down(shift);
+        self.palette_size.scale_down(shift);
+        for v0 in &mut self.palette_identity {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.palette_index2 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.palette_index3 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.palette_index4 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.palette_index5 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.palette_index6 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.palette_index7 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.palette_index8 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.dip {
+            v0.scale_down(shift);
+        }
+        self.dip_mode.scale_down(shift);
+        for v0 in &mut self.cfl {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.uv_mode {
+            v0.scale_down(shift);
+        }
+        self.mhccp.scale_down(shift);
+        for v0 in &mut self.mhccp_direction {
+            v0.scale_down(shift);
+        }
+        self.cfl_type.scale_down(shift);
+        self.cfl_sign.scale_down(shift);
+        for v0 in &mut self.cfl_alpha {
+            v0.scale_down(shift);
+        }
+        self.intrabc_mode.scale_down(shift);
+        self.intrabc_precision.scale_down(shift);
+        for v0 in &mut self.morph_pred {
+            v0.scale_down(shift);
+        }
+        self.dv_shell_set.scale_down(shift);
+        self.dv_class_low_integer.scale_down(shift);
+        self.dv_class_low_quarter.scale_down(shift);
+        self.dv_class_high_integer.scale_down(shift);
+        self.dv_class_high_quarter.scale_down(shift);
+        for v0 in &mut self.dv_offset_low {
+            v0.scale_down(shift);
+        }
+        self.dv_offset_class2.scale_down(shift);
+        for v0 in &mut self.dv_offset_high {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.dv_column_greater {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.dv_column_index {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.tip {
+            v0.scale_down(shift);
+        }
+        self.tip_mode.scale_down(shift);
+        for v0 in &mut self.tip_drl {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.skip_mode_drl {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.comp {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.single_ref {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.comp0_ref {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.comp1_ref {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.warp {
+            v0.scale_down(shift);
+        }
+        self.warp_newmv.scale_down(shift);
+        for v0 in &mut self.inter_mode {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.amvd {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.bawp {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.bawp_explicit {
+            v0.scale_down(shift);
+        }
+        self.bawp_explicit_scale.scale_down(shift);
+        for v0 in &mut self.warp_extend {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.warp_causal {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.inter_intra {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.inter_intra_mode {
+            v0.scale_down(shift);
+        }
+        self.inter_intra_wedge.scale_down(shift);
+        for v0 in &mut self.warp_inter_intra {
+            v0.scale_down(shift);
+        }
+        self.wedge_quad.scale_down(shift);
+        for v0 in &mut self.wedge_angle {
+            v0.scale_down(shift);
+        }
+        self.wedge_dist.scale_down(shift);
+        self.wedge_dist2.scale_down(shift);
+        self.jmvd_amvd_scale.scale_down(shift);
+        self.jmvd_scale.scale_down(shift);
+        for v0 in &mut self.drl {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.mv_precision_default {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.mv_precision {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        self.warp_ref0.scale_down(shift);
+        self.warp_ref1.scale_down(shift);
+        self.warp_ref2.scale_down(shift);
+        self.warpmv_with_mvd.scale_down(shift);
+        for v0 in &mut self.warp_delta_precision {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.warp_delta {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.warp_delta_high {
+            v0.scale_down(shift);
+        }
+        self.warp_delta_sign.scale_down(shift);
+        for v0 in &mut self.comp_mode_same_refs {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.comp_mode_joint {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.comp_mode {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.opfl {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.refine_mv {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.comp_type_masked {
+            v0.scale_down(shift);
+        }
+        self.comp_type_weighted.scale_down(shift);
+        for v0 in &mut self.cwp {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.interp_filter {
+            v0.scale_down(shift);
+        }
+        self.amvd_joint.scale_down(shift);
+        for v0 in &mut self.amvd_index {
+            v0.scale_down(shift);
+        }
+        self.mv_shell_set.scale_down(shift);
+        self.mv_class_low0.scale_down(shift);
+        self.mv_class_high0.scale_down(shift);
+        self.mv_class_low1.scale_down(shift);
+        self.mv_class_high1.scale_down(shift);
+        self.mv_class_low2.scale_down(shift);
+        self.mv_class_high2.scale_down(shift);
+        self.mv_class_low3.scale_down(shift);
+        self.mv_class_high3.scale_down(shift);
+        self.mv_class_low4.scale_down(shift);
+        self.mv_class_high4.scale_down(shift);
+        self.mv_class_low5.scale_down(shift);
+        self.mv_class_high5.scale_down(shift);
+        self.mv_class_low6.scale_down(shift);
+        self.mv_class_high6.scale_down(shift);
+        self.mv_shell_last.scale_down(shift);
+        for v0 in &mut self.mv_offset_low {
+            v0.scale_down(shift);
+        }
+        self.mv_offset_class2.scale_down(shift);
+        for v0 in &mut self.mv_offset_high {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.mv_column_greater {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.mv_column_index {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.lossless_tx_size {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.tx_split {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.tx_part_1d {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.tx_part_2d {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.tx_part_2d_reduced {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        self.tx_type_lossless.scale_down(shift);
+        for v0 in &mut self.tx_type_long32_dct {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.tx_type_intra_short {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.tx_type_intra {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.tx_type_intra_reduced {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.tx_type_inter_short {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.tx_type_inter_set {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.tx_type_inter_index {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.tx_type_inter_offset1 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.tx_type_inter_offset2 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.tx_type_inter_dct_idtx {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.tx_type_inter_dct_idtx_iddct {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.stx {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        self.stx_set_adst.scale_down(shift);
+        self.stx_set.scale_down(shift);
+        self.cctx.scale_down(shift);
+        for v0 in &mut self.txb_skip {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.txb_skip_v {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob16 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob32 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob64 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob128 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob256 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob512 {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob1024 {
+            v0.scale_down(shift);
+        }
+        self.eob_extra.scale_down(shift);
+        for v0 in &mut self.eob_base_hf {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.base_hf {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.range_hf {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob_base_lf {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.base_lf {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.range_lf {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.parity_dc {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.dc_sign {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.scale_down(shift);
+                }
+            }
+        }
+        for v0 in &mut self.bob_base {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.range_idtx {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.base_idtx {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.sign_idtx {
+            for v1 in v0 {
+                v1.scale_down(shift);
+            }
+        }
+        for v0 in &mut self.eob_base_uv_hf {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.base_uv_hf {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.range_uv_hf {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.eob_base_uv_lf {
+            v0.scale_down(shift);
+        }
+        for v0 in &mut self.base_uv_lf {
+            v0.scale_down(shift);
+        }
+    }
+    /// Add `other` divided by `1 << shift`: a further term of the average
+    /// of several tiles' final models (dav2d `dav2d_cdf_shift_accumulate`).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "generated: one loop per model family"
+    )]
+    pub fn add_scaled(&mut self, other: &Self, shift: u32) {
+        for (v0, w0) in self.part_split.iter_mut().zip(&other.part_split) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.part_square.iter_mut().zip(&other.part_square) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.part_dir.iter_mut().zip(&other.part_dir) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.part_ext.iter_mut().zip(&other.part_ext) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.part_4way.iter_mut().zip(&other.part_4way) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.region_type.iter_mut().zip(&other.region_type) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.skip_mode.iter_mut().zip(&other.skip_mode) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.is_inter.iter_mut().zip(&other.is_inter) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.intrabc.iter_mut().zip(&other.intrabc) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.skip_txfm.iter_mut().zip(&other.skip_txfm) {
+            v0.add_scaled(w0, shift);
+        }
+        self.gdf.add_scaled(&other.gdf, shift);
+        for (v0, w0) in self.cdef_index0.iter_mut().zip(&other.cdef_index0) {
+            v0.add_scaled(w0, shift);
+        }
+        self.cdef_index3.add_scaled(&other.cdef_index3, shift);
+        self.cdef_index4.add_scaled(&other.cdef_index4, shift);
+        self.cdef_index5.add_scaled(&other.cdef_index5, shift);
+        self.cdef_index6.add_scaled(&other.cdef_index6, shift);
+        self.cdef_index7.add_scaled(&other.cdef_index7, shift);
+        self.cdef_index8.add_scaled(&other.cdef_index8, shift);
+        for (v0, w0) in self.ccso.iter_mut().zip(&other.ccso) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        self.delta_q.add_scaled(&other.delta_q, shift);
+        for (v0, w0) in self.seg_pred.iter_mut().zip(&other.seg_pred) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.seg_id_ext.iter_mut().zip(&other.seg_id_ext) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.seg_id.iter_mut().zip(&other.seg_id) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.seg_id_upper.iter_mut().zip(&other.seg_id_upper) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.rst_switchable.iter_mut().zip(&other.rst_switchable) {
+            v0.add_scaled(w0, shift);
+        }
+        self.rst_ns_wiener.add_scaled(&other.rst_ns_wiener, shift);
+        self.rst_pc_wiener.add_scaled(&other.rst_pc_wiener, shift);
+        for (v0, w0) in self.wiener_ns_len.iter_mut().zip(&other.wiener_ns_len) {
+            v0.add_scaled(w0, shift);
+        }
+        self.wiener_ns_sym.add_scaled(&other.wiener_ns_sym, shift);
+        self.wiener_ns_cf.add_scaled(&other.wiener_ns_cf, shift);
+        self.dpcm_y.add_scaled(&other.dpcm_y, shift);
+        self.dpcm_dir_y.add_scaled(&other.dpcm_dir_y, shift);
+        self.dpcm_uv.add_scaled(&other.dpcm_uv, shift);
+        self.dpcm_dir_uv.add_scaled(&other.dpcm_dir_uv, shift);
+        self.y_mode_set.add_scaled(&other.y_mode_set, shift);
+        for (v0, w0) in self.y_mode_index.iter_mut().zip(&other.y_mode_index) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.y_mode_offset.iter_mut().zip(&other.y_mode_offset) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.fsc.iter_mut().zip(&other.fsc) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.mrl_index.iter_mut().zip(&other.mrl_index) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.multi_mrl.iter_mut().zip(&other.multi_mrl) {
+            v0.add_scaled(w0, shift);
+        }
+        self.palette_y.add_scaled(&other.palette_y, shift);
+        self.palette_size.add_scaled(&other.palette_size, shift);
+        for (v0, w0) in self
+            .palette_identity
+            .iter_mut()
+            .zip(&other.palette_identity)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.palette_index2.iter_mut().zip(&other.palette_index2) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.palette_index3.iter_mut().zip(&other.palette_index3) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.palette_index4.iter_mut().zip(&other.palette_index4) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.palette_index5.iter_mut().zip(&other.palette_index5) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.palette_index6.iter_mut().zip(&other.palette_index6) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.palette_index7.iter_mut().zip(&other.palette_index7) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.palette_index8.iter_mut().zip(&other.palette_index8) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.dip.iter_mut().zip(&other.dip) {
+            v0.add_scaled(w0, shift);
+        }
+        self.dip_mode.add_scaled(&other.dip_mode, shift);
+        for (v0, w0) in self.cfl.iter_mut().zip(&other.cfl) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.uv_mode.iter_mut().zip(&other.uv_mode) {
+            v0.add_scaled(w0, shift);
+        }
+        self.mhccp.add_scaled(&other.mhccp, shift);
+        for (v0, w0) in self.mhccp_direction.iter_mut().zip(&other.mhccp_direction) {
+            v0.add_scaled(w0, shift);
+        }
+        self.cfl_type.add_scaled(&other.cfl_type, shift);
+        self.cfl_sign.add_scaled(&other.cfl_sign, shift);
+        for (v0, w0) in self.cfl_alpha.iter_mut().zip(&other.cfl_alpha) {
+            v0.add_scaled(w0, shift);
+        }
+        self.intrabc_mode.add_scaled(&other.intrabc_mode, shift);
+        self.intrabc_precision
+            .add_scaled(&other.intrabc_precision, shift);
+        for (v0, w0) in self.morph_pred.iter_mut().zip(&other.morph_pred) {
+            v0.add_scaled(w0, shift);
+        }
+        self.dv_shell_set.add_scaled(&other.dv_shell_set, shift);
+        self.dv_class_low_integer
+            .add_scaled(&other.dv_class_low_integer, shift);
+        self.dv_class_low_quarter
+            .add_scaled(&other.dv_class_low_quarter, shift);
+        self.dv_class_high_integer
+            .add_scaled(&other.dv_class_high_integer, shift);
+        self.dv_class_high_quarter
+            .add_scaled(&other.dv_class_high_quarter, shift);
+        for (v0, w0) in self.dv_offset_low.iter_mut().zip(&other.dv_offset_low) {
+            v0.add_scaled(w0, shift);
+        }
+        self.dv_offset_class2
+            .add_scaled(&other.dv_offset_class2, shift);
+        for (v0, w0) in self.dv_offset_high.iter_mut().zip(&other.dv_offset_high) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .dv_column_greater
+            .iter_mut()
+            .zip(&other.dv_column_greater)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.dv_column_index.iter_mut().zip(&other.dv_column_index) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.tip.iter_mut().zip(&other.tip) {
+            v0.add_scaled(w0, shift);
+        }
+        self.tip_mode.add_scaled(&other.tip_mode, shift);
+        for (v0, w0) in self.tip_drl.iter_mut().zip(&other.tip_drl) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.skip_mode_drl.iter_mut().zip(&other.skip_mode_drl) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.comp.iter_mut().zip(&other.comp) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.single_ref.iter_mut().zip(&other.single_ref) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.comp0_ref.iter_mut().zip(&other.comp0_ref) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.comp1_ref.iter_mut().zip(&other.comp1_ref) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self.warp.iter_mut().zip(&other.warp) {
+            v0.add_scaled(w0, shift);
+        }
+        self.warp_newmv.add_scaled(&other.warp_newmv, shift);
+        for (v0, w0) in self.inter_mode.iter_mut().zip(&other.inter_mode) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.amvd.iter_mut().zip(&other.amvd) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.bawp.iter_mut().zip(&other.bawp) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.bawp_explicit.iter_mut().zip(&other.bawp_explicit) {
+            v0.add_scaled(w0, shift);
+        }
+        self.bawp_explicit_scale
+            .add_scaled(&other.bawp_explicit_scale, shift);
+        for (v0, w0) in self.warp_extend.iter_mut().zip(&other.warp_extend) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.warp_causal.iter_mut().zip(&other.warp_causal) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.inter_intra.iter_mut().zip(&other.inter_intra) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .inter_intra_mode
+            .iter_mut()
+            .zip(&other.inter_intra_mode)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        self.inter_intra_wedge
+            .add_scaled(&other.inter_intra_wedge, shift);
+        for (v0, w0) in self
+            .warp_inter_intra
+            .iter_mut()
+            .zip(&other.warp_inter_intra)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        self.wedge_quad.add_scaled(&other.wedge_quad, shift);
+        for (v0, w0) in self.wedge_angle.iter_mut().zip(&other.wedge_angle) {
+            v0.add_scaled(w0, shift);
+        }
+        self.wedge_dist.add_scaled(&other.wedge_dist, shift);
+        self.wedge_dist2.add_scaled(&other.wedge_dist2, shift);
+        self.jmvd_amvd_scale
+            .add_scaled(&other.jmvd_amvd_scale, shift);
+        self.jmvd_scale.add_scaled(&other.jmvd_scale, shift);
+        for (v0, w0) in self.drl.iter_mut().zip(&other.drl) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self
+            .mv_precision_default
+            .iter_mut()
+            .zip(&other.mv_precision_default)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.mv_precision.iter_mut().zip(&other.mv_precision) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        self.warp_ref0.add_scaled(&other.warp_ref0, shift);
+        self.warp_ref1.add_scaled(&other.warp_ref1, shift);
+        self.warp_ref2.add_scaled(&other.warp_ref2, shift);
+        self.warpmv_with_mvd
+            .add_scaled(&other.warpmv_with_mvd, shift);
+        for (v0, w0) in self
+            .warp_delta_precision
+            .iter_mut()
+            .zip(&other.warp_delta_precision)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.warp_delta.iter_mut().zip(&other.warp_delta) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.warp_delta_high.iter_mut().zip(&other.warp_delta_high) {
+            v0.add_scaled(w0, shift);
+        }
+        self.warp_delta_sign
+            .add_scaled(&other.warp_delta_sign, shift);
+        for (v0, w0) in self
+            .comp_mode_same_refs
+            .iter_mut()
+            .zip(&other.comp_mode_same_refs)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.comp_mode_joint.iter_mut().zip(&other.comp_mode_joint) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.comp_mode.iter_mut().zip(&other.comp_mode) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.opfl.iter_mut().zip(&other.opfl) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.refine_mv.iter_mut().zip(&other.refine_mv) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .comp_type_masked
+            .iter_mut()
+            .zip(&other.comp_type_masked)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        self.comp_type_weighted
+            .add_scaled(&other.comp_type_weighted, shift);
+        for (v0, w0) in self.cwp.iter_mut().zip(&other.cwp) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.interp_filter.iter_mut().zip(&other.interp_filter) {
+            v0.add_scaled(w0, shift);
+        }
+        self.amvd_joint.add_scaled(&other.amvd_joint, shift);
+        for (v0, w0) in self.amvd_index.iter_mut().zip(&other.amvd_index) {
+            v0.add_scaled(w0, shift);
+        }
+        self.mv_shell_set.add_scaled(&other.mv_shell_set, shift);
+        self.mv_class_low0.add_scaled(&other.mv_class_low0, shift);
+        self.mv_class_high0.add_scaled(&other.mv_class_high0, shift);
+        self.mv_class_low1.add_scaled(&other.mv_class_low1, shift);
+        self.mv_class_high1.add_scaled(&other.mv_class_high1, shift);
+        self.mv_class_low2.add_scaled(&other.mv_class_low2, shift);
+        self.mv_class_high2.add_scaled(&other.mv_class_high2, shift);
+        self.mv_class_low3.add_scaled(&other.mv_class_low3, shift);
+        self.mv_class_high3.add_scaled(&other.mv_class_high3, shift);
+        self.mv_class_low4.add_scaled(&other.mv_class_low4, shift);
+        self.mv_class_high4.add_scaled(&other.mv_class_high4, shift);
+        self.mv_class_low5.add_scaled(&other.mv_class_low5, shift);
+        self.mv_class_high5.add_scaled(&other.mv_class_high5, shift);
+        self.mv_class_low6.add_scaled(&other.mv_class_low6, shift);
+        self.mv_class_high6.add_scaled(&other.mv_class_high6, shift);
+        self.mv_shell_last.add_scaled(&other.mv_shell_last, shift);
+        for (v0, w0) in self.mv_offset_low.iter_mut().zip(&other.mv_offset_low) {
+            v0.add_scaled(w0, shift);
+        }
+        self.mv_offset_class2
+            .add_scaled(&other.mv_offset_class2, shift);
+        for (v0, w0) in self.mv_offset_high.iter_mut().zip(&other.mv_offset_high) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .mv_column_greater
+            .iter_mut()
+            .zip(&other.mv_column_greater)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.mv_column_index.iter_mut().zip(&other.mv_column_index) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .lossless_tx_size
+            .iter_mut()
+            .zip(&other.lossless_tx_size)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.tx_split.iter_mut().zip(&other.tx_split) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self.tx_part_1d.iter_mut().zip(&other.tx_part_1d) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self.tx_part_2d.iter_mut().zip(&other.tx_part_2d) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self
+            .tx_part_2d_reduced
+            .iter_mut()
+            .zip(&other.tx_part_2d_reduced)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        self.tx_type_lossless
+            .add_scaled(&other.tx_type_lossless, shift);
+        for (v0, w0) in self
+            .tx_type_long32_dct
+            .iter_mut()
+            .zip(&other.tx_type_long32_dct)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .tx_type_intra_short
+            .iter_mut()
+            .zip(&other.tx_type_intra_short)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.tx_type_intra.iter_mut().zip(&other.tx_type_intra) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .tx_type_intra_reduced
+            .iter_mut()
+            .zip(&other.tx_type_intra_reduced)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .tx_type_inter_short
+            .iter_mut()
+            .zip(&other.tx_type_inter_short)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_set
+            .iter_mut()
+            .zip(&other.tx_type_inter_set)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_index
+            .iter_mut()
+            .zip(&other.tx_type_inter_index)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_offset1
+            .iter_mut()
+            .zip(&other.tx_type_inter_offset1)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .tx_type_inter_offset2
+            .iter_mut()
+            .zip(&other.tx_type_inter_offset2)
+        {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self
+            .tx_type_inter_dct_idtx
+            .iter_mut()
+            .zip(&other.tx_type_inter_dct_idtx)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_dct_idtx_iddct
+            .iter_mut()
+            .zip(&other.tx_type_inter_dct_idtx_iddct)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.stx.iter_mut().zip(&other.stx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        self.stx_set_adst.add_scaled(&other.stx_set_adst, shift);
+        self.stx_set.add_scaled(&other.stx_set, shift);
+        self.cctx.add_scaled(&other.cctx, shift);
+        for (v0, w0) in self.txb_skip.iter_mut().zip(&other.txb_skip) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self.txb_skip_v.iter_mut().zip(&other.txb_skip_v) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob16.iter_mut().zip(&other.eob16) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob32.iter_mut().zip(&other.eob32) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob64.iter_mut().zip(&other.eob64) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob128.iter_mut().zip(&other.eob128) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob256.iter_mut().zip(&other.eob256) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob512.iter_mut().zip(&other.eob512) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob1024.iter_mut().zip(&other.eob1024) {
+            v0.add_scaled(w0, shift);
+        }
+        self.eob_extra.add_scaled(&other.eob_extra, shift);
+        for (v0, w0) in self.eob_base_hf.iter_mut().zip(&other.eob_base_hf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.base_hf.iter_mut().zip(&other.base_hf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self.range_hf.iter_mut().zip(&other.range_hf) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob_base_lf.iter_mut().zip(&other.eob_base_lf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.base_lf.iter_mut().zip(&other.base_lf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self.range_lf.iter_mut().zip(&other.range_lf) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.parity_dc.iter_mut().zip(&other.parity_dc) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.dc_sign.iter_mut().zip(&other.dc_sign) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.add_scaled(w2, shift);
+                }
+            }
+        }
+        for (v0, w0) in self.bob_base.iter_mut().zip(&other.bob_base) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.range_idtx.iter_mut().zip(&other.range_idtx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.base_idtx.iter_mut().zip(&other.base_idtx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.sign_idtx.iter_mut().zip(&other.sign_idtx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.add_scaled(w1, shift);
+            }
+        }
+        for (v0, w0) in self.eob_base_uv_hf.iter_mut().zip(&other.eob_base_uv_hf) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.base_uv_hf.iter_mut().zip(&other.base_uv_hf) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.range_uv_hf.iter_mut().zip(&other.range_uv_hf) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.eob_base_uv_lf.iter_mut().zip(&other.eob_base_uv_lf) {
+            v0.add_scaled(w0, shift);
+        }
+        for (v0, w0) in self.base_uv_lf.iter_mut().zip(&other.base_uv_lf) {
+            v0.add_scaled(w0, shift);
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cdf_models::tests::trace;
+    use crate::entropy::Writer;
+    fn trace<const N: usize>(cdf: &mut Cdf<N>, hash: &mut u64) {
+        let mut writer = Writer::new();
+        for step in 0..65 {
+            writer.symbol((step * 7 + step / 3) % N, cdf).unwrap();
+            for &value in cdf.inverse() {
+                *hash = (*hash ^ u64::from(value)).wrapping_mul(1_099_511_628_211);
+            }
+        }
+    }
     /// Our models update as AVM's `update_cdf` does, from the same defaults.
     #[test]
     #[allow(
@@ -1783,7 +2942,7 @@ mod tests {
     fn original_c_update_traces() {
         for (q, expected) in [0, 91, 141, 191].into_iter().zip(defaults::TRACE_HASHES) {
             let mut models = Cdfs::new(q);
-            let mut hash = nc_common::FNV1A_OFFSET;
+            let mut hash = 14_695_981_039_346_656_037;
             for v0 in &mut models.part_split {
                 for v1 in v0 {
                     trace(v1, &mut hash);

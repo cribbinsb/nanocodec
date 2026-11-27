@@ -19,6 +19,7 @@ pub mod restoration;
 use std::rc::Rc;
 
 use super::bits::{signed, uniform};
+use super::multi_frame_header::{MultiFrameHeader, MultiFrameHeaders};
 use super::references::{self, Current, MAX_REFERENCES, SlotInfo};
 use super::sequence::{SegmentFeatures, SequenceHeader, Tri};
 use super::tiles::{self, TileGeometry, TileLayout};
@@ -110,11 +111,11 @@ const DELTA_Q_RES_BITS: u32 = 2;
 const REDUCED_TX_SET_BITS: u32 = 2;
 /// Largest display order hint (AVM limit, dav2d `1 << 30`).
 const MAX_ORDER: u32 = 1 << 30;
+/// Width of `base_q_idx` at 8 bits.
+const QINDEX_BITS: u32 = 8;
 /// Choices of `max_drl_bits` and of `max_bvp_drl_bits` overrides.
 const DRL_BITS_CHOICES: u32 = 5;
 const BVP_DRL_BITS_CHOICES: u32 = 3;
-/// Largest 8-bit quantizer index.
-const MAX_QINDEX: i32 = 255;
 
 /// A frame's kind (dav2d `Dav2dFrameType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -368,6 +369,10 @@ pub struct FrameHeader {
     pub optical_flow: u8,
     /// Temporal interpolated prediction.
     pub tip: Tip,
+    /// A bridge frame's only reference, the slot it copies resized (AVM
+    /// `bridge_frame_ref_idx`): every block predicts from it at zero
+    /// motion, with no symbols coded.
+    pub bridge_slot: Option<u8>,
     /// log2 of the frame's superblock size.
     pub superblock_log2: u8,
     /// The frame's tiles.
@@ -439,6 +444,13 @@ impl FrameHeader {
         self.frame_type.is_intra()
     }
 
+    /// Whether the frame codes block symbols: TIP and bridge frames
+    /// predict every block from the header alone.
+    #[must_use]
+    pub fn codes_symbols(&self) -> bool {
+        self.tip.mode != TIP_FRAME_MODE && self.bridge_slot.is_none()
+    }
+
     /// Output now or later (dav2d `showable`).
     #[must_use]
     pub fn is_shown(&self) -> bool {
@@ -452,9 +464,10 @@ impl FrameHeader {
         SlotInfo {
             frame,
             order: self.order,
-            quantizer: self.quantizer.base.min(MAX_QINDEX as u16) as u8,
+            quantizer: self.quantizer.base,
             inter: self.frame_type == FrameType::Inter,
             temporal_layer: self.temporal_layer,
+            embedded_layer: self.embedded_layer,
             size: (self.width, self.height),
         }
     }
@@ -497,6 +510,8 @@ pub struct Context<'a> {
     pub temporal_layer: u8,
     /// The OBU's embedded layer.
     pub embedded_layer: u8,
+    /// The multi-frame headers received so far.
+    pub multi_frame_headers: &'a MultiFrameHeaders,
 }
 
 /// Reads one header with its trace.
@@ -504,6 +519,8 @@ struct Parser<'a, 'r, 'd, 't> {
     context: &'r Context<'a>,
     bits: &'r mut BitReader<'d>,
     trace: Trace<'t>,
+    /// The multi-frame header the frame names, if any.
+    multi_frame_header: Option<MultiFrameHeader>,
 }
 
 impl<'a> Parser<'a, '_, '_, '_> {
@@ -548,13 +565,14 @@ impl<'a> Parser<'a, '_, '_, '_> {
 /// are the caller's.
 /// # Errors
 /// Truncation, references to empty slots, out-of-range fields, and the
-/// syntax dav2d leaves unimplemented (multi-frame headers, TIP frames with
-/// an explicit quantizer).
+/// syntax dav2d leaves unimplemented (TIP frames with an explicit
+/// quantizer).
 pub fn parse(context: &Context<'_>, bits: &mut BitReader<'_>, trace: Trace<'_>) -> Result<Parsed> {
     let mut parser = Parser {
         context,
         bits,
         trace,
+        multi_frame_header: None,
     };
     parser.parse()
 }
@@ -562,17 +580,44 @@ pub fn parse(context: &Context<'_>, bits: &mut BitReader<'_>, trace: Trace<'_>) 
 impl Parser<'_, '_, '_, '_> {
     fn parse(&mut self) -> Result<Parsed> {
         let kind = self.context.obu_type;
-        let multi_frame_header = if kind == obu_type::BRIDGE {
+        // `mfh_id`: zero, the header codes its fields itself (AVM
+        // `setup_multiframe_header_id`, `setup_sequence_header_id`).
+        let id = if kind == obu_type::BRIDGE {
             0
         } else {
-            self.bits.read_uvlc()?
+            self.bits.read_uvlc()? as usize
         };
-        if multi_frame_header != 0 {
-            return Err(DecodeError::Unsupported("AV2 multi-frame headers"));
-        }
-        if self.bits.read_uvlc()? != u32::from(self.sequence().id) {
+        let sequence_id = if id == 0 {
+            self.bits.read_uvlc()?
+        } else {
+            let named = self
+                .context
+                .multi_frame_headers
+                .get(id)
+                .copied()
+                .flatten()
+                .ok_or(DecodeError::Malformed("AV2 multi-frame header id"))?;
+            if named.size.is_some_and(|(w, h)| {
+                w > self.sequence().max_width || h > self.sequence().max_height
+            }) {
+                return Err(DecodeError::Malformed("AV2 multi-frame header size"));
+            }
+            self.multi_frame_header = Some(named);
+            named.sequence_id
+        };
+        if sequence_id != u32::from(self.sequence().id) {
             return Err(DecodeError::Malformed("AV2 frame sequence id"));
         }
+        // The slot a bridge frame copies (AVM `read_uncompressed_header`).
+        let bridge_slot = if kind == obu_type::BRIDGE {
+            let slot = self
+                .bits
+                .read_bits(self.sequence().references.slot_bits())? as u8;
+            self.slot(slot)?;
+            Some(slot)
+        } else {
+            None
+        };
         self.checkpoint("post-ids");
         if matches!(
             kind,
@@ -587,6 +632,11 @@ impl Parser<'_, '_, '_, '_> {
             ..FrameHeader::default()
         };
         self.frame_type(&mut header)?;
+        if let Some(slot) = bridge_slot {
+            return self
+                .bridge_frame(header, slot)
+                .map(|header| Parsed::Frame(Box::new(header)));
+        }
         self.order_and_primary(&mut header)?;
         self.refresh(&mut header)?;
         if !header.is_intra() {
@@ -617,6 +667,56 @@ impl Parser<'_, '_, '_, '_> {
         }
         self.film_grain(&mut header)?;
         Ok(Parsed::Frame(Box::new(header)))
+    }
+
+    /// The rest of a bridge frame's header (AVM `read_uncompressed_header`
+    /// and `setup_frame_size` with `is_bridge_frame`; dav2d 237229e does not
+    /// decode them): the copied slot's display order, its refresh, a size
+    /// no larger than the slot's, the copied slot as the only reference
+    /// (AVM `init_ref_map_pair` ranks no other), its quantizer, and no
+    /// filters or symbols.
+    fn bridge_frame(&mut self, mut header: FrameHeader, slot: u8) -> Result<FrameHeader> {
+        let sequence = self.sequence();
+        let copied = self.slot(slot)?;
+        header.frame_size_override = true;
+        header.order_hint = copied.order_hint;
+        header.order = copied.order;
+        // `bridge_frame_overwrite_flag`: refresh as an inter frame codes it,
+        // else the copied slot alone.
+        if self.bits.read_bit()? {
+            self.refresh(&mut header)?;
+        } else {
+            header.refresh = 1 << slot;
+        }
+        let (copied_width, copied_height) = (copied.width, copied.height);
+        let width = self.bits.read_bits(u32::from(sequence.width_bits))? + 1;
+        let height = self.bits.read_bits(u32::from(sequence.height_bits))? + 1;
+        let size = (width.min(copied_width), height.min(copied_height));
+        (header.width, header.height) = size;
+        self.checkpoint("post-framesize");
+        header.references = [slot; MAX_REFERENCES];
+        header.reference_count = 1;
+        header.reference_orders = [copied.order; MAX_REFERENCES];
+        header.bridge_slot = Some(slot);
+        let copied_quantizer = copied.quantizer;
+        header.quantizer.base = copied_quantizer.base;
+        header.quantizer.u_ac = copied_quantizer.u_ac;
+        header.quantizer.v_ac = copied_quantizer.v_ac;
+        header.superblock_log2 = sequence.partition.superblock_log2;
+        let superblocks = |size: u32| {
+            let log2 = u32::from(header.superblock_log2);
+            ((size + (1 << log2) - 1) >> log2) as u16
+        };
+        header.tiles = TileLayout {
+            uniform: true,
+            column_starts: vec![0, superblocks(header.width)],
+            row_starts: vec![0, superblocks(header.height)],
+        };
+        header.disable_cdf_update = true;
+        let (primary, secondary) = self.context_sources(&header)?;
+        header.primary_reference = primary;
+        header.secondary_reference = secondary;
+        Ok(header)
     }
 
     /// A show-existing OBU: the slot, an optional order-hint check, film
@@ -715,7 +815,13 @@ impl Parser<'_, '_, '_, '_> {
         let range = 1_u32 << order_hint_bits;
         let half = range >> 1;
         let mut order = u32::from(header.order_hint);
-        if latest >= order && latest - order >= half {
+        // Closed-loop key frames and restricted switch frames take the
+        // coded hint as it is: they drop the references it would be
+        // unwrapped against (AVM v1.0.0 `get_disp_order_hint`; dav2d
+        // 236742f2).
+        let as_coded = header.obu_type == obu_type::CLOSED_LOOP_KEY
+            || (header.frame_type == FrameType::Switch && header.restricted_prediction_switch);
+        if !as_coded && latest >= order && latest - order >= half {
             order += (latest - order + half) & !(range - 1);
         }
         if order >= MAX_ORDER {
@@ -747,7 +853,9 @@ impl Parser<'_, '_, '_, '_> {
         let layered = sequence.max_embedded_layer != 0;
         header.refresh = if kind == obu_type::CLOSED_LOOP_KEY && !layered {
             all
-        } else if kind == obu_type::OPEN_LOOP_KEY || layered {
+        } else if matches!(kind, obu_type::OPEN_LOOP_KEY | obu_type::CLOSED_LOOP_KEY) {
+            // Key frames of layered sequences name their slots (AVM
+            // `read_uncompressed_header`; dav2d after 237229e).
             if short {
                 1 << self.bits.read_bits(slot_bits)?
             } else {
@@ -810,29 +918,23 @@ impl Parser<'_, '_, '_, '_> {
     /// `get_ref_frames`), with the frame size when known.
     fn rank_references(&self, header: &mut FrameHeader, size: Option<(u32, u32)>) {
         let sequence = self.sequence();
-        let dependencies = sequence.temporal_dependencies[usize::from(header.temporal_layer)];
+        // Only the layers the frame's layers depend on rank (AVM
+        // `is_tlayer_scalable_and_dependent`, `is_mlayer_scalable_and_dependent`).
+        let embedded = usize::from(header.embedded_layer);
+        let temporal = sequence.temporal_dependencies[embedded][usize::from(header.temporal_layer)];
+        let embedded_dependencies = sequence.embedded_dependencies[embedded];
         let infos: Vec<Option<SlotInfo>> = self
             .context
             .slots
             .iter()
-            .map(|held| {
-                held.as_ref()
-                    .filter(|held| {
-                        dependencies & (1 << held.header.temporal_layer) != 0
-                            && held.header.embedded_layer <= header.embedded_layer
-                    })
-                    .map(|held| SlotInfo {
-                        // Every layer the dependency map allows ranks.
-                        temporal_layer: 0,
-                        ..held.header.slot_info(held.frame)
-                    })
-            })
+            .map(|held| held.as_ref().map(|held| held.header.slot_info(held.frame)))
             .collect();
         let (ranked, count) = references::rank(
             &infos,
             Current {
                 order: header.order,
-                temporal_layer: 0,
+                embedded_layer: header.embedded_layer,
+                layer_masks: (temporal, embedded_dependencies),
                 size,
             },
         );
@@ -859,7 +961,10 @@ impl Parser<'_, '_, '_, '_> {
                 self.bits.read_bits(u32::from(sequence.width_bits))? + 1,
                 self.bits.read_bits(u32::from(sequence.height_bits))? + 1,
             ),
-            None => (sequence.max_width, sequence.max_height),
+            None => self
+                .multi_frame_header
+                .and_then(|named| named.size)
+                .unwrap_or((sequence.max_width, sequence.max_height)),
         };
         header.width = width;
         header.height = height;
@@ -958,9 +1063,9 @@ impl Parser<'_, '_, '_, '_> {
         Ok(())
     }
 
-    /// The two references TIP interpolates between: the nearest on each
-    /// side, or the two nearest on the only side (dav2d
-    /// `find_tip_ref_frames`).
+    /// The two references TIP interpolates between: the nearest past and
+    /// the next one when there are references on both sides, else the two
+    /// nearest past, else the first two (dav2d `find_tip_ref_frames`).
     fn tip_references(&self, header: &FrameHeader) -> Result<[u8; 2]> {
         let count = usize::from(header.reference_count);
         if count == 1 {
@@ -971,17 +1076,20 @@ impl Parser<'_, '_, '_, '_> {
             let order = self.reference(header, rank as u8)?.order;
             *distance = self.order_difference(order, header.order);
         }
-        // Ranks by distance (stable: equal distances keep rank order).
-        let mut order: Vec<u8> = (0..count as u8).collect();
-        order.sort_by_key(|&rank| distances[usize::from(rank)]);
+        // Ranks by distance, in dav2d's order for equal distances.
+        let order = references::swap_insertion_order(count, |a, b| distances[a] < distances[b]);
         let past = distances[..count].iter().filter(|&&d| d < 0).count();
-        Ok(if past == count {
-            [order[count - 1], order[count - 2]]
-        } else if past == 0 {
-            [order[0], order[1]]
-        } else {
+        let future = distances[..count].iter().any(|&d| d > 0);
+        // References at the current order count on neither side (dav2d
+        // 8f30abf3; AVM v1.0.0 `av2_setup_motion_field`).
+        Ok(if past > 0 && future {
             [order[past - 1], order[past]]
-        })
+        } else if past >= 2 {
+            [order[past - 1], order[past - 2]]
+        } else {
+            [order[0], order[1]]
+        }
+        .map(|rank| rank as u8))
     }
 
     /// The rest of a TIP frame: sub-PU deblocking, its quantizer, tiles
@@ -1027,9 +1135,31 @@ impl Parser<'_, '_, '_, '_> {
             };
         }
         header.disable_cdf_update = true;
+        // A signalled primary reference is kept here too (AVM
+        // `set_primary_ref_frame_and_ctx`; dav2d be9e94d2).
+        self.set_context_sources(header)
+    }
+
+    /// The primary and secondary context references of an inter frame: the
+    /// derived ones, unless the frame signals its primary (dav2d
+    /// `derive_pri_sec_ref`).
+    fn set_context_sources(&self, header: &mut FrameHeader) -> Result<()> {
         let (primary, secondary) = self.context_sources(header)?;
-        header.primary_reference = primary;
-        header.secondary_reference = secondary;
+        if !header.primary_signalled || primary.is_none() {
+            header.primary_reference = primary;
+        } else if header
+            .primary_reference
+            .is_some_and(|rank| rank >= header.reference_count)
+        {
+            return Err(DecodeError::Malformed("AV2 primary reference"));
+        }
+        header.secondary_reference = header.primary_reference.and_then(|chosen| {
+            if secondary == Some(chosen) {
+                primary
+            } else {
+                secondary
+            }
+        });
         Ok(())
     }
 
@@ -1040,10 +1170,9 @@ impl Parser<'_, '_, '_, '_> {
         for rank in 0..header.reference_count {
             infos[usize::from(rank)] = Some(self.reference(header, rank)?.slot_info(0));
         }
-        let quantizer = header.quantizer.base.min(MAX_QINDEX as u16) as u8;
         Ok(references::context_sources(
             &infos[..usize::from(header.reference_count)],
-            quantizer,
+            header.quantizer.base,
             header.order,
         ))
     }
@@ -1195,9 +1324,12 @@ impl Parser<'_, '_, '_, '_> {
                 0
             })
         };
+        // `base_q_idx` takes a bit more above 8 bits (dav2d `8 + !!hbd`).
+        let base_bits = QINDEX_BITS + u32::from(self.sequence().high_bit_depth != 0);
         let q = &mut header.quantizer;
-        q.base = self.bits.read_bits(8)? as u16;
+        q.base = self.bits.read_bits(base_bits)? as u16;
         q.y_dc = delta(self.bits, quant.y_dc_delta_enabled)?;
+        // Monochrome sequences code no chroma offsets (their flags are off).
         if quant.uv_dc_delta_enabled || quant.uv_ac_delta_enabled {
             let separate = quant.separate_uv_delta_q && self.bits.read_bit()?;
             q.u_dc = delta(self.bits, quant.uv_dc_delta_enabled)?;
@@ -1215,22 +1347,7 @@ impl Parser<'_, '_, '_, '_> {
             }
         }
         if header.frame_type == FrameType::Inter {
-            let (primary, secondary) = self.context_sources(header)?;
-            if !header.primary_signalled || primary.is_none() {
-                header.primary_reference = primary;
-            } else if header
-                .primary_reference
-                .is_some_and(|rank| rank >= header.reference_count)
-            {
-                return Err(DecodeError::Malformed("AV2 primary reference"));
-            }
-            header.secondary_reference = header.primary_reference.and_then(|chosen| {
-                if secondary == Some(chosen) {
-                    primary
-                } else {
-                    secondary
-                }
-            });
+            self.set_context_sources(header)?;
         }
         self.checkpoint("post-quant");
         Ok(())
@@ -1240,9 +1357,21 @@ impl Parser<'_, '_, '_, '_> {
     /// coded), the map update flags.
     fn segmentation(&mut self, header: &mut FrameHeader) -> Result<()> {
         if self.bits.read_bit()? {
+            // The features to reuse: the multi-frame header's, else the
+            // sequence's, if of the sequence's segment count (AVM
+            // `find_effective_seg_params`, `is_frame_seg_config_reuse_eligible`).
             let sequence = self.sequence().segmentation;
-            let features = match sequence.features {
-                Some(features) if !sequence.adaptive || self.bits.read_bit()? => features,
+            let reusable = self
+                .multi_frame_header
+                .and_then(|named| named.segmentation)
+                .unwrap_or(sequence);
+            let features = match reusable.features {
+                Some(features)
+                    if reusable.extended == sequence.extended
+                        && (!reusable.adaptive || self.bits.read_bit()?) =>
+                {
+                    features
+                }
                 _ => SegmentFeatures::parse(self.bits, sequence.count())?,
             };
             let (update_map, temporal_update) = if header.primary_reference.is_none() {
@@ -1283,6 +1412,9 @@ impl Parser<'_, '_, '_, '_> {
             for set in 0..usize::from(count) {
                 let y = self.bits.read_bits(QM_LEVEL_BITS)? as u8;
                 matrices.y[set] = y;
+                if self.sequence().monochrome {
+                    continue;
+                }
                 if self.bits.read_bit()? {
                     matrices.u[set] = y;
                     matrices.v[set] = y;
@@ -1321,11 +1453,12 @@ impl Parser<'_, '_, '_, '_> {
             all: true,
             ..Lossless::default()
         };
+        let max_qindex = i32::from(self.sequence().max_qindex());
         for segment in 0..super::sequence::MAX_SEGMENTS {
             let qindex = match &header.segmentation {
                 Some(segmentation) => (i32::from(q.base)
                     + i32::from(segmentation.features.delta_q[segment]))
-                .clamp(0, MAX_QINDEX) as u16,
+                .clamp(0, max_qindex) as u16,
                 None => q.base,
             };
             lossless.qindex[segment] = qindex;

@@ -2,11 +2,15 @@
 //! (context selection, intra and motion vector prediction) and the
 //! deblocking filter read from their neighbours, and the neighbour
 //! availability rules of §6.4 (a neighbour is available when decoded in
-//! the same slice, which also covers slice groups and any slice order).
+//! the same slice, which also covers slice groups and any slice order), of
+//! pictures and of the macroblock pairs of MBAFF frames (§6.4.10, Table
+//! 6-4), whose left neighbours change from one block row to the next when
+//! the two pairs differ in field decoding.
 //!
 //! Blocks are addressed by their 4x4 position (`x4`, `y4`) inside the
 //! macroblock; luma arrays are raster order (`y4 * 4 + x4`), chroma arrays
-//! raster order of the 2x2 4x4 blocks of each component.
+//! raster order of each component's 4x4 blocks: two per row (4:2:0, 4:2:2),
+//! or four, as luma, where Cb and Cr are coded like luma (4:4:4).
 
 use nc_encoder::Mv;
 
@@ -120,8 +124,9 @@ pub(super) struct MbState {
     /// `TotalCoeff(coeff_token)` (CAVLC) or the coded-block flag (CABAC) of
     /// each luma 4x4 block (AC only for `Intra_16x16`).
     pub total_coeff: [u8; 16],
-    /// Likewise for the chroma AC blocks of Cb and Cr.
-    pub chroma_total_coeff: [[u8; 4]; 2],
+    /// Likewise for the chroma AC blocks of Cb and Cr (4:2:0, 4:2:2), or
+    /// their luma-like 4x4 blocks (4:4:4).
+    pub chroma_total_coeff: [[u8; 16]; 2],
     /// CABAC `coded_block_flag` of the luma DC, Cb DC and Cr DC blocks.
     pub dc_coded: [bool; 3],
     /// Luma 4x4 blocks with non-zero coefficients for the deblocking filter
@@ -165,7 +170,7 @@ impl MbState {
         chroma_pred_mode: 0,
         intra_modes: [DC_PRED_MODE; 16],
         total_coeff: [0; 16],
-        chroma_total_coeff: [[0; 4]; 2],
+        chroma_total_coeff: [[0; 16]; 2],
         dc_coded: [false; 3],
         nonzero: 0,
         mvs: [[Mv::ZERO; 16]; LISTS],
@@ -276,6 +281,25 @@ impl MbState {
         self.cbp >> CBP_CHROMA_SHIFT
     }
 
+    /// `TotalCoeff` / coded flags of the luma-like 4x4 blocks of `plane`:
+    /// luma, or Cb and Cr coded like luma (4:4:4).
+    pub fn plane_total_coeff(&self, plane: usize) -> &[u8; 16] {
+        if plane == 0 {
+            &self.total_coeff
+        } else {
+            &self.chroma_total_coeff[plane - 1]
+        }
+    }
+
+    /// [`MbState::plane_total_coeff`], to write.
+    pub fn plane_total_coeff_mut(&mut self, plane: usize) -> &mut [u8; 16] {
+        if plane == 0 {
+            &mut self.total_coeff
+        } else {
+            &mut self.chroma_total_coeff[plane - 1]
+        }
+    }
+
     /// Motion vector and reference index of list `list` of the 4x4 block
     /// (`x4`, `y4`).
     pub fn motion(&self, list: usize, x4: usize, y4: usize) -> (Mv, i8) {
@@ -288,13 +312,86 @@ impl MbState {
 
 /// The available neighbouring macroblocks of the current one (§6.4.9:
 /// inside the picture and in the same slice): A left, B above, C above
-/// right, D above left.
+/// right, D above left (in MBAFF frames, those of luma locations (−1, 0),
+/// (0, −1), (16, −1) and (−1, −1), Table 6-4).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Neighbours<'a> {
     pub a: Option<&'a MbState>,
     pub b: Option<&'a MbState>,
     pub c: Option<&'a MbState>,
     pub d: Option<&'a MbState>,
+    /// In MBAFF frames, what differs from a picture's neighbours.
+    pub pair: Option<PairNeighbours<'a>>,
+}
+
+/// The neighbours of a macroblock of an MBAFF frame beyond A..D (Table
+/// 6-4): its coding and place in its pair, and the left pair, from which
+/// the left macroblock and row of each 4x4 block row, the row of D's corner
+/// and the up-left neighbours of the left column follow. Neighbours coded
+/// the other way (frame or field) than the current macroblock have their
+/// vectors and reference indices scaled where they are read (§8.4.1.3.1,
+/// §9.3.3.1.1.6/7).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PairNeighbours<'a> {
+    /// The current macroblock is a field macroblock.
+    pub field: bool,
+    /// The current macroblock is the bottom one of its pair.
+    pub bottom: bool,
+    /// The left pair (top, bottom), if available.
+    pub left_pair: Option<(&'a MbState, &'a MbState)>,
+}
+
+impl<'a> PairNeighbours<'a> {
+    /// The left macroblock and 4x4 row of 4x4 row `y4` (luma location
+    /// (−1, 4 · y4)). Out of line: the callers' picture paths stay small.
+    #[inline(never)]
+    pub fn left(&self, y4: usize) -> Option<(&'a MbState, usize)> {
+        let (upper, lower) = self.left_pair?;
+        let bottom = usize::from(self.bottom);
+        Some(match (self.field, upper.field) {
+            // Coded alike: the macroblock in the same position.
+            (false, false) | (true, true) => (if self.bottom { lower } else { upper }, y4),
+            // A frame macroblock beside a field pair: rows of the top field
+            // macroblock (an even yN; yM = (yN + 16 · bottom) >> 1).
+            (false, true) => (upper, y4 / 2 + 2 * bottom),
+            // A field macroblock beside a frame pair: frame row 2 · yN +
+            // bottom, the upper half in the top frame macroblock.
+            (true, false) => (if y4 < 2 { upper } else { lower }, (2 * y4) % 4),
+        })
+    }
+
+    /// Where the left pair is coded the other way: the macroblock and 4x4
+    /// row up-left of left-column block row `y4` (1..=3; luma location
+    /// (−1, 4 · y4 − 1), on the other field's rows than the left of the
+    /// row above). `None` where it is the left of the row above.
+    pub fn corner(&self, y4: usize) -> Option<(&'a MbState, usize)> {
+        let (upper, lower) = self.left_pair?;
+        let bottom = usize::from(self.bottom);
+        match (self.field, upper.field) {
+            (false, false) | (true, true) => None,
+            // An odd yN: the bottom field, row (yN + 16 · bottom) >> 1.
+            (false, true) => Some((lower, (2 * y4 - 1 + 8 * bottom) / 4)),
+            (true, false) => {
+                let row = 8 * y4 - 2 + bottom;
+                Some((if row < 16 { upper } else { lower }, (row % 16) / 4))
+            }
+        }
+    }
+
+    /// Whether the left pair is coded the other way.
+    pub fn split_left(&self) -> bool {
+        self.left_pair
+            .is_some_and(|(upper, _)| upper.field != self.field)
+    }
+
+    /// The 4x4 row of D's corner block: row 1 of the bottom field
+    /// macroblock beside a bottom frame macroblock, else the last.
+    pub fn d_row(&self) -> usize {
+        match self.left_pair {
+            Some((upper, _)) if !self.field && self.bottom && upper.field => 1,
+            _ => 3,
+        }
+    }
 }
 
 impl<'a> Neighbours<'a> {
@@ -318,7 +415,99 @@ impl<'a> Neighbours<'a> {
             b: at(up, above),
             c: at(up && right, above.wrapping_add(1)),
             d: at(up && left, above.wrapping_sub(1)),
+            pair: None,
         }
+    }
+
+    /// The neighbours of macroblock `addr` of an MBAFF frame (`2 · pair +
+    /// bottom`; pairs `width_mbs` per row), a `field` macroblock or not, of
+    /// slice `slice` (§6.4.10, Table 6-4). Every neighbour precedes `addr`
+    /// in `mbs`.
+    pub fn of_pair(
+        mbs: &'a [MbState],
+        width_mbs: usize,
+        (addr, field): (usize, bool),
+        slice: u32,
+    ) -> Self {
+        type Pair<'p> = (&'p MbState, &'p MbState);
+        let pair = addr / 2;
+        let bottom = addr % 2 == 1;
+        let column = pair % width_mbs;
+        let (left, right, up) = (column > 0, column + 1 < width_mbs, pair >= width_mbs);
+        // The (top, bottom) macroblocks of a neighbouring pair, if
+        // available (a pair is in one slice).
+        let pair_at = |available: bool, index: usize| -> Option<Pair<'a>> {
+            if !available {
+                return None;
+            }
+            let top = &mbs[2 * index];
+            (top.slice == slice).then(|| (top, &mbs[2 * index + 1]))
+        };
+        let above = pair.wrapping_sub(width_mbs);
+        let left_pair = pair_at(left, pair.wrapping_sub(1));
+        let above_pair = pair_at(up, above);
+        let above_right = pair_at(up && right, above.wrapping_add(1));
+        let above_left = pair_at(up && left, above.wrapping_sub(1));
+        // Above: a frame macroblock sees the bottom one of the pair above;
+        // a top field macroblock the top one of a field pair, else the
+        // bottom one.
+        let above_mb =
+            |p: Option<Pair<'a>>| p.map(|(t, b)| if field && !bottom && t.field { t } else { b });
+        let (b_mb, c_mb, d_mb) = if !field && bottom {
+            // The top macroblock of the pair is above; C is not available;
+            // D is the left pair's top frame macroblock (row 15), or its
+            // bottom field macroblock (row 7, `PairNeighbours::d_row`).
+            let d_mb = left_pair.map(|(upper, lower)| if lower.field { lower } else { upper });
+            (Some(&mbs[addr - 1]), None, d_mb)
+        } else {
+            (
+                above_mb(above_pair),
+                above_mb(above_right),
+                above_mb(above_left),
+            )
+        };
+        let pair = PairNeighbours {
+            field,
+            bottom,
+            left_pair,
+        };
+        Self {
+            a: pair.left(0).map(|(m, _)| m),
+            b: b_mb,
+            c: c_mb,
+            d: d_mb,
+            pair: Some(pair),
+        }
+    }
+
+    /// The macroblock and 4x4 block row left of row `y4` of the current
+    /// macroblock (its column 3), if available.
+    #[inline]
+    pub fn left_row(&self, y4: usize) -> Option<(&'a MbState, usize)> {
+        match &self.pair {
+            None => self.a.map(|m| (m, y4)),
+            Some(pair) => pair.left(y4),
+        }
+    }
+
+    /// The macroblock and 8x8 block row left of 8x8 row `y8`.
+    pub fn left_row_8x8(&self, y8: usize) -> Option<(&'a MbState, usize)> {
+        self.left_row(2 * y8).map(|(m, row)| (m, row / 2))
+    }
+
+    /// The macroblock and 4:2:0 chroma 4x4 block row left of chroma row
+    /// `y` (0 or 1): the luma 8x8 row's (Table 6-4 at chroma sizes).
+    pub fn left_row_chroma(&self, y: usize) -> Option<(&'a MbState, usize)> {
+        self.left_row_8x8(y)
+    }
+
+    /// Where `n` is coded the other way (frame or field) than the current
+    /// macroblock of an MBAFF frame: `Some(current is a field macroblock)`.
+    #[inline]
+    pub fn coded_otherwise(&self, n: &MbState) -> Option<bool> {
+        self.pair
+            .as_ref()
+            .and_then(|p| (p.field != n.field).then_some(p.field))
     }
 
     /// The macroblock and block position of the 4x4 block left of
@@ -335,7 +524,7 @@ impl<'a> Neighbours<'a> {
         if x4 > 0 {
             Some((current, x4 - 1, y4))
         } else {
-            self.a.map(|mb| (mb, 3, y4))
+            self.left_row(y4).map(|(mb, row)| (mb, 3, row))
         }
     }
 
@@ -403,6 +592,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Per 4x4 row (left is the top macroblock, row), and the corners.
+    type PairRows = ([(bool, usize); 4], Option<[(bool, usize); 3]>);
+
+    /// The rows Table 6-4 gives a macroblock of the second pair of a row
+    /// whose left pair is coded the other way: `(left is the top one, row)`
+    /// per 4x4 row, and the corners.
+    fn pair_rows(field: bool, bottom: bool) -> PairRows {
+        let mut mbs = vec![MbState::EMPTY; 4];
+        for (i, mb) in mbs.iter_mut().enumerate() {
+            mb.slice = 1;
+            mb.field = i < 2 && !field;
+        }
+        let addr = 2 + usize::from(bottom);
+        let nb = Neighbours::of_pair(&mbs[..addr], 2, (addr, field), 1);
+        let pair = nb.pair.unwrap();
+        let at = |(m, row): (&MbState, usize)| (core::ptr::eq(m, &raw const mbs[0]), row);
+        (
+            core::array::from_fn(|y4| at(pair.left(y4).unwrap())),
+            pair.split_left()
+                .then(|| core::array::from_fn(|i| at(pair.corner(i + 1).unwrap()))),
+        )
+    }
+
+    #[test]
+    fn mbaff_left_neighbours_follow_table_6_4() {
+        // A frame macroblock beside a field pair: the top field
+        // macroblock's rows yN / 2 (+ 8 for the bottom one); its corners
+        // (odd yN) in the bottom field macroblock.
+        let (left, corners) = pair_rows(false, true);
+        assert_eq!(left, [(true, 2), (true, 2), (true, 3), (true, 3)]);
+        assert_eq!(corners, Some([(false, 2), (false, 2), (false, 3)]));
+        // A bottom field macroblock beside a frame pair: frame rows 2 · yN
+        // + 1, the upper half in the top frame macroblock.
+        let (left, corners) = pair_rows(true, true);
+        assert_eq!(left, [(true, 0), (true, 2), (false, 0), (false, 2)]);
+        assert_eq!(corners, Some([(true, 1), (true, 3), (false, 1)]));
     }
 
     #[test]

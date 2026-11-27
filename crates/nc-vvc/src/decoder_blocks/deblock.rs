@@ -110,6 +110,18 @@ const HALF_SAMPLE: i32 = 8;
 /// `SbTMVP` CU (H.266 §8.8.3.4: 8 luma samples).
 const SUBBLOCK_EDGE_GRID: usize = 8;
 
+/// The chroma edge grid in chroma samples (H.266 §8.8.3.3), and the
+/// smallest chroma block side on both sides of a long-filtered edge.
+const CHROMA_EDGE_GRID: usize = 8;
+
+/// The most chroma lines one call of the chroma edge kernel filters.
+const MAX_CHROMA_LINES: usize = 8;
+
+/// Chroma lines of one 4-luma-sample cell along an edge: 2 where chroma
+/// is subsampled along it, 4 where it is not.
+const CHROMA_PAIR: usize = 2;
+const CHROMA_QUAD: usize = 4;
+
 /// Samples along an edge segment whose ends set the LADF luma level.
 const LADF_SEGMENT: usize = 4;
 
@@ -473,6 +485,20 @@ fn apply_luma_no_ladf<T: Pixel>(
             let bs = strength(p, q, 0, (x, y), horizontal, sides);
             let inv = bs_invariant_along_run(p, q, bs, perp, horizontal);
             let run = same_pair_run(grid, (at, along, along_limit), step, pair);
+            // Only an SPS that enables palette has palette CUs.
+            let kept = sequence
+                .tools
+                .palette
+                .then(|| {
+                    palette_sides(
+                        &y_view.as_view(),
+                        (p, q),
+                        (x, y),
+                        horizontal,
+                        (4 * run, LUMA_REACH),
+                    )
+                })
+                .flatten();
             if inv {
                 if bs > 0 {
                     let thresholds =
@@ -502,6 +528,9 @@ fn apply_luma_no_ladf<T: Pixel>(
                     sides,
                     dsp,
                 );
+            }
+            if let Some(kept) = kept {
+                restore(&mut y_view, kept);
             }
             along += 4 * run;
         }
@@ -586,6 +615,20 @@ fn apply_luma<T: Pixel>(
                 };
                 continue;
             }
+            // Only an SPS that enables palette has palette CUs.
+            let kept = sequence
+                .tools
+                .palette
+                .then(|| {
+                    palette_sides(
+                        &picture.plane(PlaneIndex::Y).view(),
+                        (p, q),
+                        (x, y),
+                        horizontal,
+                        (4, LUMA_REACH),
+                    )
+                })
+                .flatten();
             filter_luma_edge(
                 picture,
                 (p, q),
@@ -598,6 +641,9 @@ fn apply_luma<T: Pixel>(
                 sides,
                 dsp,
             );
+            if let Some(kept) = kept {
+                restore(&mut picture.plane_mut(PlaneIndex::Y).view_mut(), kept);
+            }
             along += 4;
         }
     }
@@ -623,7 +669,14 @@ fn apply_chroma<T: Pixel>(
     let (p_off, along_step) = if horizontal { (stride, 1) } else { (1, stride) };
     let depth = nc_common::BitDepth::of::<T>(dsp.depth());
     let bd_offset = crate::decoder_headers::qp_bd_offset(depth);
-    for perp in (16..perp_limit).step_by(16) {
+    // Chroma edges lie on an 8-sample chroma grid (§8.8.3.3); a 4-luma
+    // grid cell holds `cell_lines` chroma lines along the edge.
+    let (sx, sy) = sequence.subsampling();
+    let (perp_shift, along_shift) = if horizontal { (sy, sx) } else { (sx, sy) };
+    let edge_step = CHROMA_EDGE_GRID << perp_shift;
+    let cell_lines = 4 >> along_shift;
+    let max_run = MAX_CHROMA_LINES / cell_lines;
+    for perp in (edge_step..perp_limit).step_by(edge_step) {
         if closed_positions.contains(&(perp as u32)) {
             continue;
         }
@@ -638,7 +691,7 @@ fn apply_chroma<T: Pixel>(
             let at = (y >> 2) * stride + (x >> 2);
             let (p_raw, q_raw) = (grid[at - p_off], grid[at]);
             let mut run = 1usize;
-            while run < 4
+            while run < max_run
                 && along + 4 * run < along_limit
                 && grid[at + run * along_step - p_off] == p_raw
                 && grid[at + run * along_step] == q_raw
@@ -658,7 +711,9 @@ fn apply_chroma<T: Pixel>(
                 continue;
             }
             let sides = (&headers[usize::from(p.unit.slice)], header);
-            let large = p.size_perp(1, horizontal) >= 16 && q.size_perp(1, horizontal) >= 16;
+            // The long filter needs 8 chroma samples on each side.
+            let large = p.size_perp(1, horizontal) >> perp_shift >= CHROMA_EDGE_GRID
+                && q.size_perp(1, horizontal) >> perp_shift >= CHROMA_EDGE_GRID;
             for plane in [PlaneIndex::U, PlaneIndex::V] {
                 let bs = chroma_strength(p, q, plane as usize);
                 if bs == 0 || (bs == 1 && !large) {
@@ -674,16 +729,33 @@ fn apply_chroma<T: Pixel>(
                     sequence,
                     sides,
                 );
+                // Only an SPS that enables palette has palette CUs.
+                let kept = sequence
+                    .tools
+                    .palette
+                    .then(|| {
+                        palette_sides(
+                            &picture.plane(plane).view(),
+                            (p, q),
+                            (x >> sx, y >> sy),
+                            horizontal,
+                            (run * cell_lines, CHROMA_REACH),
+                        )
+                    })
+                    .flatten();
                 filter_chroma_run(
                     picture,
                     dsp,
                     plane,
-                    (x / 2, y / 2),
-                    run,
+                    (x >> sx, y >> sy),
+                    (run * cell_lines, cell_lines),
                     horizontal,
                     (beta, tc),
                     (large, boundary),
                 );
+                if let Some(kept) = kept {
+                    restore(&mut picture.plane_mut(plane).view_mut(), kept);
+                }
             }
             along += 4 * run;
         }
@@ -842,18 +914,20 @@ fn filter_luma<T: Pixel>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Filter `lines` chroma lines of an edge from `(cx, cy)`, decided in
+/// segments of `segment` lines: the chroma lines of one 4-luma-sample grid
+/// cell (VTM `xEdgeFilterChroma`).
 fn filter_chroma_run<T: Pixel>(
     picture: &mut Picture<T>,
     dsp: DepthKernels<'_>,
     plane: PlaneIndex,
     (cx, cy): (usize, usize),
-    run: usize,
+    (lines, segment): (usize, usize),
     horizontal: bool,
     (beta, tc): (i32, i32),
     (large, boundary): (bool, bool),
 ) {
     const REACH: usize = 4;
-    let lines = 2 * run;
     let (vw, vh) = {
         let view = picture.plane(plane).view();
         (view.width(), view.height())
@@ -865,27 +939,30 @@ fn filter_chroma_run<T: Pixel>(
     };
     if inside {
         let mut view = picture.plane_mut(plane).view_mut();
-        dsp.vvc_deblock_chroma_edge(
+        dsp.vvc_deblock_chroma_edge_segments(
             &mut view,
-            (cx, cy),
-            !horizontal,
-            lines,
-            beta,
-            tc,
-            large,
-            boundary,
+            ((cx, cy), !horizontal),
+            (lines, segment),
+            (beta, tc),
+            (large, boundary),
         );
         return;
     }
-    for k in 0..run {
+    for line in (0..lines).step_by(segment) {
         let at = if horizontal {
-            (cx + 2 * k, cy)
+            (cx + line, cy)
         } else {
-            (cx, cy + 2 * k)
+            (cx, cy + line)
         };
-        let mut edge = gather::<T, 2, { 2 * REACH }>(picture, plane, at, horizontal);
-        dsp.vvc_deblock_chroma(&mut edge, beta, tc, large, boundary);
-        store(picture, plane, at, horizontal, &edge);
+        if segment == CHROMA_PAIR {
+            let mut edge = gather::<T, CHROMA_PAIR, { 2 * REACH }>(picture, plane, at, horizontal);
+            dsp.vvc_deblock_chroma(&mut edge, beta, tc, large, boundary);
+            store(picture, plane, at, horizontal, &edge);
+        } else {
+            let mut edge = gather::<T, CHROMA_QUAD, { 2 * REACH }>(picture, plane, at, horizontal);
+            dsp.vvc_deblock_chroma_quad(&mut edge, (beta, tc), (large, boundary));
+            store(picture, plane, at, horizontal, &edge);
+        }
     }
 }
 
@@ -959,7 +1036,7 @@ fn store<T: Sample, const L: usize, const W: usize>(
 
 #[inline]
 fn chroma_strength(p: &EdgeBlock<'_>, q: &EdgeBlock<'_>, plane: usize) -> i32 {
-    if p.unit.inter.is_none() || q.unit.inter.is_none() {
+    if p.unit.intra() || q.unit.intra() {
         return if p.unit.bdpcm[1] != 0 && q.unit.bdpcm[1] != 0 {
             0
         } else {
@@ -988,7 +1065,7 @@ fn strength(
     horizontal: bool,
     headers: (&SliceHeader, &SliceHeader),
 ) -> i32 {
-    if p.unit.inter.is_none() || q.unit.inter.is_none() {
+    if p.unit.intra() || q.unit.intra() {
         let channel = usize::from(plane != 0);
         return if p.unit.bdpcm[channel] != 0 && q.unit.bdpcm[channel] != 0 {
             0
@@ -1019,6 +1096,10 @@ fn strength(
         }
     }
     if plane == 0 {
+        // A palette CU beside a CU of another prediction mode (§8.8.3.5).
+        if p.unit.palette.is_some() != q.unit.palette.is_some() {
+            return 1;
+        }
         match (p.unit.block_vector, q.unit.block_vector) {
             (Some(p), Some(q)) => {
                 return i32::from(
@@ -1031,6 +1112,82 @@ fn strength(
         return subblock_motion_bs(p, q, (x, y), horizontal, headers);
     }
     0
+}
+
+/// The deepest samples the luma and chroma filters modify on each side of
+/// an edge (§8.8.3.6: `maxFilterLength` 7 and 3).
+const LUMA_REACH: usize = 7;
+const CHROMA_REACH: usize = 3;
+
+/// The samples of an edge segment's palette-coded sides, which deblocking
+/// leaves as they are (§8.8.3.6.6, §8.8.3.6.8: `nDp` or `nDq` is 0 when the
+/// CU has `pred_mode_plt_flag`); `None` without palette CUs. `(x, y)` is
+/// the first q sample in plane samples; `length` samples along the edge.
+#[inline]
+fn palette_sides<T: Pixel>(
+    view: &nc_common::PlaneView<'_, T>,
+    (p, q): (&EdgeBlock<'_>, &EdgeBlock<'_>),
+    (x, y): (usize, usize),
+    horizontal: bool,
+    (length, reach): (usize, usize),
+) -> Option<Vec<(usize, usize, T)>> {
+    let sides = [p.unit.palette.is_some(), q.unit.palette.is_some()];
+    if sides == [false; 2] {
+        return None;
+    }
+    Some(palette_samples(
+        view,
+        sides,
+        (x, y),
+        horizontal,
+        (length, reach),
+    ))
+}
+
+/// The samples of [`palette_sides`] when either side is a palette CU (out
+/// of line: other edges pay only the check).
+#[cold]
+#[inline(never)]
+fn palette_samples<T: Pixel>(
+    view: &nc_common::PlaneView<'_, T>,
+    sides: [bool; 2],
+    (x, y): (usize, usize),
+    horizontal: bool,
+    (length, reach): (usize, usize),
+) -> Vec<(usize, usize, T)> {
+    let (across, along) = if horizontal { (y, x) } else { (x, y) };
+    let (across_limit, along_limit) = if horizontal {
+        (view.height(), view.width())
+    } else {
+        (view.width(), view.height())
+    };
+    let mut kept = Vec::new();
+    for (side, palette) in sides.into_iter().enumerate() {
+        if !palette {
+            continue;
+        }
+        let span = if side == 0 {
+            across.saturating_sub(reach)..across
+        } else {
+            across..(across + reach).min(across_limit)
+        };
+        for a in span {
+            for b in along..(along + length).min(along_limit) {
+                let (sx, sy) = if horizontal { (b, a) } else { (a, b) };
+                kept.push((sx, sy, view.row(sy)[sx]));
+            }
+        }
+    }
+    kept
+}
+
+/// Put back the samples [`palette_sides`] kept.
+#[cold]
+#[inline(never)]
+fn restore<T: Pixel>(view: &mut nc_common::PlaneViewMut<'_, T>, kept: Vec<(usize, usize, T)>) {
+    for (x, y, value) in kept {
+        view.row_mut(y)[x] = value;
+    }
 }
 
 fn fill_edge_grid(

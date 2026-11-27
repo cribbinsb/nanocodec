@@ -7,6 +7,7 @@ use super::motion::candidates::Candidate;
 use super::motion::vector::TIP_REFERENCE;
 use super::motion::{MotionStore, MotionUnit, Mv};
 use super::size::BlockSize;
+use crate::general::sample::Av2Sample;
 use crate::general::warp::{IDENTITY, OFF_DIAGONAL_MAX, UNITY, WarpModel, kind};
 
 /// Causal warps fit at most eight neighbour samples.
@@ -60,7 +61,7 @@ impl Samples {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// A causal warp: the model fitted to the vectors of the neighbours
     /// that use `reference` (dav2d `derive_warpmv`).
     pub(super) fn derive_warp(&self, size: BlockSize, reference: i8, mv: Mv) -> WarpModel {

@@ -266,3 +266,5 @@ fixed_qp.refs.second_full = 0
 fixed_qp.rate.cadence_static_scaling = 0
 fixed_qp.rate.fixed_qp_moving_key = 6
 fixed_qp.nonbase.hevc.pre_transform_zero_scale = 2
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2

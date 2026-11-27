@@ -8,11 +8,12 @@
 //! field, kept with the picture for later frames.
 use std::rc::Rc;
 
+use super::super::frame_refs::ReferenceScale;
 use super::vector::{
     DIVISION_MULTIPLIERS, QuantizedMv, REFERENCES, RefPair, TIP_REFERENCE, TemporalMv,
 };
 use crate::general::frame_header::FrameHeader;
-use crate::general::references::order_difference;
+use crate::general::references::{order_difference, swap_insertion_order};
 use crate::general::sequence::SequenceHeader;
 use crate::general::warp::{WarpModel, kind};
 
@@ -125,8 +126,9 @@ pub struct Projection {
     pub side: usize,
     /// Its distance to the current frame, or [`INVALID_DISTANCE`].
     pub to_current: i8,
-    /// Per reference of it: its distance (0 when out of range).
-    pub to_reference: [i8; REFERENCES],
+    /// Per reference of it: its distance, none when out of range or past
+    /// its reference count (dav2d 54856741 `INVALID_REF2REF`).
+    pub to_reference: [Option<i8>; REFERENCES],
     /// Per reference of it: that frame's rank in the current frame, if any.
     pub reference_rank: [Option<usize>; REFERENCES],
     /// Per reference of it: Q14 factors projecting its vectors to the
@@ -285,6 +287,7 @@ impl FrameMotion {
         sequence: &SequenceHeader,
         header: &FrameHeader,
         references: &[ReferenceMotion; REFERENCES],
+        scales: &[Option<ReferenceScale>; REFERENCES],
     ) -> Self {
         let params = MotionParams {
             superblock_units: 1 << (header.superblock_log2 - 2),
@@ -318,9 +321,12 @@ impl FrameMotion {
             let warp = header.global_motion.warps[rank];
             let mut model = WarpModel::of_matrix(warp.kind, warp.matrix);
             let sheared = model.shear();
-            // References of the frame's size only (no scaled prediction).
-            global_warp_allowed[rank] =
-                warp.kind > kind::TRANSLATION && !header.force_integer_mv && sheared;
+            // References of the frame's size only (dav2d
+            // `gmv_warp_allowed`'s `!svc[i][0].scale`).
+            global_warp_allowed[rank] = warp.kind > kind::TRANSLATION
+                && !header.force_integer_mv
+                && sheared
+                && scales[rank].is_none();
             global[rank] = model;
         }
         let mut motion = Self {
@@ -373,6 +379,13 @@ impl FrameMotion {
         let mut edges = [[None; REFERENCES]; REFERENCES];
         let mut has_side = [[false; 2]; REFERENCES];
         let counts: [u8; REFERENCES] = std::array::from_fn(|i| references[i].reference_count);
+        // Only a reference's own references count, not stale slots past
+        // them (AVM marks those unused; dav2d d1bde236).
+        let used = |i: usize| &references[i].reference_orders[..usize::from(counts[i])];
+        // An overlay (a reference with a reference at its own order) ends
+        // no trajectory (dav2d 54856741, e695bd04).
+        let overlay: [bool; REFERENCES] =
+            std::array::from_fn(|i| i < count && used(i).contains(&references[i].order));
         for i in 0..count {
             let reference = &references[i];
             self.future[i] = diff(reference.order, current) < 0;
@@ -382,17 +395,21 @@ impl FrameMotion {
             if counts[i] == 0 {
                 continue;
             }
-            for n in 0..REFERENCES {
-                let order = reference.reference_orders[n];
+            for (n, &order) in used(i).iter().enumerate() {
                 to_reference[i][n] = diff(reference.order, order);
                 has_side[i][0] |= to_reference[i][n] > 0;
                 has_side[i][1] |= to_reference[i][n] < 0;
                 to_current[i][n] = diff(current, order);
-                edges[i][n] = (0..count).find(|&m| references[m].order == order);
+                edges[i][n] = (0..count).find(|&m| references[m].order == order && !overlay[m]);
             }
         }
         let both_sides = header.has_future_references && header.has_past_references;
-        if sequence.references.drl_reorder != DRL_REORDER_ALWAYS && !both_sides {
+        // Only frames that use the temporal fields prioritise them (AVM
+        // v1.0.0 `assign_tmvp_high_priority`; dav2d f782b5f3).
+        if self.params.use_motion_fields
+            && sequence.references.drl_reorder != DRL_REORDER_ALWAYS
+            && !both_sides
+        {
             for i in 0..count {
                 if self.abs_distance[i] <= HIGH_PRIORITY_DISTANCE {
                     self.high_priority |= 2 << i;
@@ -472,15 +489,9 @@ impl FrameMotion {
         let bits = sequence.inter.order_hint_bits;
         let diff = |a: u32, b: u32| difference(bits, a, b);
         let count = self.params.reference_count;
-        // Nearest past first (largest positive distance first, stable).
-        let mut order: Vec<usize> = Vec::with_capacity(count);
-        for n in 0..count {
-            let at = order
-                .iter()
-                .position(|&m| self.distance[n] > self.distance[m])
-                .unwrap_or(order.len());
-            order.insert(at, n);
-        }
+        // Nearest past first (largest positive distance first), in
+        // dav2d's order for equal distances.
+        let order = swap_insertion_order(count, |a, b| self.distance[a] > self.distance[b]);
         let first_future = order.iter().take_while(|&&n| self.future[n]).count();
         let mut topo = Vec::with_capacity(REFERENCES);
         let mut position = [None; REFERENCES];
@@ -597,7 +608,9 @@ impl FrameMotion {
         let limit = if limit == 1 { 1 } else { MAX_PROJECTIONS };
         if list.len() < limit {
             'rest: for &reference in topo.iter().rev() {
-                let side = usize::from(self.distance[reference] >= 0);
+                // A reference at the current order counts as future
+                // (dav2d 54856741).
+                let side = usize::from(self.distance[reference] > 0);
                 for side in [side, 1 - side] {
                     if !done[reference][side] {
                         list.push((reference, None, side));
@@ -625,7 +638,7 @@ impl FrameMotion {
             target,
             side,
             to_current: INVALID_DISTANCE,
-            to_reference: [0; REFERENCES],
+            to_reference: [None; REFERENCES],
             reference_rank: [None; REFERENCES],
             factors: [[0; 2]; REFERENCES],
         };
@@ -635,15 +648,13 @@ impl FrameMotion {
             return projection;
         }
         projection.to_current = to_current as i8;
-        for m in 0..REFERENCES {
+        let used = usize::from(references[reference].reference_count);
+        for m in 0..used {
             let far = references[reference].reference_orders[m];
             let to_reference = difference(bits, order, far);
-            let d2 = if to_reference.abs() <= MAX_DISTANCE {
-                to_reference
-            } else {
-                0
-            };
-            projection.to_reference[m] = d2 as i8;
+            let in_range = to_reference.abs() <= MAX_DISTANCE;
+            let d2 = if in_range { to_reference } else { 0 };
+            projection.to_reference[m] = in_range.then_some(d2 as i8);
             // Frames at the projected reference's own order (overlays,
             // other layers) end no trajectory.
             if to_reference != 0 {

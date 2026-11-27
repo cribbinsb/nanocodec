@@ -30,6 +30,7 @@ impl Parser<'_> {
             reference_line: 0,
             isp: None,
             sbt: None,
+            palette: None,
             prof: self.sequence.tools.prof && !self.header.picture.motion.prof_disabled,
             smvd: false,
             bdof: false,
@@ -38,6 +39,8 @@ impl Parser<'_> {
             mts: 0,
             luma_mode: intra::PLANAR,
             chroma_mode: intra::PLANAR,
+            chroma_mip: false,
+            act: false,
             qp: 0,
             chroma_offsets: [0; 3],
             tile: self.ctu.tile,
@@ -46,6 +49,12 @@ impl Parser<'_> {
         };
         let luma_qp = self.begin_unit_qp(&mut unit);
         let intra = self.prediction(r, &mut unit, constraint)?;
+        if intra && self.palette_flag(r, &unit)? {
+            return self.palette_cu(r, unit, luma_qp);
+        }
+        if intra {
+            self.colour_transform_flag(r, &mut unit)?;
+        }
         if unit.skip
             || (matches!(
                 unit.inter,
@@ -68,6 +77,9 @@ impl Parser<'_> {
             self.chroma_prediction(r, &mut unit)?;
         }
         self.sbt_mode(r, &mut unit)?;
+        if !intra {
+            self.colour_transform_flag(r, &mut unit)?;
+        }
         if unit.transforms.is_empty() {
             unit.transforms = super::transform_units::empty_units(
                 node,
@@ -79,6 +91,33 @@ impl Parser<'_> {
         self.end_unit_qp(&mut unit, luma_qp);
         self.transform_selection(r, &mut unit)?;
         self.finish_unit(unit);
+        Ok(())
+    }
+    /// The rest of a palette CU, which codes no prediction modes or residual
+    /// (§7.3.11.5); out of line, as most CUs are not palette CUs.
+    #[inline(never)]
+    fn palette_cu(
+        &mut self,
+        r: &mut Reader<'_>,
+        mut unit: Unit,
+        luma_qp: Option<i8>,
+    ) -> Result<()> {
+        unit.transforms = super::transform_units::empty_units(
+            unit.node,
+            unit.channel,
+            self.sequence.max_transform_log2,
+        )?;
+        self.palette_unit(r, &mut unit)?;
+        self.end_unit_qp(&mut unit, luma_qp);
+        self.finish_unit(unit);
+        Ok(())
+    }
+    /// `cu_act_enabled_flag` (§7.3.11.5): single-tree CUs only, after the
+    /// palette flag of an intra CU or the coded flag and SBT of another.
+    fn colour_transform_flag(&mut self, r: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
+        if self.sequence.tools.act && unit.combined {
+            unit.act = r.bin(&mut self.act)?;
+        }
         Ok(())
     }
     fn finish_unit(&mut self, unit: Unit) {

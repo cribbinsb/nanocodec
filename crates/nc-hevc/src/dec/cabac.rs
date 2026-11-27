@@ -73,6 +73,12 @@ impl<'a> Engine<'a> {
         self.0.bypass_unary(max)
     }
 
+    /// The alignment before bypass bins (§9.3.4.3.6).
+    #[inline]
+    pub fn align_bypass(&mut self) {
+        self.0.align_bypass();
+    }
+
     /// `DecodeTerminate` (§9.3.4.3.5).
     pub fn terminate(&mut self) -> bool {
         self.0.terminate()

@@ -66,7 +66,7 @@ pub(crate) fn apply_with_scratch<T: Pixel>(
     for (index, filter) in filters.iter().enumerate() {
         for (plane, band) in filter.bands.iter().enumerate() {
             if let Some(band) = band {
-                let offsets = filter.edge.offsets[plane].map(i16::from);
+                let offsets = crate::sao::offset_values(filter.edge.offsets[plane], depth);
                 let at = (PlaneIndex::ALL[plane], index, ctu);
                 crate::sao::apply_band(kernels, picture, at, *band, offsets);
             }

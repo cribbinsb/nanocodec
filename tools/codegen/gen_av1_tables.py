@@ -130,6 +130,8 @@ INT_TABLES = [
     ("ac_qlookup_QTX", "av1/common/quant_common.c", "AC_QLOOKUP", "i16"),
     ("dc_qlookup_10_QTX", "av1/common/quant_common.c", "DC_QLOOKUP_10", "i16"),
     ("ac_qlookup_10_QTX", "av1/common/quant_common.c", "AC_QLOOKUP_10", "i16"),
+    ("dc_qlookup_12_QTX", "av1/common/quant_common.c", "DC_QLOOKUP_12", "i16"),
+    ("ac_qlookup_12_QTX", "av1/common/quant_common.c", "AC_QLOOKUP_12", "i16"),
     ("default_scan_4x4", "av1/common/scan.c", "DEFAULT_SCAN_4X4", "u16"),
     ("default_scan_8x8", "av1/common/scan.c", "DEFAULT_SCAN_8X8", "u16"),
     ("default_scan_16x16", "av1/common/scan.c", "DEFAULT_SCAN_16X16", "u16"),

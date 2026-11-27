@@ -9,21 +9,23 @@
 //! both filter, dav2d `setup_thr_sb_*`), offset per channel by the frame
 //! header; sub-PU edges divide them by eight. Its maximum width comes from
 //! its level ([`super::edges`]); edges on the top row of each 64-row band
-//! leave the rows above shorter (luma at most 6 samples, chroma 2). A side
-//! in a lossless segment is left unchanged.
-//!
-//! Not yet: the tile-boundary level fix-ups (several tiles, rejected).
+//! leave the rows above shorter (luma at most 6 samples, chroma 2), as do
+//! vertical edges along a tile's left side for the columns left of them
+//! (dav2d `deblock_h_sb*`'s `edge`). A side
+//! in a lossless segment is left unchanged. Edges along tile boundaries
+//! come capped by the neighbouring tile's levels (`block::loop_filters`).
 
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut};
 use nc_dsp::{AV2_EDGE_LINES, Av2EdgeFilter, Dsp};
 
 use super::FilterMaps;
-use super::edges::{Direction, EdgeMap, LEVELS, MAX_LUMA_LEVEL, SUB_PU};
-use crate::deblock::thresholds::{q_threshold, side_threshold};
+use super::edges::{Direction, EdgeMap, LEVELS, MAX_CHROMA_LEVEL, MAX_LUMA_LEVEL, SUB_PU};
+use crate::deblock::thresholds::{q_threshold_at, side_threshold_at};
 use crate::general::block::pixels::Planes;
 use crate::general::block::segmentation::SegmentMap;
 use crate::general::block::{delta_qindex, segment_qindex};
 use crate::general::frame_header::FrameHeader;
+use crate::general::sample::Av2Sample;
 use crate::general::sequence::{MAX_SEGMENTS, SequenceHeader};
 
 /// Filter length (dav2d `max_width` × 2 + 2) by luma and chroma level.
@@ -44,6 +46,10 @@ const SUB_PU_SHIFT: u32 = 3;
 /// edges two units above the bottom shortened to level 2.
 const CROP_REACH: usize = 4;
 const CROP_ROWS_ABOVE: usize = 2;
+/// The right crop: luma edges this many units left of the frame's right
+/// side; chroma (bottom and right) edges on its last unit.
+const CROP_LUMA_COLUMNS_LEFT: usize = 2;
+const CROP_CHROMA_UNITS: usize = 1;
 
 /// Quantizer and side thresholds of one filter block for one channel.
 type Thresholds = (u16, u16);
@@ -60,6 +66,10 @@ struct Channel<'a> {
     directions: [bool; 2],
     /// The segment of each of the plane's 4x4 units.
     segments: Segments<'a>,
+    /// The plane's unit columns where a tile starts (after the first).
+    tile_columns: &'a [usize],
+    /// The sample depth.
+    depth: BitDepth,
 }
 
 /// A plane's segments as the filter reads them.
@@ -87,8 +97,8 @@ impl Segments<'_> {
 
 /// Deblock the reconstruction `planes` (padded to whole superblocks) of a
 /// frame whose block layer filled `maps`.
-pub fn filter(
-    planes: &mut Planes,
+pub fn filter<T: Av2Sample>(
+    planes: &mut Planes<T>,
     maps: &mut FilterMaps,
     header: &FrameHeader,
     sequence: &SequenceHeader,
@@ -100,7 +110,7 @@ pub fn filter(
     if !deblock.level_y.iter().any(|&on| on) {
         return;
     }
-    crop_bottom(&mut maps.luma_edges);
+    adjust_edges(maps, header, sequence);
     let count = if header.segmentation.is_some() {
         MAX_SEGMENTS
     } else {
@@ -108,23 +118,25 @@ pub fn filter(
     };
     // Each filter block's luma AC quantizer per segment (dav2d
     // `init_deblock_thr_lut_*`).
+    let max = i32::from(sequence.max_qindex());
+    let high_bit_depth = sequence.high_bit_depth;
     let segment_qindices = || {
         maps.qindex.iter().flat_map(move |&qindex| {
-            (0..count).map(move |segment| segment_qindex(header, qindex, segment))
+            (0..count).map(move |segment| segment_qindex(header, qindex, segment, max))
         })
     };
     let luma = |direction: usize| {
         let offset = DELTA_SCALE * i32::from(deblock.delta_q_y[direction]);
         segment_qindices()
-            .map(|qindex| thresholds(qindex + offset))
+            .map(|qindex| thresholds(qindex + offset, high_bit_depth))
             .collect()
     };
     let chroma = |ac: i8, delta: i8| -> Vec<Thresholds> {
         let base = i32::from(ac) + i32::from(sequence.quant.base_uv_ac_delta);
         segment_qindices()
             .map(|qindex| {
-                let qindex = delta_qindex(qindex, base);
-                thresholds(qindex + DELTA_SCALE * i32::from(delta))
+                let qindex = delta_qindex(qindex, base, max);
+                thresholds(qindex + DELTA_SCALE * i32::from(delta), high_bit_depth)
             })
             .collect()
     };
@@ -138,6 +150,14 @@ pub fn filter(
     };
     let quantizer = &header.quantizer;
     let u = chroma(quantizer.u_ac, deblock.delta_q_u);
+    // Tile column starts in luma and chroma units.
+    let superblock_units = 1_usize << (header.superblock_log2 - 2);
+    let starts = &header.tiles.column_starts;
+    let luma_tiles: Vec<usize> = starts[1..starts.len() - 1]
+        .iter()
+        .map(|&start| usize::from(start) * superblock_units)
+        .collect();
+    let chroma_tiles: Vec<usize> = luma_tiles.iter().map(|&start| start / 2).collect();
     let channels = [
         Channel {
             plane: 0,
@@ -146,6 +166,8 @@ pub fn filter(
             thresholds: [luma(0), luma(1)],
             directions: deblock.level_y,
             segments: segments(false),
+            tile_columns: &luma_tiles,
+            depth: sequence.depth(),
         },
         Channel {
             plane: 1,
@@ -154,6 +176,8 @@ pub fn filter(
             thresholds: [u.clone(), u],
             directions: [deblock.level_u; 2],
             segments: segments(true),
+            tile_columns: &chroma_tiles,
+            depth: sequence.depth(),
         },
         Channel {
             plane: 2,
@@ -165,6 +189,8 @@ pub fn filter(
             ],
             directions: [deblock.level_v; 2],
             segments: segments(true),
+            tile_columns: &chroma_tiles,
+            depth: sequence.depth(),
         },
     ];
     for channel in &channels {
@@ -177,15 +203,19 @@ pub fn filter(
         };
         for direction in [Direction::Vertical, Direction::Horizontal] {
             if channel.directions[direction as usize] {
-                filter_direction(&mut view, channel, maps.blocks_across, direction, dsp);
+                filter_direction(&mut view, channel, (maps.blocks_across, direction), dsp);
             }
         }
     }
 }
 
-/// Both thresholds of a channel's qindex (block qindex plus offsets).
-fn thresholds(qindex: i32) -> Thresholds {
-    (q_threshold(qindex), side_threshold(qindex))
+/// Both thresholds of a channel's qindex (block qindex plus offsets) in a
+/// sequence `high_bit_depth` steps deeper than 8 bits.
+fn thresholds(qindex: i32, high_bit_depth: u8) -> Thresholds {
+    (
+        q_threshold_at(qindex, high_bit_depth),
+        side_threshold_at(qindex, high_bit_depth),
+    )
 }
 
 /// Shorten the 32-long horizontal luma edges two units above the bottom
@@ -197,19 +227,79 @@ fn crop_bottom(edges: &mut EdgeMap) {
         if top + BAND_UNITS + CROP_REACH > rows {
             let height = (rows - top).min(BAND_UNITS);
             let row = top + height - CROP_ROWS_ABOVE;
-            edges.lower_row(row, MAX_LUMA_LEVEL, MAX_LUMA_LEVEL - 1);
+            edges.lower_line(
+                Direction::Horizontal,
+                row,
+                MAX_LUMA_LEVEL,
+                MAX_LUMA_LEVEL - 1,
+            );
+        }
+    }
+}
+
+/// Shorten the edges whose filter would read past the 8-aligned frame:
+/// AVM caps the transform size right of or below an edge within 16 luma
+/// or 8 chroma samples of the frame's end at 16x16 or 8x8 (AVM v1.0.0
+/// `set_lpf_parameters`' `clipped_ts`; dav2d ad6cdb05). Luma vertical
+/// edges two units left of the right side, and chroma edges on the last
+/// unit row and column, go one level down; [`crop_bottom`] does luma's
+/// horizontal edges.
+fn crop_frame_edges(luma: &mut EdgeMap, chroma: &mut EdgeMap) {
+    let luma_column = luma.columns - CROP_LUMA_COLUMNS_LEFT;
+    luma.lower_line(
+        Direction::Vertical,
+        luma_column,
+        MAX_LUMA_LEVEL,
+        MAX_LUMA_LEVEL - 1,
+    );
+    let (columns, rows) = (chroma.columns, chroma.rows);
+    for (direction, line) in [
+        (Direction::Horizontal, rows - CROP_CHROMA_UNITS),
+        (Direction::Vertical, columns - CROP_CHROMA_UNITS),
+    ] {
+        chroma.lower_line(direction, line, MAX_CHROMA_LEVEL, MAX_CHROMA_LEVEL - 1);
+    }
+}
+
+/// The changes to the block layer's edges before filtering: the crops at
+/// the frame's edges, and tile boundaries where the sequence keeps loop
+/// filters within tiles.
+fn adjust_edges(maps: &mut FilterMaps, header: &FrameHeader, sequence: &SequenceHeader) {
+    crop_bottom(&mut maps.luma_edges);
+    crop_frame_edges(&mut maps.luma_edges, &mut maps.chroma_edges);
+    if sequence.filters.disable_across_tiles {
+        isolate_tiles(maps, header);
+    }
+}
+
+/// Remove the edges on tile boundaries, luma and chroma (AVM v1.0.0
+/// `set_lpf_parameters` and `filter_block_plane_vert`/`_horz` with
+/// `disable_loopfilters_across_tiles`; dav2d ignores the flag).
+fn isolate_tiles(maps: &mut FilterMaps, header: &FrameHeader) {
+    let superblock_units = 1_usize << (header.superblock_log2 - 2);
+    let tiles = &header.tiles;
+    let lines = [
+        (Direction::Vertical, &tiles.column_starts),
+        (Direction::Horizontal, &tiles.row_starts),
+    ];
+    for (direction, starts) in lines {
+        // The last entry ends the frame.
+        for &start in &starts[1..starts.len() - 1] {
+            let line = usize::from(start) * superblock_units;
+            maps.luma_edges.clear_line(direction, line);
+            maps.chroma_edges.clear_line(direction, line / 2);
         }
     }
 }
 
 /// Every edge of one direction of a channel, edge line by edge line.
-fn filter_direction(
-    view: &mut PlaneViewMut<'_>,
+fn filter_direction<T: Av2Sample>(
+    view: &mut PlaneViewMut<'_, T>,
     channel: &Channel<'_>,
-    blocks_across: usize,
-    direction: Direction,
+    (blocks_across, direction): (usize, Direction),
     dsp: &Dsp,
 ) {
+    let depth = channel.depth.of::<T>();
     let edges = channel.edges;
     let vertical = direction == Direction::Vertical;
     let (lines, along) = if vertical {
@@ -238,6 +328,7 @@ fn filter_direction(
     // The frame's left and top borders are not edges.
     for line in 1..lines {
         let mut any = false;
+        let tile_edge = vertical && channel.tile_columns.contains(&line);
         for (position, filter) in filters.iter_mut().enumerate() {
             let (column, row) = if vertical {
                 (line, position)
@@ -272,7 +363,7 @@ fn filter_direction(
             } else {
                 (LUMA_LENGTHS[level], LUMA_BAND_TOP_LENGTH)
             };
-            let length_neg = if !vertical && row % band == 0 {
+            let length_neg = if (!vertical && row % band == 0) || tile_edge {
                 length_pos.min(band_top_length)
             } else {
                 length_pos
@@ -292,7 +383,7 @@ fn filter_direction(
         }
         let coordinate = line * AV2_EDGE_LINES;
         if any {
-            dsp.av2_deblock_line(view, coordinate, vertical, &filters);
+            T::deblock_line(dsp, view, (coordinate, vertical), &filters, depth);
         }
         // Segments of one edge line share no sample: their order is free.
         for (position, edge, keep) in keeping.drain(..) {
@@ -302,7 +393,7 @@ fn filter_direction(
             } else {
                 (along, coordinate)
             };
-            dsp.av2_deblock_edge_keeping(view, at, vertical, edge, keep);
+            T::deblock_edge_keeping(dsp, view, (at, vertical), (edge, keep), depth);
         }
     }
 }

@@ -297,12 +297,6 @@ impl Packetizer {
                 },
             }]);
         };
-        if layers.structure.spatial_sizes.len() > 1 {
-            // Our VP9 spatial SVC codes the lower layers hidden and shows
-            // them with show_existing_frame, which RFC 9628's picture model
-            // (one show_frame value per picture) does not carry.
-            return Err(RtpError::Unsupported("VP9 spatial layers over RTP"));
-        }
         let base_tid0 = layers.frames.first().is_some_and(|f| f.temporal_id == 0);
         if base_tid0 {
             self.vp9.tl0_picture_index = self.vp9.tl0_picture_index.wrapping_add(1);
@@ -331,6 +325,13 @@ impl Packetizer {
                 None => unit,
             };
             let key_picture = frame.key && frame.spatial_id == 0;
+            // `Z`: no frame of the layer above in this picture predicts
+            // from this one (RFC 9628 §4.2), so a receiver of that layer
+            // alone may go without it here.
+            let not_upper_reference = !layers
+                .frames
+                .iter()
+                .any(|f| f.spatial_id == frame.spatial_id + 1 && f.inter_layer);
             frames.push(FrameToSend {
                 data,
                 index,
@@ -347,6 +348,7 @@ impl Packetizer {
                     tl0_picture_index: (!flexible).then_some(self.vp9.tl0_picture_index),
                     p_diffs: if inter_picture { p_diffs } else { Vec::new() },
                     scalability: key_picture.then(|| layers.structure.spatial_sizes.clone()),
+                    not_upper_reference,
                     ..Descriptor::default()
                 },
             });

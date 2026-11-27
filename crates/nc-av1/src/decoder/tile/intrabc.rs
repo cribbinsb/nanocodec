@@ -116,27 +116,26 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let filters = Av1Filters::both(Av1Filter::Bilinear);
         let kernels = self.kernels();
         for &plane in planes {
-            let ss = usize::from(plane != PlaneIndex::Y);
+            let (ss_x, ss_y) = self.subsampling(plane);
             let (origin, size) = Self::plane_block(block, plane);
-            let (width, height) = (self.header.size.width, self.header.size.height);
-            let visible = ((width + ss) >> ss, (height + ss) >> ss);
-            let pel = SUBPEL_PER_SAMPLE << ss;
-            if dv.col % pel == 0 && dv.row % pel == 0 {
+            let decoded = decoded_size((self.header.width, self.header.height), (ss_x, ss_y));
+            let pel = (SUBPEL_PER_SAMPLE << ss_x, SUBPEL_PER_SAMPLE << ss_y);
+            if dv.col % pel.0 == 0 && dv.row % pel.1 == 0 {
                 let source = (
-                    origin.0 as isize + isize::from(dv.col / pel),
-                    origin.1 as isize + isize::from(dv.row / pel),
+                    origin.0 as isize + isize::from(dv.col / pel.0),
+                    origin.1 as isize + isize::from(dv.row / pel.1),
                 );
-                if copy_intrabc(self.recon.plane_mut(plane), (visible, size), source, origin) {
+                if copy_intrabc(self.recon.plane_mut(plane), (decoded, size), source, origin) {
                     continue;
                 }
             }
-            let ((x0, y0), axes) = window_position(origin, dv, (ss == 1, ss == 1));
+            let ((x0, y0), axes) = window_position(origin, dv, (ss_x == 1, ss_y == 1));
             let span = (size.0 + AV1_FILTER_TAPS - 1, size.1 + AV1_FILTER_TAPS - 1);
             // Copied out first: the window and the block are in the same
             // picture.
             let source = PlaneReference {
                 plane: self.recon.plane(plane),
-                size: visible,
+                size: decoded,
                 scale: None,
             };
             let window = gather(source, &mut self.maps.prediction.window, (x0, y0), span);
@@ -149,6 +148,18 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         }
         Ok(())
     }
+}
+
+/// The part of a plane an intra block copy reads unclamped: every decoded
+/// sample, including the 8x8 units beyond the frame's right and bottom
+/// edges (`coded`: the 8-aligned luma size; chroma subsampled by
+/// `(ss_x, ss_y)`).
+/// libaom's `extend_mc_border` skips intra block copy and dav1d's `mc`
+/// bounds it by the 8-aligned `bw`/`bh`, so a DV reaching past the frame
+/// edge reads those decoded samples; only samples past them are the
+/// clamped edge.
+fn decoded_size((width, height): (usize, usize), (ss_x, ss_y): (usize, usize)) -> (usize, usize) {
+    (width >> ss_x, height >> ss_y)
 }
 
 /// `lower_mv_precision` without high precision (libaom
@@ -167,7 +178,7 @@ fn quarter_precision(mv: Av1Mv) -> Av1Mv {
 /// the original samples, just like the gathered prediction.
 fn copy_intrabc<T: Sample>(
     plane: &mut Plane<T>,
-    ((visible_width, visible_height), (width, height)): ((usize, usize), (usize, usize)),
+    ((decoded_width, decoded_height), (width, height)): ((usize, usize), (usize, usize)),
     (source_x, source_y): (isize, isize),
     (dest_x, dest_y): (usize, usize),
 ) -> bool {
@@ -175,8 +186,8 @@ fn copy_intrabc<T: Sample>(
     else {
         return false;
     };
-    if source_x + width > visible_width
-        || source_y + height > visible_height
+    if source_x + width > decoded_width
+        || source_y + height > decoded_height
         || dest_x + width > plane.width()
         || dest_y + height > plane.height()
     {
@@ -197,4 +208,31 @@ fn copy_intrabc<T: Sample>(
         (0..height).for_each(copy);
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copies_reach_the_decoded_units_beyond_the_frame_edge() {
+        // A 140-wide frame codes 144 columns. Argon test1583 (and 20 more
+        // streams) copy from columns 140..143, which the decoder had
+        // clamped to column 139.
+        let coded = (144, 16);
+        assert_eq!(decoded_size(coded, (0, 0)), (144, 16));
+        assert_eq!(decoded_size(coded, (1, 1)), (72, 8));
+        assert_eq!(decoded_size(coded, (1, 0)), (72, 16));
+        let mut plane = Plane::<u8>::new(144, 16, 0).unwrap();
+        for (x, sample) in plane.view_mut().data_mut()[..144].iter_mut().enumerate() {
+            *sample = x as u8;
+        }
+        assert!(copy_intrabc(&mut plane, (coded, (8, 1)), (136, 0), (0, 8)));
+        let view = plane.view();
+        let start = 8 * view.stride();
+        assert_eq!(
+            &view.data()[start..start + 8],
+            &[136, 137, 138, 139, 140, 141, 142, 143]
+        );
+    }
 }

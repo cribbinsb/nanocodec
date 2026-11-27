@@ -82,6 +82,8 @@ SUPERFRAME_MARKER = 0xC0
 VP9_SHOW_EXISTING_BIT = 0x08
 VP9_FRAME_TYPE_BIT = 0x04
 VP9_SHOW_FRAME_BIT = 0x02
+#: ... and its error_resilient_mode bit (not a show_existing_frame).
+VP9_ERROR_RESILIENT_BIT = 0x01
 #: A show_existing_frame (Profile 0): one byte.
 VP9_SHOW_EXISTING_BYTES = 1
 
@@ -361,10 +363,10 @@ def vp9_ksvc_receiver_bytes(unit: bytes, target_spatial_id: int) -> int:
 def vp9_base_bytes(unit: bytes) -> int:
     """Base-layer bytes of one VP9 temporal unit: what a base-only receiver gets.
     A superframe's first frame is S0 (ours and libvpx's pack the layers lowest
-    first); a unit that is one frame is the base's. libvpx's S0 is shown and
-    goes alone; ours is hidden, so the base-only unit adds a one-byte
-    show_existing_frame and a two-frame superframe index (nc-vp9
-    superframe.rs: `[S0, show_existing_frame]`, as a unit without S1 is coded)."""
+    first); a unit that is one frame is the base's. libvpx's S0 and ours
+    (since 2026-11-27) are shown and go alone; our older streams hid it, and
+    their base-only unit adds a one-byte show_existing_frame and a two-frame
+    superframe index (`vp9_packed_bytes`)."""
     return vp9_operating_point_bytes(unit, 0)
 
 
@@ -394,9 +396,8 @@ def vp9_extract_view(source: Path, out: Path, spatial_id: int = 0,
 
 def vp9_first_frames(source: Path, out: Path) -> None:
     """The base-only stream of a libvpx SVC stream: each superframe's first
-    frame. libvpx codes every spatial layer with show_frame = 1, so these
-    frames decode as they are (ours code S0 hidden: `nanocodec extract
-    --base-only` adds a show_existing_frame)."""
+    frame. libvpx (and ours) code every spatial layer with show_frame = 1, so
+    these frames decode as they are."""
     vp9_extract_view(source, out, spatial_id=0, key_mode=False)
 
 

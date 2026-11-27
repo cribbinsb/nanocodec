@@ -107,6 +107,7 @@ pub(super) fn empty_units(node: Node, _channel: usize, max_log2: u8) -> Result<V
 }
 
 impl Parser<'_> {
+    #[inline]
     pub(super) fn residuals(&mut self, reader: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
         let mut transforms = std::mem::take(&mut unit.transforms);
         let split = transforms.len() != 1;
@@ -150,7 +151,11 @@ impl Parser<'_> {
                     false,
                 )?
             } else {
-                (!intra && (!split || unit.sbt.is_some()) && !cbf[1] && !cbf[2])
+                // Inferred when no chroma is coded: an unsplit motion CU
+                // or ACT CU codes something, and luma is all that is left.
+                (((!intra && (!split || unit.sbt.is_some())) || (intra && unit.act && !split))
+                    && !cbf[1]
+                    && !cbf[2])
                     || self.coded_flag(reader, unit, 0, false)?
             };
         }
@@ -172,6 +177,9 @@ impl Parser<'_> {
                 } else {
                     transform.chroma_block.unwrap()
                 };
+                let (width, height) = self
+                    .sequence
+                    .scaled(plane != 0, (block.width(), block.height()));
                 (transform.spans[plane], transform.stats[plane]) =
                     if transform.skip[plane] && !self.header.ts_residual_disabled {
                         (
@@ -179,8 +187,9 @@ impl Parser<'_> {
                                 reader,
                                 &mut self.skip_coefficients,
                                 self.arena,
-                                (block.width() >> channel, block.height() >> channel),
+                                (width, height),
                                 unit.bdpcm[channel] != 0,
+                                (u32::from(self.header.ts_rice), self.rice.log2_range),
                             )?,
                             coeff::CoeffStats::default(),
                         )
@@ -189,9 +198,9 @@ impl Parser<'_> {
                             reader,
                             &mut self.coefficients,
                             self.arena,
-                            block.width() >> channel,
-                            block.height() >> channel,
-                            channel,
+                            width,
+                            height,
+                            (plane, &mut self.rice),
                             self.header.dependent_quant,
                             self.header.sign_hiding,
                             plane == 0

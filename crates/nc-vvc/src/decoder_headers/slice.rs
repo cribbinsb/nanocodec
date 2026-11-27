@@ -29,6 +29,12 @@ pub(crate) struct SliceHeader {
     pub dependent_quant: bool,
     pub sign_hiding: bool,
     pub ts_residual_disabled: bool,
+    /// `sh_ts_residual_coding_rice_idx_minus1 + 1`: the Rice parameter of
+    /// transform-skip residual remainders (H.266 §7.4.8.1, 1 in version 1).
+    pub ts_rice: u8,
+    /// `sh_reverse_last_sig_coeff_flag`: last positions are coded from the
+    /// zero-out region's far corner (§7.3.11.11).
+    pub reverse_last: bool,
     pub entry_offsets: Vec<u64>,
     pub payload_offset: usize,
     /// The slice's CTU addresses in decoding order (§6.5.1).
@@ -109,6 +115,13 @@ impl SliceHeader {
         let sign_hiding = s.tools.sign_hiding && !dependent_quant && r.flag()?;
         let ts_residual_disabled =
             s.transforms.skip_log2.is_some() && !dependent_quant && !sign_hiding && r.flag()?;
+        // sh_ts_residual_coding_rice_idx_minus1 + 1 (§7.4.8.1): 1 by default.
+        let ts_rice = if !ts_residual_disabled && s.range.ts_rice_in_slice {
+            r.bits(3)? as u8 + 1
+        } else {
+            1
+        };
+        let reverse_last = s.range.reverse_last && r.flag()?;
         extension(&mut r, p.sh_extension)?;
         let entry_offsets = entry_offsets(&mut r, s, p, &ctus)?;
         r.0.trailing_bits()?; // byte_alignment(): one followed by zero padding.
@@ -136,6 +149,8 @@ impl SliceHeader {
             dependent_quant,
             sign_hiding,
             ts_residual_disabled,
+            ts_rice,
+            reverse_last,
             entry_offsets,
             payload_offset,
             ctus,
@@ -331,6 +346,7 @@ mod tests {
             &ChromaQpTable::hevc(0),
             headers::Tools::default(),
             None,
+            0,
         ))
         .unwrap();
         let p =

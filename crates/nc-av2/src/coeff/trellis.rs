@@ -137,7 +137,8 @@ impl TrellisQuantizer {
             ((error * error) as f64 * error_scale) as f32
         };
         self.candidates.clear();
-        self.candidates.extend(scan.iter().map(|&p| {
+        self.candidates.reserve(eob);
+        for &p in scan {
             let pos = usize::from(p);
             let magnitude = i64::from(coefficients[pos].unsigned_abs());
             let plain = levels[pos].unsigned_abs();
@@ -152,12 +153,13 @@ impl TrellisQuantizer {
                 Some(above) if above < at_plain => plain + 1,
                 _ => plain,
             };
-            Candidates::around(nearest, |level| match above {
-                _ if level == plain => at_plain,
-                Some(above) if level == plain + 1 => above,
-                _ => distortion(qindex, magnitude, level),
-            })
-        }));
+            self.candidates
+                .push(Candidates::around(nearest, |level| match above {
+                    _ if level == plain => at_plain,
+                    Some(above) if level == plain + 1 => above,
+                    _ => distortion(qindex, magnitude, level),
+                }));
+        }
         self.chosen.resize(eob, 0);
         let mut model = RateModel::new(writer, &mut self.costs, block, coefficients[0] < 0);
         let coded = self.search.quantize(
@@ -190,6 +192,7 @@ impl ContextState {
     /// The template neighbors, in the order `LevelMap::neighbours` reads
     /// them. The first two are on the next diagonal, the rest on the one
     /// after.
+    #[inline]
     fn neighbours(&self, at: ScanPosition) -> Neighbours {
         let shift = (at.row() * 4) as u8;
         let [_, next, after] = DIAGONAL_SLOTS[at.diagonal()];
@@ -573,13 +576,23 @@ impl CoeffRateModel for RateModel<'_> {
         // low-range increment, then the sign and past saturation the
         // high-range remainder.
         let offset = u32::from(last);
+        let base_key = (region.index() * 2 + usize::from(last)) * BASE_CONTEXTS + base_context;
+        let block_stamp = self.costs.block;
+        let base_entry = &mut self.costs.base[base_key];
+        if base_entry.block != block_stamp {
+            base_entry.block = block_stamp;
+            base_entry.costs = [UNPRICED; MAX_BASE_SYMBOLS];
+        }
         for (&level, out) in candidates.iter().zip(bits) {
             debug_assert!(level >= offset, "the last coded level is nonzero");
-            let mut q9 = self.base_cost(
-                family,
-                base_context,
-                (level.min(base_limit) - offset) as usize,
-            );
+            let sym = (level.min(base_limit) - offset) as usize;
+            let base_entry = &mut self.costs.base[base_key];
+            if base_entry.costs[sym] == UNPRICED {
+                models::base(&mut self.pricer, sym, self.block, family, base_context)
+                    .expect("pricing codes nothing and cannot fail");
+                base_entry.costs[sym] = self.pricer.take_q9();
+            }
+            let mut q9 = base_entry.costs[sym];
             if let Some(low_range) = low_range.filter(|_| level >= base_limit) {
                 q9 += low_range[(level - base_limit).min(MAX_LOW_RANGE) as usize];
             }

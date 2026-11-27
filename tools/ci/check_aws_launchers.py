@@ -59,6 +59,8 @@ ON_DEMAND = {
 RECLAIM_TESTS = {
     "tools/dev/svc_timing.py": "eval/tests/test_svc_timing.py::"
                                "test_a_restarted_box_runs_only_the_missing_encodes",
+    "tools/dev/aws_svc_encodes.py": "eval/tests/test_aws_svc_encodes.py::"
+                                    "test_a_reclaim_mid_run_reruns_only_the_streams_not_back",
     "tools/dev/aws_measure.py": "eval/tests/test_aws_measure.py::"
                                 "test_a_retry_is_seeded_with_the_points_pulled_from_the_lost_box",
     "tools/dev/aws_warm.py": "eval/tests/test_aws_measure.py::"

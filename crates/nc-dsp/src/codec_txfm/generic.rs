@@ -2143,6 +2143,8 @@ macro_rules! codec_txfm_kernels {
                 h264_hadamard_4x4,
                 h264_forward_8x8,
                 h264_forward_quantize_mb,
+                h264_eliminate_luma_8x8: $crate::codec_txfm::h264_levels8::scalar,
+                h264_eliminate_luma_4x4: $crate::codec_txfm::h264_levels::scalar,
                 h264_inverse_8x8,
                 h264_dequantize,
                 h264_add_inverse_4x4,

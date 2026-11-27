@@ -362,6 +362,57 @@ impl Reciprocal {
     }
 }
 
+/// Exact 16-bit reciprocal for a bounded quantizer numerator.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[derive(Clone, Copy)]
+struct WordQuant {
+    rounding: u16,
+    reciprocal: u16,
+    shift: u32,
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+impl WordQuant {
+    fn new(len: usize, q: &QuantTerms) -> Option<Self> {
+        if !(16..=1024).contains(&len) || !(0..=i32::from(i16::MAX)).contains(&q.ac.cap) {
+            return None;
+        }
+        let divisor = q.ac.divisor;
+        // Removing 2^input_shift from the integer division can drop the
+        // same low bits from the rounding offset without changing the quotient.
+        if q.input_shift > divisor.trailing_zeros() {
+            return None;
+        }
+        let divisor = divisor.checked_shr(q.input_shift)?;
+        let rounding = q.ac.offset.checked_shr(q.input_shift)?;
+        let maximum = 32768u32.checked_add(rounding)?;
+        if !(2..=65535).contains(&divisor) || rounding >= divisor || maximum > 65535 {
+            return None;
+        }
+        let shift = divisor.ilog2();
+        if divisor.is_power_of_two() {
+            return Some(Self {
+                rounding: rounding as u16,
+                reciprocal: 32768,
+                shift: shift - 1,
+            });
+        }
+        let scale = 1u64 << (16 + shift);
+        let divisor = u64::from(divisor);
+        let reciprocal = scale / divisor + 1;
+        let error = reciprocal * divisor - scale;
+        // The upward error must remain below 1/divisor for every numerator.
+        if u64::from(maximum) * error >= scale {
+            return None;
+        }
+        Some(Self {
+            rounding: rounding as u16,
+            reciprocal: u16::try_from(reciprocal).ok()?,
+            shift,
+        })
+    }
+}
+
 /// Storage of the quantiser's coefficients and levels (module docs): `i16`
 /// for AV1, `i32` for AV2.
 pub(crate) trait QuantStorage: Copy {

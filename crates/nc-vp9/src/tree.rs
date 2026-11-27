@@ -135,6 +135,7 @@ pub(crate) fn read(reader: &mut BoolReader<'_>, tree: &Tree, probs: &[u8]) -> us
 }
 
 /// Estimated bits of coding `bit` with probability-of-zero `prob` (/256).
+#[inline]
 pub(crate) fn bit_cost(bit: bool, prob: u8) -> f32 {
     let p = if bit {
         256 - usize::from(prob)

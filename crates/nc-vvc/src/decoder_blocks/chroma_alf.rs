@@ -29,7 +29,10 @@ pub(super) fn apply<T: Pixel>(
     chroma_buf: &mut Vec<T>,
 ) -> Result<()> {
     let size = (picture.width(), picture.height());
-    let side = ctu / 2;
+    let subsampling = picture.chroma_format().subsampling();
+    // The chroma CTB height, whose ALF virtual boundary is 2 rows above
+    // its bottom (§8.8.5.4).
+    let side = ctu >> subsampling.1;
     for plane in 1..3 {
         if !filters
             .iter()
@@ -52,7 +55,8 @@ pub(super) fn apply<T: Pixel>(
         let input = nc_common::PlaneView::new(&chroma_buf[..cw * ch], cw, cw, ch)
             .expect("copied chroma plane");
         let mut output = picture.plane_mut(PlaneIndex::ALL[plane]).view_mut();
-        let mut padded: [Vec<T>; 5] = std::array::from_fn(|_| vec![T::default(); side + 6]);
+        let mut padded: [Vec<T>; 5] =
+            std::array::from_fn(|_| vec![T::default(); (ctu >> subsampling.0) + 6]);
         for (index, filter) in filters.iter().enumerate() {
             let (Some(alternative), Some(id)) = (filter.alf[plane], filter.banks.chroma) else {
                 continue;
@@ -77,7 +81,7 @@ pub(super) fn apply<T: Pixel>(
                 apply_chroma_region(
                     &input,
                     &mut output,
-                    region.halved(),
+                    region.scaled(subsampling),
                     side,
                     (&selected.coefficients, limits),
                     &mut padded,
@@ -180,6 +184,7 @@ fn cross<T: Pixel>(
     }
     // Called before luma ALF, borrowing the pre-ALF luma required by §8.8.5
     // while mutating U and V directly without cloning the luma plane.
+    let subsampling = picture.chroma_format().subsampling();
     let [luma, u_plane, v_plane] = picture.planes_mut();
     let input = luma.view();
     let size = (input.width(), input.height());
@@ -208,7 +213,7 @@ fn cross<T: Pixel>(
                 apply_cross_region(
                     &input,
                     &mut output,
-                    region,
+                    (region, subsampling),
                     ctu,
                     coefficients,
                     &mut padded,
@@ -220,38 +225,53 @@ fn cross<T: Pixel>(
     Ok(())
 }
 
+/// CC-ALF of `region` (luma samples) of one chroma plane subsampled by
+/// `(sx, sy)` (§8.8.5.7): each chroma sample corrected from the luma
+/// around its collocated luma sample, the luma rows limited at the luma
+/// ALF virtual boundary (VTM `filterBlkCcAlf`).
 fn apply_cross_region<T: Pixel>(
     input: &nc_common::PlaneView<'_, T>,
     output: &mut nc_common::PlaneViewMut<'_, T>,
-    region: Region,
+    (region, (sx, sy)): (Region, (usize, usize)),
     ctu: usize,
     coefficients: [i16; 7],
     padded: &mut [Vec<T>; 4],
     dsp: DepthKernels<'_>,
 ) {
     let size = (input.width(), input.height());
-    let (x0, y0, width, height) = region.halved().rect;
-    let pad_len = 2 * width + 2;
-    let x_start = 2 * x0 as isize - 1;
+    let (x0, y0, width, height) = region.scaled((sx, sy)).rect;
+    let pad_len = (width << sx) + 2;
+    let x_start = (x0 << sx) as isize - 1;
     let (y_min, y_max, direct_x) = region.direct_span_bounds(size, x_start, pad_len);
     let (in_data, in_stride) = (input.data(), input.stride());
+    let boundary = ctu - 4;
     for y in y0..y0 + height {
-        let position = (2 * y) % ctu;
-        let boundary = ctu - 4;
-        let offsets = if position == boundary {
+        let position = (y << sy) % ctu;
+        // Without vertical subsampling, the two rows below the boundary
+        // keep their samples.
+        if sy == 0 && (position == boundary || position == boundary + 1) {
+            continue;
+        }
+        let offsets = if position == boundary || position == boundary - 1 {
             [0, 0, 0, 0]
-        } else if position == boundary - 2 {
+        } else if position == boundary - 2 || position == boundary + 1 {
             [-1, 0, 1, 1]
         } else {
             [-1, 0, 1, 2]
         };
-        let base_y = 2 * y as isize;
+        let base_y = (y << sy) as isize;
         if let Some(ux) = direct_x {
             let rows = offsets.map(|dy| {
                 let sy = (base_y + dy).clamp(y_min, y_max) as usize;
                 &in_data[sy * in_stride + ux..][..pad_len]
             });
-            dsp.vvc_alf_cross_row(&rows, coefficients, &mut output.row_mut(y)[x0..x0 + width]);
+            cross_row(
+                dsp,
+                &rows,
+                coefficients,
+                sx,
+                &mut output.row_mut(y)[x0..x0 + width],
+            );
             continue;
         }
         let [p0, p1, p2, p3] = padded;
@@ -261,6 +281,27 @@ fn apply_cross_region<T: Pixel>(
             region.row_span(input, x_start, base_y + offsets[2], &mut p2[..pad_len]),
             region.row_span(input, x_start, base_y + offsets[3], &mut p3[..pad_len]),
         ];
-        dsp.vvc_alf_cross_row(&rows, coefficients, &mut output.row_mut(y)[x0..x0 + width]);
+        cross_row(
+            dsp,
+            &rows,
+            coefficients,
+            sx,
+            &mut output.row_mut(y)[x0..x0 + width],
+        );
+    }
+}
+
+/// One CC-ALF row of chroma with horizontal subsampling `sx`.
+fn cross_row<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    rows: &[&[T]; 4],
+    coefficients: [i16; 7],
+    sx: usize,
+    out: &mut [T],
+) {
+    if sx == 0 {
+        dsp.vvc_alf_cross_row_unsubsampled(rows, coefficients, out);
+    } else {
+        dsp.vvc_alf_cross_row(rows, coefficients, out);
     }
 }

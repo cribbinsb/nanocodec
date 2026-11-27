@@ -11,6 +11,7 @@ use super::motion::vector::{RefPair, TIP_REFERENCE};
 use super::motion::{InterMotion, Mv, WedgeSides};
 use super::record::BlockRecord;
 use super::size::BlockSize;
+use crate::general::sample::Av2Sample;
 use crate::general::warp::{
     BlockArea, IDENTITY, OFF_DIAGONAL_MAX, UNITY, WarpModel, global_vector, kind, model_vector,
 };
@@ -39,19 +40,19 @@ pub struct ResolvedMotion {
     pub warp: [Option<WarpModel>; 2],
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Resolve an inter block's vectors and warp models, trace them as
     /// dav2d does, and record the block in the banks and the motion store
     /// (dav2d `recon_b`'s inter motion resolution and splats). A skip-mode
     /// block takes its candidate's compound weight into `inter.weight`.
-    /// `wedge_sides` is a wedge compound's per-8x8 split (dav2d
-    /// `WEDGE_TMVP`), needed when the frame keeps a temporal field.
+    /// `wedge` is a wedge compound's per-8x8 split (dav2d `WEDGE_TMVP`),
+    /// which the temporal motion field stores.
     pub(super) fn resolve_motion(
         &mut self,
         depth: usize,
         record: &BlockRecord,
         inter: &mut InterRecord,
-        wedge_sides: Option<&[u8]>,
+        wedge: Option<WedgeSides<'_>>,
     ) -> Result<ResolvedMotion> {
         let size = record
             .luma
@@ -88,7 +89,7 @@ impl Tile<'_, '_> {
             self.resolve_compound(depth, size, inter, &mut resolved)?;
         }
         self.trace_final(depth, inter, &resolved);
-        self.record_motion(record, size, inter, &resolved, wedge_sides)?;
+        self.record_motion(record, size, inter, &resolved, wedge)?;
         // Prediction uses only usable models.
         resolved.warp = resolved.warp.map(|w| w.filter(WarpModel::is_valid));
         Ok(resolved)
@@ -437,7 +438,7 @@ impl Tile<'_, '_> {
         size: BlockSize,
         inter: &InterRecord,
         resolved: &ResolvedMotion,
-        wedge_sides: Option<&[u8]>,
+        wedge: Option<WedgeSides<'_>>,
     ) -> Result<()> {
         let refs = RefPair(inter.references);
         let compound = refs.is_compound();
@@ -461,20 +462,6 @@ impl Tile<'_, '_> {
                 store.add_warp(&model.matrix, refs.get(1) as usize);
             }
         }
-        let wedge = if inter.compound == CompoundType::Wedge {
-            match wedge_sides {
-                Some(sides) => Some(WedgeSides {
-                    sides,
-                    sign: inter.wedge_sign,
-                }),
-                None if store.frame.field.is_some() => {
-                    return Err(DecodeError::Unsupported("AV2 wedge compound motion field"));
-                }
-                None => None,
-            }
-        } else {
-            None
-        };
         let refined = inter.mode >= InterMode::OpflNearNear;
         let refine_mv = inter.refine_mv != 0 && inter.compound == CompoundType::Average;
         let matrix = |n: usize| resolved.warp[n].map_or(IDENTITY, |w| w.matrix);

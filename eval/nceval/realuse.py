@@ -331,8 +331,8 @@ class Runner:
         except DiskBudgetExceeded as error:
             if self.rounds is None:
                 raise
-            # GPU-scored (nceval.gpuscore): a local guard, so the command goes to the
-            # CPU path instead of failing (its encoded streams are kept for a retry)
+            # GPU-scored (nceval.gpuscore): a local guard, so the measurement is refused
+            # with how to fix it (its encoded streams are kept for a retry)
             raise gpuscore.GpuUnavailable(f"disk floor: {error}") from error
         return results
 

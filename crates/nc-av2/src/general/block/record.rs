@@ -12,8 +12,15 @@ use super::size::BlockSize;
 pub struct BlockRecord {
     /// The luma tree size it belongs to (absent: a chroma tree's block).
     pub luma: Option<BlockSize>,
-    /// The chroma tree size (absent: a luma tree's block).
+    /// The chroma tree size (absent: a luma tree's block, or any block of a
+    /// monochrome frame).
     pub chroma: Option<BlockSize>,
+    /// The whole block's chroma size: pieces of blocks above 64x64 keep it
+    /// for the chroma coefficient contexts (dav2d `b->cbs`).
+    pub block_chroma: Option<BlockSize>,
+    /// Luma and chroma share the block's tree, also in a monochrome frame
+    /// that codes no chroma (dav2d `lbs == cbs_tree`).
+    pub shared_tree: bool,
     /// Top-left luma row in 4x4 units.
     pub row: u32,
     /// Top-left luma column in 4x4 units.

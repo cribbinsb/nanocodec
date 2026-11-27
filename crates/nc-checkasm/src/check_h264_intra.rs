@@ -83,32 +83,39 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
         }
     }
     let rng = &mut rng.clone();
-    check_plane::<u8, 8>(BitDepth::EIGHT, rng, report);
-    check_plane::<u8, 16>(BitDepth::EIGHT, rng, report);
-    check_plane::<u16, 8>(BitDepth::TEN, rng, report);
-    check_plane::<u16, 16>(BitDepth::TEN, rng, report);
-    check_plane::<u16, 8>(BitDepth::new(12).unwrap(), rng, report);
-    check_plane::<u16, 16>(BitDepth::new(12).unwrap(), rng, report);
+    check_plane::<u8, 8, 8>(BitDepth::EIGHT, rng, report);
+    check_plane::<u8, 16, 16>(BitDepth::EIGHT, rng, report);
+    check_plane::<u8, 8, 16>(BitDepth::EIGHT, rng, report);
+    check_plane::<u16, 8, 8>(BitDepth::TEN, rng, report);
+    check_plane::<u16, 16, 16>(BitDepth::TEN, rng, report);
+    check_plane::<u16, 8, 16>(BitDepth::TEN, rng, report);
+    check_plane::<u16, 8, 8>(BitDepth::new(12).unwrap(), rng, report);
+    check_plane::<u16, 16, 16>(BitDepth::new(12).unwrap(), rng, report);
+    check_plane::<u16, 8, 16>(BitDepth::new(14).unwrap(), rng, report);
+    check_plane::<u16, 16, 16>(BitDepth::new(14).unwrap(), rng, report);
 }
 
-fn check_plane<T: Sample, const N: usize>(
+/// The `W`x`H` plane kernel (16x16 luma, 8x8 4:2:0 and 8x16 4:2:2 chroma)
+/// against H.264 §8.3.3.4 / §8.3.4.4 written out: each side's slope from
+/// its own length (`xCF`, `yCF` and the scales 5 and 34).
+fn check_plane<T: Sample, const W: usize, const H: usize>(
     depth: BitDepth,
     rng: &mut Rng,
     report: &mut CheckReport,
 ) {
-    let stride = N + 5;
+    let stride = W + 5;
     for pattern in 0..16 {
-        let mut edge = |index: usize| {
+        let mut edge = |index: usize, n: usize| {
             T::from_i32(match pattern {
                 0 => {
-                    if index < N / 2 {
+                    if index < n / 2 {
                         0
                     } else {
                         depth.max()
                     }
                 }
                 1 => {
-                    if index < N / 2 {
+                    if index < n / 2 {
                         depth.max()
                     } else {
                         0
@@ -124,12 +131,13 @@ fn check_plane<T: Sample, const N: usize>(
                 _ => rng.below(depth.max() as usize + 1) as i32,
             })
         };
-        let above: [T; N] = core::array::from_fn(&mut edge);
-        let left: [T; N] = core::array::from_fn(|i| edge(N - i));
-        let corner = edge(N);
-        let half = N / 2;
-        let k = if N == 16 { 5 } else { 34 };
-        let slope = |values: &[T; N]| {
+        let above: [T; W] = core::array::from_fn(|i| edge(i, W));
+        let left: [T; H] = core::array::from_fn(|i| edge(H - i, H));
+        let corner = edge(W, W);
+        let slope = |values: &[T]| {
+            let n = values.len();
+            let half = n / 2;
+            let k = if n == 16 { 5 } else { 34 };
             let at = |i| if i == 0 { corner } else { values[i - 1] };
             let sum: i32 = (1..=half)
                 .map(|i| i as i32 * (at(half + i).to_i32() - at(half - i).to_i32()))
@@ -137,13 +145,13 @@ fn check_plane<T: Sample, const N: usize>(
             (k * sum + 32) >> 6
         };
         let (dx, dy) = (slope(&above), slope(&left));
-        let base = 16 * (above[N - 1].to_i32() + left[N - 1].to_i32());
-        let centre = half as i32 - 1;
-        let mut expected = vec![T::from_i32(123); stride * (N + 1)];
+        let base = 16 * (above[W - 1].to_i32() + left[H - 1].to_i32());
+        let (x_centre, y_centre) = (W as i32 / 2 - 1, H as i32 / 2 - 1);
+        let mut expected = vec![T::from_i32(123); stride * (H + 1)];
         let mut actual = expected.clone();
-        for y in 0..N {
-            for x in 0..N {
-                let value = base + dx * (x as i32 - centre) + dy * (y as i32 - centre);
+        for y in 0..H {
+            for x in 0..W {
+                let value = base + dx * (x as i32 - x_centre) + dy * (y as i32 - y_centre);
                 expected[y * stride + x + 1] = depth.clip_to((value + 16) >> 5);
             }
         }
@@ -151,7 +159,7 @@ fn check_plane<T: Sample, const N: usize>(
         report.cases += 1;
         if actual != expected {
             report.failures.push(format!(
-                "H.264 plane {N}x{N} depth {} pattern {pattern}",
+                "H.264 plane {W}x{H} depth {} pattern {pattern}",
                 depth.bits()
             ));
         }

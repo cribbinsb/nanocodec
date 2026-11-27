@@ -34,11 +34,12 @@ impl TxSize {
         )
         .expect("a block's largest transform is a transform size")
     }
-    /// The chroma (4:2:0) transform of a block (`get_tx_size`): the
-    /// largest of its chroma block (`get_plane_residual_size`, at least
-    /// 4x4), where 64-sample sides become 32.
-    pub(crate) fn chroma(block: BlockSize) -> Self {
-        let (w, h) = chroma_block(block);
+    /// The chroma transform of a block whose chroma is subsampled by
+    /// `subsampling` (`get_tx_size`): the largest of its chroma block
+    /// (`get_plane_residual_size`, at least 4x4), where 64-sample sides
+    /// become 32.
+    pub(crate) fn chroma(block: BlockSize, subsampling: (usize, usize)) -> Self {
+        let (w, h) = chroma_block(block, subsampling);
         let (w, h) = (w.min(MAX_SIDE_LOG2), h.min(MAX_SIDE_LOG2));
         let (w, h) = match (w, h) {
             (w, MAX_SIDE_LOG2) if w < SIDE_32_LOG2 => (w, SIDE_32_LOG2),
@@ -50,12 +51,14 @@ impl TxSize {
     }
 }
 
-/// A block's 4:2:0 chroma size, log2 (`get_plane_residual_size`: half
-/// the luma size, at least 4 samples).
-pub(crate) fn chroma_block(block: BlockSize) -> (u8, u8) {
+/// A block's chroma size, log2, in a format subsampled by `subsampling`
+/// (`get_plane_residual_size`: the luma size shifted down per axis, at
+/// least 4 samples; the 4:2:2 sizes the table marks invalid are refused
+/// at the partition).
+pub(crate) fn chroma_block(block: BlockSize, (ss_x, ss_y): (usize, usize)) -> (u8, u8) {
     (
-        (block.width_log2() - 1).max(MIN_SIDE_LOG2),
-        (block.height_log2() - 1).max(MIN_SIDE_LOG2),
+        (block.width_log2() - ss_x as u8).max(MIN_SIDE_LOG2),
+        (block.height_log2() - ss_y as u8).max(MIN_SIDE_LOG2),
     )
 }
 
@@ -186,13 +189,22 @@ mod tests {
 
     #[test]
     fn sizes_of_blocks_and_splits() {
+        const YUV420: (usize, usize) = (1, 1);
         let block = |w, h| BlockSize::new(w, h).unwrap();
         assert_eq!(TxSize::largest(block(7, 6)), tx(6, 6));
         assert_eq!(TxSize::largest(block(2, 4)), tx(2, 4));
-        assert_eq!(TxSize::chroma(block(7, 7)), tx(5, 5));
-        assert_eq!(TxSize::chroma(block(4, 6)), tx(3, 5));
-        assert_eq!(TxSize::chroma(block(7, 6)), tx(5, 5));
-        assert_eq!(TxSize::chroma(block(2, 4)), tx(2, 3));
+        assert_eq!(TxSize::chroma(block(7, 7), YUV420), tx(5, 5));
+        assert_eq!(TxSize::chroma(block(4, 6), YUV420), tx(3, 5));
+        assert_eq!(TxSize::chroma(block(7, 6), YUV420), tx(5, 5));
+        assert_eq!(TxSize::chroma(block(2, 4), YUV420), tx(2, 3));
+        // 4:2:2 and 4:4:4 (libaom `av1_get_adjusted_tx_size` of the plane
+        // block's largest transform).
+        assert_eq!(TxSize::chroma(block(7, 6), (1, 0)), tx(5, 5));
+        assert_eq!(TxSize::chroma(block(6, 4), (1, 0)), tx(5, 4));
+        assert_eq!(TxSize::chroma(block(4, 6), (0, 0)), tx(4, 5));
+        assert_eq!(TxSize::chroma(block(6, 4), (0, 0)), tx(5, 4));
+        assert_eq!(TxSize::chroma(block(5, 6), (0, 0)), tx(5, 5));
+        assert_eq!(TxSize::chroma(block(2, 2), (0, 0)), tx(2, 2));
         assert_eq!(tx(6, 6).split(), Some(tx(5, 5)));
         assert_eq!(tx(4, 3).split(), Some(tx(3, 3)));
         assert_eq!(tx(2, 4).split(), Some(tx(2, 3)));

@@ -128,6 +128,57 @@ What a reclaim loses, per tool (audit of 2026-11-24, from the code):
 | aws_ctc, distill box_run | checkpoint | minutes since the last checkpoint; a rerun is whole | not changed (rare use) | open |
 | aws_timing, fixedqp_timing | - | on demand by design (timing) | - | - |
 
+## Pulling results back: parallel ssh links, no S3 staging (2026-11-27)
+
+`Session.download_new` (every checkpoint pull: `fleet.py`, `Session.pulling`, aws_measure,
+the chart tools) lists the box's new files, then fetches them as tar batches over
+`PULL_STREAMS` = 8 parallel ssh links (batches of an eighth of the pull, 8-256 MB each). The
+checkpoint marker moves on only when every batch has landed; a failed call keeps what landed and
+the next call skips files already here whole (same size and mtime), so a reclaim mid-pull loses
+only the batches in flight (`eval/tests/test_aws_session.py`). Why: on 2026-11-27 the history
+fast-subset boxes spilled to us-west-2 / us-east-1 and their single tar stream ran at 2-3 MB/s
+(~190 streams/min); 8 rsyncs per box reached ~72 MB/s in all.
+
+**Every file is verified on arrival (2026-11-27).** Truncated streams (cut at 512-byte
+multiples by a tar extraction whose link died) were scored as decoder mismatches. Now the
+box sends each batch with a Python tarfile sender that hashes exactly the listed bytes and
+ends the batch with a manifest (size, SHA-256); the PC writes each file under a dot
+temporary and renames it into place only when it matches, so a cut or damaged copy never
+appears under its real name and the retry (same call, else the next pull) fetches it again.
+Writers' `*.partial` temporaries are never listed. On top, an encode round's `.done` records
+each of its point's files (`gpuscore.write_done`, written once the encoder has exited), and
+`aws_measure.merge_prebuilt` completes a point on the PC only when they are all there whole;
+if the box is gone first, the point is not in the done keys and the next box codes it again.
+`fleet.py` already did the record-level check (`stream_arrived` against `encodes.jsonl`).
+Tests: `test_a_damaged_copy_never_lands_and_is_fetched_again`,
+`test_a_box_lost_mid_copy_leaves_no_truncated_file` (eval/tests/test_aws_session.py),
+`test_a_truncated_stream_holds_its_point_back_for_a_new_encode` (test_gpuscore.py); a real
+c7g.large spot box with three batch links cut mid-file brought all 40 streams back whole
+($0.00).
+
+Measured from the PC on 2026-11-27, one c7i.large spot box, ~730 KB random files (stream-sized),
+one run each (a one-off script driving `Session.download_new` itself; $0.65 in all, mostly
+egress):
+
+| Box, data | 1 ssh tar (old) | 8 links | 16 links | 32 links | S3 staged (box PUT, 16 PC GETs) |
+|---|---|---|---|---|---|
+| us-east-1, 0.5 GB | 23.1 MB/s | 17.5 | 27.7 | - | 13.2 (upload 2.0 s, GETs 13.9 MB/s) |
+| us-west-2, 1 GB, run 1 | 12.2 MB/s | 24.1 | 16.1 | 21.1 | (failed: presigned URL redirect) |
+| us-west-2, 1 GB, run 2 | 12.5 MB/s | **31.6** | 16.5 | 13.2 | 22.0 (upload 3.5 s, GETs 23.8 MB/s) |
+
+- **Default: 8 parallel ssh links.** Best in both 1 GB runs, 2-2.5x one link. More links were
+  slower here; why is not known (a candidate, unchecked: sshd's `MaxStartups 10` drops
+  connections beyond 10 starting at once, and each dropped batch is retried).
+- **S3 staging is not built:** the box's tar and in-region upload take seconds, but the PC's
+  parallel GETs ran no faster than the 8 ssh links, and it would add a bucket per region and
+  presigned URLs (the boxes carry no AWS credentials). Revisit only if a pull is again far below
+  ~20 MB/s with 8 links.
+- **Cost per GB brought back:** $0.09 either way (EC2 and S3 egress to the internet are the same
+  price); S3 adds PUT/GET requests ($0.005 / $0.0004 per 1,000, so nothing on 256 MB tar bundles)
+  and a few minutes of storage. The 0.5-1 GB here are too small to show the fixed cost of
+  setting up links: a small pull is 3 ssh round trips (list, batch, move the marker), ~2-5 s
+  from the US.
+
 ## Allowed instance types and regions (tools/ci/check_aws_launchers.py reads this table)
 
 A tool may name only these types and regions; any other needs a row here first, with its use.
@@ -176,7 +227,7 @@ us-west-2, ca-central-1, ap-northeast-1, ap-southeast-2, ap-south-1.
 | 1b. Graviton timing on c8g.medium | **Not for absolute timing** (confirmed on 3 boxes) | Per box quiet (sd 0.4-0.9 %, drift ≤0.4 %), but the boxes differ: AV1 1.549 / 1.553 / 1.620 s (4.6 % apart), x264 1.6 % apart; c8g.2xlarge pair 0.2 % | c8g.2xlarge (unchanged) | - |
 | 2. Paired CPU A/B (aws_cpu_ab) | **c8i.2xlarge + c8g.2xlarge spot, eu-north-1** (current default) | as row 1 | `--targets graviton4medium` (c8g.medium, vCPU 0, harness sharing it): A/A +0.21 % [-0.17, +0.59], round sd 0.80 %, $0.0057/h; box bias cancels in a pair | zen5 (c8a.2xlarge, on demand, eu-west-1, $0.46/h): only when x86 AMD is the question |
 | 3. Metric scoring (CPU libvmaf), packed: **the fallback** for dev measurement (row 3b is the default) | **Graviton4 (c8g, 29.6k points/$) via `--arch auto`**; else c7i.24xlarge or c6i.24xlarge spot, eu-north-1, whichever is cheaper per vCPU at launch | c7i: 7,294 points/h, **13.0k points/$** at $0.562/h. c6i: 6,149 points/h, **11.7k/$** at $0.526/h (14.1k/$ at its $0.437 best-zone price) | c8i.4xlarge: 1,787/h, 10.5k/$ | Quota: wait. Spill only if needed now (rule 3). |
-| 3b. Metric scoring for dev measurement: **the local GPU scoring service, the default** | **`aws_measure --score auto` (the default) for quick, screen, final-check and train batches: encoded on warm c8g boxes, scored by VMAFx CUDA in the PC's scoring service (3 commands at once, CPUQuota 800 %, MemoryMax 10G)**; Graviton CPU scoring (row 3) is the fallback: service full for 10 min, a guard tripped, or `--score cpu` | quick: $0.006 against $0.035 on the CPU path; final-check: $0.015 against $0.146, 16.7 against 30 min; decisions equal, scores within 4.6e-7 (MS-SSIM) (section "Scoring on the PC's GPU") | row 3 | Any guard (section "Scoring on the PC's GPU") |
+| 3b. Metric scoring for dev measurement: **the local GPU scoring service, the default** | **`aws_measure` for quick, screen, final-check and train batches: encoded on warm c8g boxes, scored by VMAFx CUDA in the PC's scoring service (3 commands at once, CPUQuota 800 %, MemoryMax 10G)**; no CPU fallback (2026-11-27): a full service or a tripped guard refuses the measurement | quick: $0.006 against $0.035 on the CPU path; final-check: $0.015 against $0.146, 16.7 against 30 min; decisions equal, scores within 4.6e-7 (MS-SSIM) (section "Scoring on the PC's GPU") | row 3 | Any guard (section "Scoring on the PC's GPU") |
 | 4. Untimed packed encodes | **Graviton4 (c8g) via `--arch auto`**, else the row 3 pair | Our AV1 medium, 720p, 150 frames. c7i: 92,790 encodes/h, **165k/$**. c6i: 94,245/h, 179k/$ (216k/$ at best-zone price) | **c8g.8xlarge (Graviton4): 71,068/h at $0.164/h = 434k/$, 2.6x cheaper**. Needs aarch64 builds and tools, see "Not yet possible" | Same as row 3 |
 | 5. Builds and tests (nc-remote) | c7i/c6i .24xlarge spot (current), **recommend 48 vCPU, below** | Cold `cargo build --release -p nanocodec-cli`: c7i.24xlarge 369 s ($0.058); c8i.4xlarge 359 s ($0.017); c8g.8xlarge 243 s ($0.011, aarch64) | c8g.8xlarge for aarch64 work | Reclaim rule (nc-remote) |
 | 6. History, retime, other occasional runs | Packed: as row 3. Timed: as row 1. | - | - | - |
@@ -325,10 +376,11 @@ was 2 scores per worker: libvmaf 3.2.1 with VMAF v1 + float_ms_ssim + psnr, `--t
 
 ## Scoring on the PC's GPU (2026-11-24)
 
-`aws_measure --score gpu|auto|cpu` (`eval/nceval/gpuscore.py`; docs/PROCEDURES.md "Encode on
-boxes, score on the PC's GPU"). `auto` is the default and takes the GPU for nceval.quick,
-nceval.screen, nceval.levels final-check, nceval.fixedqp ab and a `--batch` (train's
-screens, side by side in one scope); `--score cpu` keeps today's CPU scoring on a box.
+`aws_measure` (`eval/nceval/gpuscore.py`; docs/PROCEDURES.md "Encode on boxes, score on the
+PC's GPU") always takes the GPU for nceval.quick, nceval.screen, nceval.levels final-check,
+nceval.fixedqp ab and a `--batch` (train's screens, side by side in one scope). Since
+2026-11-27 there is no CPU scoring of these on a box: `--score` is gone, and a guard that
+fails refuses the measurement (owner: no cloud scoring, no silent fallbacks).
 `fixedqp gap` and `cost` stay on boxes (gap's reference encoders run x86 quality builds).
 **Encode rounds are packed (2026-11-24):** a 26-quick batch whose commands each ran
 their own round launched 14 new boxes ($1.19 against ~$0.3). Now every GPU-scored run
@@ -393,13 +445,11 @@ before every batch.
 
 ## What the tools do by default now
 
-- **A fallback from GPU to CPU scoring is loud and recorded (2026-11-24).** Every result
-  has `scored_on` (GPU on the PC, or CPU on a box) and, after a fallback, `fallback_reason`
+- **No fallback from GPU to CPU scoring (owner, 2026-11-27).** When the GPU cannot score
   (`disk floor: ...`, `GPU memory: ...`, `queue wait: ...`, `service memory: ...`, `encode
-  round ... failed`); ledger rows carry the same in their `source`. The fallback prints one
-  `!!!` line with the CPU path's planned cost against the GPU path's, and is refused
-  (nothing launched) when that CPU cost passes `--budget`. (A batch had gone to CPU on the
-  disk floor at about 5x the cost, silently.)
+  round ... failed`), aws_measure refuses with the reason and the fix (`gpuscore.refusal`);
+  box-encoded streams are kept for the retry. (2026-11-24 and 2026-11-27: batches went to
+  CPU scoring on the disk floor, the first silently.) Every result still has `scored_on`.
 
 - **A run is planned against the run cap before launch (2026-11-24).** `aws_measure` plans
   a screen, quick, final-check or fixedqp ab run as max(job_points x 60 vCPU-s / box vCPUs,
@@ -411,9 +461,9 @@ before every batch.
   results back.)
 
 - **Scoring for dev measurement (quick, screen, final-check, train):** the local GPU scoring
-  service by default (`aws_measure --score auto`: encodes on warm c8g boxes, VMAFx CUDA here,
-  3 commands at once in `nanocodec-gpu-score.slice`, CPUQuota 800 %, MemoryMax 10G); Graviton
-  CPU scoring on a box is the fallback (`--score cpu`, a full service for 10 min, or any guard).
+  service, always (`aws_measure`: encodes on warm c8g boxes, VMAFx CUDA here,
+  3 commands at once in `nanocodec-gpu-score.slice`, CPUQuota 800 %, MemoryMax 10G); no CPU
+  fallback: a full service for 10 min, or any guard, refuses the measurement.
 - **Packed x86 boxes** use the c7i/c6i pair; no c7a, m-family, 48xlarge or metal:
   - `aws_session.THROUGHPUT_X86_TYPES` = c7i.24xlarge, c6i.24xlarge.
   - `aws_measure.AUTO_SIZES` = c7i/c6i at 8/12/16/24xlarge.

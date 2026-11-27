@@ -24,6 +24,14 @@ equal the stream's own, bit for bit (ffmpeg's decoders, `-f framemd5`):
                         (`depacketize --layers S:T`) decodes, in dav1d,
                         exactly as `nanocodec extract` of that operating
                         point does
+  svc (VP9)             L2T1 / L3T1 / L2T1 K-SVC / L3T1 K-SVC: the whole stream
+                        through ours, Pion and GStreamer (whose depayloader
+                        joins a picture's layer frames without a superframe
+                        index: decoded by vpxdec), and every spatial
+                        layer forwarded by the VP9 payload descriptor alone
+                        (`depacketize --layers S:0`, `--inter-layer key` for
+                        K-SVC), decoded by ffmpeg (every shown layer frame)
+                        exactly as `nanocodec extract` of that layer
 
 GStreamer has no AV1 or VVC payloader in 1.28's good/bad plugin sets, so
 those two codecs are checked against Pion only. Light: under a minute.
@@ -46,6 +54,7 @@ KEY_INTERVAL = 15
 QP = 28
 GST = "/usr/bin/gst-launch-1.0"
 FFMPEG = "/usr/bin/ffmpeg"
+VPXDEC = Path.home() / "nanocodec-data/anchors/x86_64/bin/vpxdec"
 REORDER_SPAN = 8
 LOSS_RATE = 0.03
 SEED = 7
@@ -59,6 +68,12 @@ GST_NAMES = {  # codec: (encoding-name, payloader, depayloader, parse, caps)
              "video/x-h265,stream-format=byte-stream,alignment=au"),
     "vp9": ("VP9", "rtpvp9pay", "rtpvp9depay", None, None),
 }
+VP9_SVC_CASES = (  # scalability mode, operating points to forward as (op, S)
+    ("L2T1", ((0, 1), (1, 0))),
+    ("L3T1", ((0, 2), (1, 1), (2, 0))),
+    ("L2T1_KEY", ((0, 1), (1, 0))),
+    ("L3T1_KEY", ((0, 2), (1, 1), (2, 0))),
+)
 SVC_CASES = (  # scalability mode, operating points to forward as (op, S, T)
     ("L2T2", ((1, 1, 1), (2, 0, 1), (3, 0, 0))),
     ("L3T1", ((1, 1, 0), (2, 0, 0))),
@@ -92,9 +107,20 @@ def frame_hashes(codec, stream):
     cmd = [FFMPEG, "-v", "error"]
     if codec in FFMPEG_FORMAT:
         cmd += ["-f", FFMPEG_FORMAT[codec]]
-    cmd += ["-i", stream, "-f", "framemd5", "-"]
+    cmd += ["-i", stream]
+    if codec == "vp9":
+        # Every shown frame at its own size: a spatial SVC unit shows each
+        # layer's frame (ffmpeg outputs them all; one shares its unit's pts).
+        cmd += ["-fps_mode", "passthrough", "-noautoscale"]
+    cmd += ["-f", "framemd5", "-"]
     lines = run(cmd).stdout.splitlines()
     return [line.split(",")[-1].strip() for line in lines if line and not line.startswith("#")]
+
+
+def vpxdec_md5(stream):
+    """MD5 of every picture vpxdec shows (libvpx: one per unit, its last frame;
+    it decodes a unit's frames one after another without a superframe index)."""
+    return run([VPXDEC, "--codec=vp9", "--i420", "--md5", stream]).stdout.split()[0]
 
 
 def read_framed(path):
@@ -325,6 +351,49 @@ def main():
                     return a == b and len(a) > 0, (f"op {op}: {len(b)} frames identical to extract; "
                                                    f"{sizes[0]} vs {sizes[1]} bytes")
                 checks.attempt(f"av1 {mode} forward S{spatial}T{temporal}", forwarded)
+
+    if "vp9" in args.codecs.split(","):
+        for mode, points in VP9_SVC_CASES:
+            stream = work / f"vp9svc-{mode}.ivf"
+            capture = work / f"vp9svc-{mode}.rtp"
+            run([nc, "encode", "--codec", "vp9", *encode_common, "--scalability", mode,
+                 "--output", stream, "--rtp", capture])
+            reference = frame_hashes("vp9", stream)
+
+            def whole(label, path, reference=reference):
+                got = frame_hashes("vp9", path)
+                return got == reference and len(got) > 0, f"{len(got)}/{len(reference)} frames identical {label}"
+            checks.attempt(f"vp9 {mode} ours->ours", lambda mode=mode, capture=capture: whole(
+                "", depacketize("vp9", capture, work / f"vp9svc-{mode}-self.ivf")))
+
+            def to_pion(mode=mode, capture=capture):
+                out = work / f"vp9svc-{mode}-pion.ivf"
+                run([pion, "depay", "--codec", "vp9", "--in", capture, "--out", out])
+                return whole("", out)
+            checks.attempt(f"vp9 {mode} ours->Pion", to_pion)
+
+            def to_gst(mode=mode, capture=capture, stream=stream):
+                # rtpvp9depay joins a picture's layer frames without a
+                # superframe index: libvpx decodes that (ffmpeg would not split it).
+                out = work / f"vp9svc-{mode}-gst.ivf"
+                gst_depay("vp9", capture, out)
+                got, expected = vpxdec_md5(out), vpxdec_md5(stream)
+                return got == expected, f"vpxdec MD5 of every shown picture {'equal' if got == expected else 'differs'}"
+            checks.attempt(f"vp9 {mode} ours->GStreamer", to_gst)
+            key_only = ["--inter-layer", "key"] if mode.endswith("_KEY") else []
+            for op, spatial in points:
+                def forwarded(op=op, spatial=spatial, stream=stream, capture=capture, mode=mode,
+                              key_only=key_only):
+                    expected = work / f"vp9svc-{mode}-op{op}.ivf"
+                    run([nc, "extract", "--codec", "vp9", "--input", stream,
+                         "--operating-point", op, "--output", expected])
+                    got = depacketize("vp9", capture, work / f"vp9svc-{mode}-S{spatial}.ivf",
+                                      "--layers", f"{spatial}:0", *key_only)
+                    a, b = frame_hashes("vp9", expected), frame_hashes("vp9", got)
+                    sizes = (Path(got).stat().st_size, Path(expected).stat().st_size)
+                    return a == b and len(a) > 0, (f"op {op}: {len(b)} frames identical to extract; "
+                                                   f"{sizes[0]} vs {sizes[1]} bytes")
+                checks.attempt(f"vp9 {mode} forward S{spatial}", forwarded)
 
     failed = [row for row in checks.rows if not row[1]]
     print(f"\n{len(checks.rows) - len(failed)}/{len(checks.rows)} checks passed")

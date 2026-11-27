@@ -8,7 +8,7 @@ use crate::general::block::Tile;
 use crate::general::block::inter_record::CompoundType;
 use crate::general::block::motion::Mv;
 use crate::general::block::size::BlockSize;
-use nc_common::BitDepth;
+use crate::general::sample::Av2Sample;
 use nc_dsp::av2_dec::ipred::SampleRef;
 use nc_dsp::av2_dec::ipred::{
     self, ANGLE_HAS_LEFT_FLAG, ANGLE_HAS_TOP_FLAG, ANGLE_IBP_FLAG, EdgeRequest, IntraPredMode,
@@ -67,7 +67,7 @@ const EDGE_CORNER: usize = 128;
 /// The largest mask row.
 const MASK_MAX_STRIDE: usize = 64;
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Blend a compound block's two intermediates into the picture at
     /// `offset` of a `w` x `h` (plane samples) prediction of `size`.
     #[allow(
@@ -89,6 +89,7 @@ impl Tile<'_, '_> {
         let shift = plane.shift();
         let mask_offset = self.difference_mask_offset(block, plane);
         let mask_stride = Self::difference_mask_stride(block);
+        let depth = self.depth();
         let [first, second] = &self.inter_scratch.compound;
         let dst = (&mut self.planes.data[p][..], offset, stride);
         match inter.compound {
@@ -101,7 +102,7 @@ impl Tile<'_, '_> {
                 } else {
                     (first, second)
                 };
-                kernels::mask(dst, (a, b), (w, h), mask);
+                kernels::mask(dst, (a, b), ((w, h), mask), depth);
             }
             CompoundType::Difference => {
                 let (a, b) = if inter.mask_sign {
@@ -115,15 +116,16 @@ impl Tile<'_, '_> {
                         (a, b),
                         (w, h),
                         (&mut self.inter_scratch.mask[mask_offset..], mask_stride),
-                        inter.mask_sign,
+                        (inter.mask_sign, depth),
                     );
                 } else {
-                    kernels::mask(dst, (a, b), (w, h), &self.inter_scratch.mask[mask_offset..]);
+                    let weights = &self.inter_scratch.mask[mask_offset..];
+                    kernels::mask(dst, (a, b), ((w, h), weights), depth);
                 }
             }
             CompoundType::None | CompoundType::Average => {
                 if inter.weight != EQUAL_WEIGHT {
-                    kernels::w_avg(dst, (first, second), (w, h), inter.weight);
+                    kernels::w_avg(dst, (first, second), ((w, h), inter.weight), depth);
                     return;
                 }
                 let use_mask = match implicit {
@@ -134,9 +136,10 @@ impl Tile<'_, '_> {
                 let [first, second] = &self.inter_scratch.compound;
                 let dst = (&mut self.planes.data[p][..], offset, stride);
                 if use_mask {
-                    kernels::mask(dst, (first, second), (w, h), &self.inter_scratch.mask);
+                    let weights = &self.inter_scratch.mask;
+                    kernels::mask(dst, (first, second), ((w, h), weights), depth);
                 } else {
-                    kernels::avg(dst, (first, second), (w, h));
+                    kernels::avg(dst, (first, second), (w, h), depth);
                 }
             }
         }
@@ -248,6 +251,7 @@ impl Tile<'_, '_> {
         (w4, h4): (u32, u32),
         kind: u8,
     ) {
+        let depth = self.depth();
         let p = plane.index();
         let shift = plane.shift();
         let mul = 4 >> shift;
@@ -273,6 +277,7 @@ impl Tile<'_, '_> {
                     stride,
                     (alpha, beta),
                     size,
+                    depth,
                 );
             }
             return;
@@ -313,12 +318,11 @@ impl Tile<'_, '_> {
         let picture = self.reference_picture(reference);
         let (ref_data, ref_stride) = kernels::plane(picture, p);
         let at_ref = |x: i32, y: i32| {
-            i32::from(ref_data[(ref_y + y) as usize * ref_stride + (ref_x + x) as usize])
+            ref_data[(ref_y + y) as usize * ref_stride + (ref_x + x) as usize].to_i32()
         };
         let own = &self.planes.data[p];
-        let at_own = |x: isize, y: isize| {
-            i32::from(own[(offset as isize + y * stride as isize + x) as usize])
-        };
+        let at_own =
+            |x: isize, y: isize| own[(offset as isize + y * stride as isize + x) as usize].to_i32();
         let (mut sum_x, mut sum_y, mut sum_xy, mut sum_xx) = (0, 0, 0, 0);
         let mut add = |source: i32, target: i32| {
             sum_x += source;
@@ -372,6 +376,7 @@ impl Tile<'_, '_> {
             stride,
             (alpha, beta),
             size,
+            depth,
         );
     }
 
@@ -386,6 +391,7 @@ impl Tile<'_, '_> {
         (bw4, bh4): (u32, u32),
         (bx, by): (u32, u32),
     ) {
+        let depth = self.depth();
         let inter = &block.inter;
         let p = plane.index();
         let shift = plane.shift();
@@ -473,7 +479,7 @@ impl Tile<'_, '_> {
             row_above,
             &mut self.edge,
             EDGE_CORNER,
-            BitDepth::EIGHT,
+            depth,
         );
         let (w, h) = ((ssbw4 << UNIT_LOG2) as usize, (ssbh4 << UNIT_LOG2) as usize);
         ipred::predict(
@@ -488,7 +494,7 @@ impl Tile<'_, '_> {
             flags,
             0,
             0,
-            BitDepth::EIGHT,
+            depth,
         );
         let mask = if inter.wedge_index < 0 {
             kernels::inter_intra_mask(self.masks, (w, h), inter.inter_intra_mode)

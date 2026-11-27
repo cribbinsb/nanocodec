@@ -30,6 +30,7 @@ pub enum ChromaFormat {
 impl ChromaFormat {
     /// Log2 of the horizontal and vertical chroma subsampling factors
     /// (`subsampling_x`, `subsampling_y`; `SubWidthC = 1 << x`).
+    #[inline]
     #[must_use]
     pub const fn subsampling(self) -> (usize, usize) {
         match self {
@@ -41,6 +42,7 @@ impl ChromaFormat {
     }
 
     /// The format of a subsampling pair (each 0 or 1).
+    #[inline]
     #[must_use]
     pub const fn from_subsampling(x: usize, y: usize) -> Option<Self> {
         match (x, y) {
@@ -54,6 +56,7 @@ impl ChromaFormat {
 
     /// Width and height of a chroma plane of a picture whose luma is
     /// `width` x `height` (odd luma sizes round chroma up).
+    #[inline]
     #[must_use]
     pub const fn chroma_size(self, (width, height): (usize, usize)) -> (usize, usize) {
         let (x, y) = self.subsampling();
@@ -62,6 +65,7 @@ impl ChromaFormat {
 
     /// Width and height of `plane` of a picture whose luma is `width` x
     /// `height`.
+    #[inline]
     #[must_use]
     pub const fn plane_size(self, plane: PlaneIndex, size: (usize, usize)) -> (usize, usize) {
         if plane.is_subsampled() {
@@ -72,6 +76,7 @@ impl ChromaFormat {
     }
 
     /// The subsampling of `plane`: `(0, 0)` for luma.
+    #[inline]
     #[must_use]
     pub const fn plane_subsampling(self, plane: PlaneIndex) -> (usize, usize) {
         if plane.is_subsampled() {

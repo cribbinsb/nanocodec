@@ -137,3 +137,5 @@ fixed_qp.nonbase.h264.inter_zero_luma_scale = 2
 # The fixed-QP profile's key offset as screened here (8): the profile's 9 (2026-11-25;
 # 10 on 2026-11-24, Brief 20) was screened on medium/slow/slower only.
 fixed_qp.h264.keyframe_qp_offset = 8
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2

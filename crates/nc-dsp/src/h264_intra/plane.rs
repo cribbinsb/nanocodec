@@ -7,25 +7,27 @@
 
 use nc_common::{BitDepth, Sample};
 
-/// Predict a 16×16 luma or 8×8 4:2:0 chroma plane block. The top and left
-/// edges are in picture order, with the shared top-left sample passed separately.
+/// Predict a `W`×`H` plane block: 16×16 luma, 8×8 4:2:0 chroma or 8×16
+/// 4:2:2 chroma (§8.3.4.4: `xCF`, `yCF` and the gradient scales 34 and 5
+/// follow each side's length, 8 or 16). The top and left edges are in
+/// picture order, with the shared top-left sample passed separately.
 ///
 /// # Panics
 ///
 /// If the destination does not contain the complete block.
 #[inline]
 #[allow(unsafe_code)]
-pub fn h264_plane<T: Sample, const N: usize>(
+pub fn h264_plane<T: Sample, const W: usize, const H: usize>(
     dst: &mut [T],
     stride: usize,
-    (above, left, corner): (&[T; N], &[T; N], T),
+    (above, left, corner): (&[T; W], &[T; H], T),
     depth: BitDepth,
 ) {
-    const { assert!(N == 8 || N == 16) };
-    let span = stride.checked_mul(N - 1).and_then(|n| n.checked_add(N));
-    assert!(stride >= N && span.is_some_and(|n| n <= dst.len()));
+    const { assert!((W == 8 || W == 16) && (H == 8 || H == 16)) };
+    let span = stride.checked_mul(H - 1).and_then(|n| n.checked_add(W));
+    assert!(stride >= W && span.is_some_and(|n| n <= dst.len()));
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
-    if T::BYTES == 1 && N == 16 {
+    if T::BYTES == 1 && W == 16 && H == 16 {
         // SAFETY: the sealed one-byte Sample is u8. Each complete,
         // 16-sample edge is readable and the destination span is checked.
         unsafe {
@@ -39,36 +41,39 @@ pub fn h264_plane<T: Sample, const N: usize>(
         }
         return;
     }
-    let half = N / 2;
-    let gradient = |samples: &[T; N]| {
-        let mut sum = half as i32 * (samples[N - 1].to_i32() - corner.to_i32());
+    // H (or V) of one side of `n` samples: `n / 2` weighted differences
+    // about its centre, the last one against the corner.
+    let gradient = |samples: &[T], n: usize| {
+        let half = n / 2;
+        let mut sum = half as i32 * (samples[n - 1].to_i32() - corner.to_i32());
         for k in 0..half - 1 {
             sum += (k as i32 + 1) * (samples[half + k].to_i32() - samples[half - 2 - k].to_i32());
         }
         sum
     };
-    let scale = if N == 16 { 5 } else { 34 };
-    let x_step = (scale * gradient(above) + 32) >> 6;
-    let y_step = (scale * gradient(left) + 32) >> 6;
-    let centre = half as i32 - 1;
-    let base = 16 * (above[N - 1].to_i32() + left[N - 1].to_i32()) + 16;
-    let mut start = base - centre * (x_step + y_step);
-    // Use word arithmetic for byte pixels. At luma/chroma widths, the
-    // extrema of the full 8-bit ramp are bounded by 16 * 510 + 16 + 16 * 1355.
+    let scale = |n: usize| if n == 16 { 5 } else { 34 };
+    let x_step = (scale(W) * gradient(above, W) + 32) >> 6;
+    let y_step = (scale(H) * gradient(left, H) + 32) >> 6;
+    // `3 + xCF` and `3 + yCF`.
+    let (x_centre, y_centre) = (W as i32 / 2 - 1, H as i32 / 2 - 1);
+    let base = 16 * (above[W - 1].to_i32() + left[H - 1].to_i32()) + 16;
+    let mut start = base - x_centre * x_step - y_centre * y_step;
+    // Use word arithmetic for byte pixels. At every block shape the extrema
+    // of the full 8-bit ramp are bounded by 16 * 510 + 16 + 16 * 1355.
     if T::BYTES == 1 {
-        let ramp: [i16; N] = core::array::from_fn(|x| (x_step * x as i32) as i16);
-        for y in 0..N {
+        let ramp: [i16; W] = core::array::from_fn(|x| (x_step * x as i32) as i16);
+        for y in 0..H {
             let offset = y * stride;
-            for (sample, step) in dst[offset..offset + N].iter_mut().zip(ramp) {
+            for (sample, step) in dst[offset..offset + W].iter_mut().zip(ramp) {
                 *sample = depth.clip_to(i32::from(((start as i16) + step) >> 5));
             }
             start += y_step;
         }
     } else {
-        let ramp: [i32; N] = core::array::from_fn(|x| x_step * x as i32);
-        for y in 0..N {
+        let ramp: [i32; W] = core::array::from_fn(|x| x_step * x as i32);
+        for y in 0..H {
             let offset = y * stride;
-            for (sample, step) in dst[offset..offset + N].iter_mut().zip(ramp) {
+            for (sample, step) in dst[offset..offset + W].iter_mut().zip(ramp) {
                 *sample = depth.clip_to((start + step) >> 5);
             }
             start += y_step;

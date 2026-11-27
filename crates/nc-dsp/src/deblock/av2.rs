@@ -10,8 +10,13 @@
 //! filters at superblock rows). The codec (nc-av2 `deblock`) decides which
 //! edges to filter, their maximum lengths and thresholds.
 //!
-//! Scalar reference, 8-bit samples. Reimplemented from AVM (BSD-3-Clause-
-//! Clear, see `THIRD_PARTY.md`).
+//! Scalar reference, generic over the sample type: 8-bit samples (with
+//! SIMD tiers elsewhere) and the general AV2 decoder's deeper ones, which
+//! only clip to their depth differently (AVM's filter is the high-bit-depth
+//! one at every depth). Reimplemented from AVM (BSD-3-Clause-Clear, see
+//! `THIRD_PARTY.md`).
+
+use nc_common::{BitDepth, Sample};
 
 /// Lines one call filters (one 4×4 unit's edge).
 pub const AV2_EDGE_LINES: usize = 4;
@@ -201,8 +206,8 @@ impl From<Av2EdgeFilter> for SegmentLimits {
 
 /// Samples across one edge of one line: `at(i)` is `q[i]` for `i ≥ 0` and
 /// `p[−i−1]` for `i < 0`.
-struct Line<'a> {
-    plane: &'a [u8],
+struct Line<'a, T> {
+    plane: &'a [T],
     q0: usize,
     across: usize,
     /// Samples p2..q2 (`at(-3)..=at(2)`), read once: the curvature tests
@@ -217,9 +222,9 @@ const CORE_FIRST: isize = -3;
 const CORE_LAST: isize = 2;
 const CORE_SAMPLES: usize = (CORE_LAST - CORE_FIRST + 1) as usize;
 
-impl<'a> Line<'a> {
-    fn new(plane: &'a [u8], q0: usize, across: usize) -> Self {
-        let read = |i: isize| i32::from(plane[q0.wrapping_add_signed(i * across as isize)]);
+impl<'a, T: Sample> Line<'a, T> {
+    fn new(plane: &'a [T], q0: usize, across: usize) -> Self {
+        let read = |i: isize| plane[q0.wrapping_add_signed(i * across as isize)].to_i32();
         Self {
             plane,
             q0,
@@ -232,7 +237,7 @@ impl<'a> Line<'a> {
         if (CORE_FIRST..=CORE_LAST).contains(&i) {
             self.core[(i - CORE_FIRST) as usize]
         } else {
-            i32::from(self.plane[self.q0.wrapping_add_signed(i * self.across as isize)])
+            self.plane[self.q0.wrapping_add_signed(i * self.across as isize)].to_i32()
         }
     }
 
@@ -255,13 +260,21 @@ impl<'a> Line<'a> {
 }
 
 /// Mean of a measurement on the segment's first and last lines, rounded up.
-fn both(first: &Line<'_>, last: &Line<'_>, measure: impl Fn(&Line<'_>) -> u32) -> u32 {
+fn both<T: Sample>(
+    first: &Line<'_, T>,
+    last: &Line<'_, T>,
+    measure: impl Fn(&Line<'_, T>) -> u32,
+) -> u32 {
     (measure(first) + measure(last) + 1) >> 1
 }
 
 /// `filt_choice_highbd`: how many samples to modify on the q side, from the
 /// segment's first and last lines (0 = leave the segment alone).
-fn choose_width(first: &Line<'_>, last: &Line<'_>, limits: SegmentLimits) -> usize {
+fn choose_width<T: Sample>(
+    first: &Line<'_, T>,
+    last: &Line<'_, T>,
+    limits: SegmentLimits,
+) -> usize {
     let SegmentLimits {
         q,
         side,
@@ -325,7 +338,7 @@ fn choose_width(first: &Line<'_>, last: &Line<'_>, limits: SegmentLimits) -> usi
 /// (`filt_generic_asym_highbd` once the width is chosen): every line moves
 /// `widths.0` p samples by `(scaled.0 · (widths.0 − i) + round) >> 11` and
 /// `widths.1` q samples by minus `(scaled.1 · (widths.1 − i) + round) >> 11`,
-/// `i` counting away from the edge, each clipped to 8 bits.
+/// `i` counting away from the edge, each clipped to the sample depth.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Av2Ramps {
     /// Index of the first line's q0 sample.
@@ -479,8 +492,8 @@ pub(crate) fn filter_chunk(plane: &mut [u8], segments: &Av2Segments) {
 /// from one line to the next) and return their ramps, or `None` when the
 /// segment is left alone. The caller guarantees that
 /// [`Av2EdgeFilter::reach`] samples on each side lie inside the plane.
-pub(crate) fn segment_ramps(
-    plane: &[u8],
+pub(crate) fn segment_ramps<T: Sample>(
+    plane: &[T],
     q0: usize,
     across: usize,
     along: usize,
@@ -490,8 +503,8 @@ pub(crate) fn segment_ramps(
 }
 
 /// [`segment_ramps`] of a filter given by its limits.
-fn limited_ramps(
-    plane: &[u8],
+fn limited_ramps<T: Sample>(
+    plane: &[T],
     q0: usize,
     across: usize,
     along: usize,
@@ -511,10 +524,15 @@ fn limited_ramps(
 
 /// Per line of the segment at `q0`, the edge step `4 · (3 · (q0 − p0) −
 /// (q1 − p1))` before its clamp (it reads only p1..q1).
-fn edge_steps(plane: &[u8], q0: usize, across: usize, along: usize) -> [i32; AV2_EDGE_LINES] {
+fn edge_steps<T: Sample>(
+    plane: &[T],
+    q0: usize,
+    across: usize,
+    along: usize,
+) -> [i32; AV2_EDGE_LINES] {
     core::array::from_fn(|line| {
         let line_q0 = q0 + line * along;
-        let at = |i: isize| i32::from(plane[line_q0.wrapping_add_signed(i * across as isize)]);
+        let at = |i: isize| plane[line_q0.wrapping_add_signed(i * across as isize)].to_i32();
         (3 * (at(0) - at(-1)) - (at(1) - at(-2))) * EDGE_STEP_SCALE
     })
 }
@@ -527,25 +545,23 @@ fn clamped_steps(
     limits: SegmentLimits,
     width_pos: usize,
     steps: [i32; AV2_EDGE_LINES],
-) -> Option<((usize, usize), [i16; AV2_EDGE_LINES])> {
+) -> Option<((usize, usize), [i32; AV2_EDGE_LINES])> {
     let width_neg = width_pos.min(limits.max_neg);
     if width_neg < 1 || width_pos < 1 {
         return None;
     }
     // width_neg <= width_pos, so the larger width is the q side's.
     let clamp = limits.q as i32 * STEP_CLAMP[width_pos - 1];
-    // The unclamped step is within ±4080, so the clamped one fits i16.
-    let steps = steps.map(|step| step.clamp(-clamp, clamp) as i16);
+    let steps = steps.map(|step| step.clamp(-clamp, clamp));
     Some(((width_neg, width_pos), steps))
 }
 
 /// Per line, a clamped step times each side's ramp weight.
 fn scaled_steps(
     (width_neg, width_pos): (usize, usize),
-    steps: [i16; AV2_EDGE_LINES],
+    steps: [i32; AV2_EDGE_LINES],
 ) -> [(i32, i32); AV2_EDGE_LINES] {
     steps.map(|step| {
-        let step = i32::from(step);
         (
             step * RAMP_WEIGHT[width_neg - 1],
             step * RAMP_WEIGHT[width_pos - 1],
@@ -555,35 +571,40 @@ fn scaled_steps(
 
 /// Scalar reference of [`Av2RampFn`].
 pub(crate) fn apply_ramps(plane: &mut [u8], ramps: &Av2Ramps) {
+    apply_ramps_at(plane, ramps, BitDepth::EIGHT);
+}
+
+/// [`apply_ramps`] for samples of `depth`.
+pub(crate) fn apply_ramps_at<T: Sample>(plane: &mut [T], ramps: &Av2Ramps, depth: BitDepth) {
     for (line, &(scaled_neg, scaled_pos)) in ramps.scaled.iter().enumerate() {
         ramp_line(
             plane,
-            ramps.q0 + line * ramps.along,
-            ramps.across,
+            (ramps.q0 + line * ramps.along, ramps.across),
             ramps.widths,
             (scaled_neg, scaled_pos),
+            depth,
         );
     }
 }
 
-/// One line of [`apply_ramps`].
-pub(crate) fn ramp_line(
-    plane: &mut [u8],
-    q0: usize,
-    across: usize,
+/// One line of [`apply_ramps_at`].
+pub(crate) fn ramp_line<T: Sample>(
+    plane: &mut [T],
+    (q0, across): (usize, usize),
     (width_neg, width_pos): (usize, usize),
     (scaled_neg, scaled_pos): (i32, i32),
+    depth: BitDepth,
 ) {
     let round = 1 << (RAMP_SHIFT - 1);
     for i in 0..width_neg {
         let index = q0 - (i + 1) * across;
         let offset = (scaled_neg * (width_neg - i) as i32 + round) >> RAMP_SHIFT;
-        plane[index] = (i32::from(plane[index]) + offset).clamp(0, 255) as u8;
+        plane[index] = depth.clip_to(plane[index].to_i32() + offset);
     }
     for i in 0..width_pos {
         let index = q0 + i * across;
         let offset = (scaled_pos * (width_pos - i) as i32 + round) >> RAMP_SHIFT;
-        plane[index] = (i32::from(plane[index]) - offset).clamp(0, 255) as u8;
+        plane[index] = depth.clip_to(plane[index].to_i32() - offset);
     }
 }
 

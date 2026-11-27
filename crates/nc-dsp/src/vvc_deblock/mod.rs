@@ -328,10 +328,13 @@ pub fn vvc_deblock_chroma(
     chroma_at(edge, beta, tc, large, ctu_boundary, BitDepth::EIGHT);
 }
 
-/// [`vvc_deblock_chroma`] at any sample type and depth: `beta` and `tc`
-/// already scaled to `depth`, the output clipped to it.
-pub(crate) fn chroma_at<T: Sample>(
-    edge: &mut [[T; 8]; 2],
+/// [`vvc_deblock_chroma`] at any sample type and depth, of a segment of
+/// `N` rows decided on its first and last (two rows where chroma is
+/// subsampled along the edge, four where it is not: VTM
+/// `xEdgeFilterChroma`, lines 0 and `(4 − 1) >> SubSampling`): `beta` and
+/// `tc` already scaled to `depth`, the output clipped to it.
+pub(crate) fn chroma_at<T: Sample, const N: usize>(
+    edge: &mut [[T; 8]; N],
     beta: i32,
     tc: i32,
     large: bool,
@@ -341,7 +344,7 @@ pub(crate) fn chroma_at<T: Sample>(
     // Folds to the constant 8 in the 8-bit instance.
     let depth = depth.of::<T>();
     let endpoint = edge.map(chroma_sides);
-    let strong = large && chroma_strong(edge, beta, tc, ctu_boundary);
+    let strong = large && chroma_strong(&[edge[0], edge[N - 1]], beta, tc, ctu_boundary);
     for (row, (p, q)) in edge.iter_mut().zip(endpoint) {
         if !strong {
             let delta = ((4 * (q[0] - p[0]) + p[1] - q[1] + 4) >> 3).clamp(-tc, tc);
@@ -431,7 +434,10 @@ mod tests {
 
 mod chroma_edge;
 mod generic;
-pub(crate) use chroma_edge::{ChromaEdge, scalar_at as chroma_edge_at};
+pub(crate) use chroma_edge::{
+    ChromaEdge, QUAD as CHROMA_QUAD, SEGMENT as CHROMA_PAIR, quads_at as chroma_edge_quads_at,
+    scalar_at as chroma_edge_at,
+};
 mod inplace;
 pub(crate) mod long_luma;
 
@@ -529,7 +535,7 @@ pub(crate) fn kernels_u16(isa: crate::Isa) -> Kernels16 {
             luma_edge_at::<u16>,
             luma_at::<u16>,
             chroma_edge_at::<u16>,
-            chroma_at::<u16>,
+            chroma_at::<u16, 2>,
         ),
         #[cfg(target_arch = "x86_64")]
         crate::Isa::Avx2 => avx2::kernels_u16(),

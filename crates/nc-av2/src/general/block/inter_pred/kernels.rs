@@ -1,23 +1,24 @@
-//! The nc-dsp inter kernels as the prediction calls them: 8-bit, with
-//! a picture or intermediate as (slice, offset, stride) and dav2d's
-//! filter numbers (`nc_dsp::av2_dec`: `mc_8tap`, `compound`, `warp`,
-//! `opfl`, `bacp`, `wedge`).
-use nc_common::{BitDepth, Picture, PlaneIndex};
+//! The nc-dsp inter kernels as the prediction calls them: samples of the
+//! decoder's type at the sequence's depth, with a picture or intermediate
+//! as (slice, offset, stride) and dav2d's filter numbers (`nc_dsp::av2_dec`:
+//! `mc_8tap`, `compound`, `warp`, `opfl`, `bacp`, `wedge`). 8-bit samples
+//! take the shared SIMD kernels where they exist ([`Av2Sample::eight`]).
+use nc_common::{BitDepth, Picture, PlaneIndex, Sample};
 use nc_dsp::av2_dec::compound::{self, MaskLayout};
 use nc_dsp::av2_dec::mc_8tap::{self, InterpFilter};
 use nc_dsp::av2_dec::wedge::InterMasks;
 use nc_dsp::av2_dec::{bacp, opfl, warp};
 use nc_dsp::{BlockSize, Dsp, Filter};
 
+use crate::general::sample::Av2Sample;
+
 pub use nc_dsp::av2_dec::opfl::OpflRegressionData as Regression;
 
 /// Rows of a reference window built by repeating edge samples.
 pub(super) const WINDOW_STRIDE: usize = 192;
-/// The decoder codes 8-bit samples only.
-const DEPTH: BitDepth = BitDepth::EIGHT;
 
 /// A plane of a reference picture: its samples from (0, 0) and stride.
-pub(super) fn plane(picture: &Picture, index: usize) -> (&[u8], usize) {
+pub(super) fn plane<T: Sample>(picture: &Picture<T>, index: usize) -> (&[T], usize) {
     let plane = picture.plane(PlaneIndex::ALL[index]);
     let samples = plane
         .samples_at(0, 0, plane.width(), plane.height())
@@ -29,6 +30,10 @@ pub(super) fn plane(picture: &Picture, index: usize) -> (&[u8], usize) {
 fn interp(filter: u8) -> InterpFilter {
     InterpFilter::from_index(filter).unwrap_or(InterpFilter::Regular)
 }
+
+/// The compound shift of 8-bit samples (dav2d `intermediate_bits` 4; no
+/// `PREP_BIAS`).
+const EIGHT_BIT_PREP_SHIFT: u32 = 4;
 
 /// The AV1-family entry points take the full eight-tap rectangle even
 /// for a single fractional axis. AV2's edge scratch may contain only the
@@ -57,77 +62,83 @@ fn shared_translational(
     Some((filter, size, src.get(start..end)?))
 }
 
-/// A translational prediction into 8-bit samples (dav2d `mc[filter]`),
-/// phases in sixteenths.
-pub(super) fn put(
+/// A translational prediction into samples (dav2d `mc[filter]`), phases
+/// in sixteenths.
+pub(super) fn put<T: Av2Sample>(
     dsp: &Dsp,
     filter: u8,
-    (dst, dst_offset, dst_stride): (&mut [u8], usize, usize),
-    (src, src_offset, src_stride): (&[u8], usize, usize),
-    size: (usize, usize),
-    phase: (i32, i32),
+    (dst, dst_offset, dst_stride): (&mut [T], usize, usize),
+    (src, src_offset, src_stride): (&[T], usize, usize),
+    (size, phase): ((usize, usize), (i32, i32)),
+    depth: BitDepth,
 ) {
-    if phase == (0, 0) {
-        dsp.block_copies().copy_rect(
-            &src[src_offset..],
-            src_stride,
-            &mut dst[dst_offset..],
-            dst_stride,
-            size,
-            false,
-        );
-        return;
-    }
+    let depth = depth.of::<T>();
     let filter = interp(filter);
-    if let Some((family, block, window)) =
-        shared_translational(filter, (src, src_offset, src_stride), size)
-    {
-        dsp.predict_samples(
-            family,
-            block,
-            (window, src_stride),
-            (phase.0 as usize, phase.1 as usize),
-            (&mut dst[dst_offset..], dst_stride),
-        );
-        return;
+    if let (Some(dst), Some(src)) = (T::eight_mut(dst), T::eight(src)) {
+        if phase == (0, 0) {
+            dsp.block_copies().copy_rect(
+                &src[src_offset..],
+                src_stride,
+                &mut dst[dst_offset..],
+                dst_stride,
+                size,
+                false,
+            );
+            return;
+        }
+        if let Some((family, block, window)) =
+            shared_translational(filter, (src, src_offset, src_stride), size)
+        {
+            dsp.predict_samples(
+                family,
+                block,
+                (window, src_stride),
+                (phase.0 as usize, phase.1 as usize),
+                (&mut dst[dst_offset..], dst_stride),
+            );
+            return;
+        }
     }
     mc_8tap::put_8tap(
-        dst, dst_offset, dst_stride, src, src_offset, src_stride, size, phase, filter, DEPTH,
+        dst, dst_offset, dst_stride, src, src_offset, src_stride, size, phase, filter, depth,
     );
 }
 
 /// A translational prediction into an intermediate (dav2d `mct[filter]`).
-pub(super) fn prep(
+pub(super) fn prep<T: Av2Sample>(
     dsp: &Dsp,
     filter: u8,
     (tmp, tmp_offset, tmp_stride): (&mut [i16], usize, usize),
-    (src, src_offset, src_stride): (&[u8], usize, usize),
-    size: (usize, usize),
-    phase: (i32, i32),
+    (src, src_offset, src_stride): (&[T], usize, usize),
+    (size, phase): ((usize, usize), (i32, i32)),
+    depth: BitDepth,
 ) {
-    if phase == (0, 0) {
-        dsp.block_copies().prep_rect(
-            &src[src_offset..],
-            src_stride,
-            &mut tmp[tmp_offset..],
-            tmp_stride,
-            size,
-            (4, 0),
-        );
-        return;
-    }
+    let depth = depth.of::<T>();
     let filter = interp(filter);
-    if let Some((family, block, window)) =
-        shared_translational(filter, (src, src_offset, src_stride), size)
-    {
-        dsp.predict_compound_samples(
-            family,
-            block,
-            (window, src_stride),
-            (phase.0 as usize, phase.1 as usize),
-            (&mut tmp[tmp_offset..], tmp_stride),
-        );
-        return;
+    if let Some(src) = T::eight(src) {
+        if phase == (0, 0) {
+            dsp.block_copies().prep_rect(
+                &src[src_offset..],
+                src_stride,
+                &mut tmp[tmp_offset..],
+                tmp_stride,
+                size,
+                (EIGHT_BIT_PREP_SHIFT, 0),
+            );
+            return;
+        }
+        if let Some((family, block, window)) =
+            shared_translational(filter, (src, src_offset, src_stride), size)
+        {
+            dsp.predict_compound_samples(
+                family,
+                block,
+                (window, src_stride),
+                (phase.0 as usize, phase.1 as usize),
+                (&mut tmp[tmp_offset..], tmp_stride),
+            );
+            return;
+        }
     }
     mc_8tap::prep_8tap(
         &mut tmp[tmp_offset..],
@@ -138,98 +149,126 @@ pub(super) fn prep(
         size,
         phase,
         filter,
-        DEPTH,
+        depth,
     );
 }
 
 /// An 8x8 warp into samples (dav2d `warp8x8`).
-pub(super) fn warp(
+pub(super) fn warp<T: Av2Sample>(
     dsp: &Dsp,
-    dst: (&mut [u8], usize, usize),
-    src: (&[u8], usize, usize),
-    shear: [i16; 4],
-    phase: (i32, i32),
+    (dst, offset, stride): (&mut [T], usize, usize),
+    (src, src_offset, src_stride): (&[T], usize, usize),
+    (shear, phase): ([i16; 4], (i32, i32)),
+    depth: BitDepth,
 ) {
-    warp::warp_affine_8x8_with_dsp(dsp, dst, src, shear, phase);
+    if let (Some(dst), Some(src)) = (T::eight_mut(dst), T::eight(src)) {
+        let src = (src, src_offset, src_stride);
+        warp::warp_affine_8x8_with_dsp(dsp, (dst, offset, stride), src, shear, phase);
+    } else {
+        warp::warp_affine_8x8(
+            dst, offset, stride, src, src_offset, src_stride, shear, phase, depth,
+        );
+    }
 }
 
 /// An 8x8 warp into an intermediate (dav2d `warp8x8t`).
-pub(super) fn warp_prep(
+pub(super) fn warp_prep<T: Av2Sample>(
     dsp: &Dsp,
     (tmp, tmp_offset, tmp_stride): (&mut [i16], usize, usize),
-    src: (&[u8], usize, usize),
-    shear: [i16; 4],
-    phase: (i32, i32),
+    (src, src_offset, src_stride): (&[T], usize, usize),
+    (shear, phase): ([i16; 4], (i32, i32)),
+    depth: BitDepth,
 ) {
-    warp::warp_affine_8x8t_with_dsp(dsp, (&mut tmp[tmp_offset..], tmp_stride), src, shear, phase);
+    let tmp = &mut tmp[tmp_offset..];
+    if let Some(src) = T::eight(src) {
+        let src = (src, src_offset, src_stride);
+        warp::warp_affine_8x8t_with_dsp(dsp, (tmp, tmp_stride), src, shear, phase);
+    } else {
+        warp::warp_affine_8x8t(
+            tmp, tmp_stride, src, src_offset, src_stride, shear, phase, depth,
+        );
+    }
 }
 
 /// A 4x4 warp sub-block into samples (dav2d `ext_warp4x4`).
-pub(super) fn ext_warp(
-    (dst, dst_offset, dst_stride): (&mut [u8], usize, usize),
-    (src, src_offset, src_stride): (&[u8], usize, usize),
+pub(super) fn ext_warp<T: Av2Sample>(
+    dsp: &Dsp,
+    (dst, dst_offset, dst_stride): (&mut [T], usize, usize),
+    (src, src_offset, src_stride): (&[T], usize, usize),
     phase: (i32, i32),
+    depth: BitDepth,
 ) {
-    mc_8tap::ext_warp4x4(
-        dst, dst_offset, dst_stride, src, src_offset, src_stride, phase, DEPTH,
-    );
+    if let (Some(dst), Some(src)) = (T::eight_mut(dst), T::eight(src)) {
+        mc_8tap::ext_warp4x4_with_dsp(
+            dsp,
+            (dst, dst_offset, dst_stride),
+            (src, src_offset, src_stride),
+            phase,
+        );
+    } else {
+        mc_8tap::ext_warp4x4(
+            dst, dst_offset, dst_stride, src, src_offset, src_stride, phase, depth,
+        );
+    }
 }
 
 /// A 4x4 warp sub-block into an intermediate (dav2d `ext_warp4x4t`).
-pub(super) fn ext_warp_prep(
+pub(super) fn ext_warp_prep<T: Av2Sample>(
+    dsp: &Dsp,
     (tmp, tmp_offset, tmp_stride): (&mut [i16], usize, usize),
-    (src, src_offset, src_stride): (&[u8], usize, usize),
+    (src, src_offset, src_stride): (&[T], usize, usize),
     phase: (i32, i32),
+    depth: BitDepth,
 ) {
-    mc_8tap::ext_warp4x4t(
-        &mut tmp[tmp_offset..],
-        tmp_stride,
-        src,
-        src_offset,
-        src_stride,
-        phase,
-        DEPTH,
-    );
+    let tmp = &mut tmp[tmp_offset..];
+    if let Some(src) = T::eight(src) {
+        let src = (src, src_offset, src_stride);
+        mc_8tap::ext_warp4x4t_with_dsp(dsp, (tmp, tmp_stride), src, phase);
+    } else {
+        mc_8tap::ext_warp4x4t(tmp, tmp_stride, src, src_offset, src_stride, phase, depth);
+    }
 }
 
 /// The average of two intermediates (dav2d `avg`).
-pub(super) fn avg(
-    (dst, offset, stride): (&mut [u8], usize, usize),
+pub(super) fn avg<T: Av2Sample>(
+    (dst, offset, stride): (&mut [T], usize, usize),
     (a, b): (&[i16], &[i16]),
     size: (usize, usize),
+    depth: BitDepth,
 ) {
-    compound::avg(dst, offset, stride, a, b, size, DEPTH);
+    compound::avg(dst, offset, stride, a, b, size, depth.of::<T>());
 }
 
 /// Their weighted average, the first weighing `weight` sixteenths
 /// (dav2d `w_avg`).
-pub(super) fn w_avg(
-    (dst, offset, stride): (&mut [u8], usize, usize),
+pub(super) fn w_avg<T: Av2Sample>(
+    (dst, offset, stride): (&mut [T], usize, usize),
     (a, b): (&[i16], &[i16]),
-    size: (usize, usize),
-    weight: i8,
+    (size, weight): ((usize, usize), i8),
+    depth: BitDepth,
 ) {
-    compound::w_avg(dst, offset, stride, a, b, size, i32::from(weight), DEPTH);
+    let depth = depth.of::<T>();
+    compound::w_avg(dst, offset, stride, a, b, size, i32::from(weight), depth);
 }
 
 /// Their blend by a per-sample mask of the first (dav2d `mask`).
-pub(super) fn mask(
-    (dst, offset, stride): (&mut [u8], usize, usize),
+pub(super) fn mask<T: Av2Sample>(
+    (dst, offset, stride): (&mut [T], usize, usize),
     (a, b): (&[i16], &[i16]),
-    size: (usize, usize),
-    weights: &[u8],
+    (size, weights): ((usize, usize), &[u8]),
+    depth: BitDepth,
 ) {
-    compound::mask(dst, offset, stride, a, b, size, weights, DEPTH);
+    compound::mask(dst, offset, stride, a, b, size, weights, depth.of::<T>());
 }
 
 /// Their blend by a mask of their difference, writing the mask at 4:2:0
 /// chroma resolution (dav2d `w_mask[2]`).
-pub(super) fn w_mask_420(
-    (dst, offset, stride): (&mut [u8], usize, usize),
+pub(super) fn w_mask_420<T: Av2Sample>(
+    (dst, offset, stride): (&mut [T], usize, usize),
     (a, b): (&[i16], &[i16]),
     size: (usize, usize),
     (weights, weights_stride): (&mut [u8], usize),
-    sign: bool,
+    (sign, depth): (bool, BitDepth),
 ) {
     compound::w_mask(
         dst,
@@ -241,14 +280,14 @@ pub(super) fn w_mask_420(
         (weights, weights_stride),
         MaskLayout::I420,
         sign,
-        DEPTH,
+        depth.of::<T>(),
     );
 }
 
 /// An intra prediction blended into samples by a mask (dav2d `blend`).
-pub(super) fn blend(
-    (dst, offset, stride): (&mut [u8], usize, usize),
-    intra: &[u8],
+pub(super) fn blend<T: Sample>(
+    (dst, offset, stride): (&mut [T], usize, usize),
+    intra: &[T],
     size: (usize, usize),
     weights: &[u8],
 ) {
@@ -269,34 +308,40 @@ pub(super) fn bacp_mask(
 /// The SAD search of MV refinement over two bilinear windows (dav2d
 /// `sad_refine_mv`): the offset of the first (the second moves
 /// opposite).
-pub(super) fn sad_refine(
-    (a, b, stride): (&[u8], &[u8], usize),
+pub(super) fn sad_refine<T: Av2Sample>(
+    (a, b, stride): (&[T], &[T], usize),
     size: (usize, usize),
     implicit: bool,
+    depth: BitDepth,
 ) -> (i32, i32) {
-    let offset = opfl::sad_refine_mv((a, 0, stride), (b, 0, stride), size, implicit, DEPTH);
+    let depth = depth.of::<T>();
+    let offset = opfl::sad_refine_mv((a, 0, stride), (b, 0, stride), size, implicit, depth);
     (i32::from(offset.y), i32::from(offset.x))
 }
 
 /// The 8x8 SAD of two windows (dav2d `sad8x8`).
-pub(super) fn sad8x8(
-    (a, a_offset): (&[u8], usize),
-    (b, b_offset): (&[u8], usize),
+pub(super) fn sad8x8<T: Av2Sample>(
+    (a, a_offset): (&[T], usize),
+    (b, b_offset): (&[T], usize),
     stride: usize,
+    depth: BitDepth,
 ) -> u32 {
-    opfl::sad8x8((a, a_offset, stride), (b, b_offset, stride), DEPTH)
+    opfl::sad8x8(
+        (a, a_offset, stride),
+        (b, b_offset, stride),
+        depth.of::<T>(),
+    )
 }
 
 /// The optical-flow regressions of `block`-sided sub-blocks (dav2d
 /// `opfl_refine_mv`).
-pub(super) fn flow_regression(
+pub(super) fn flow_regression<T: Av2Sample>(
     out: &mut [Regression],
-    (a, a_offset): (&[u8], usize),
-    (b, b_offset): (&[u8], usize),
-    stride: usize,
-    size: (usize, usize),
-    block: usize,
+    (a, a_offset): (&[T], usize),
+    (b, b_offset): (&[T], usize),
+    (stride, size, block): (usize, (usize, usize), usize),
     distances: [i8; 2],
+    depth: BitDepth,
 ) {
     opfl::opfl_refine_mv(
         out,
@@ -305,7 +350,7 @@ pub(super) fn flow_regression(
         size,
         block,
         distances,
-        DEPTH,
+        depth.of::<T>(),
     );
 }
 
@@ -342,6 +387,8 @@ pub(super) fn inter_intra_mask(masks: &InterMasks, size: (usize, usize), mode: u
 mod tests {
     use super::*;
 
+    const DEPTH: BitDepth = BitDepth::EIGHT;
+
     #[test]
     fn shared_translational_matches_av2_reference() {
         let dsp = Dsp::new();
@@ -365,16 +412,16 @@ mod tests {
                             filter,
                             (&mut pixels, 2, out_stride),
                             (&src, origin, stride),
-                            size,
-                            phase,
+                            (size, phase),
+                            DEPTH,
                         );
                         prep(
                             &dsp,
                             filter,
                             (&mut intermediates, 2, out_stride),
                             (&src, origin, stride),
-                            size,
-                            phase,
+                            (size, phase),
+                            DEPTH,
                         );
                         mc_8tap::put_8tap(
                             &mut ref_pixels,

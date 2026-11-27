@@ -18,6 +18,15 @@
 
 use nc_common::{BitDepth, Sample};
 
+use crate::Dsp;
+
+#[cfg(target_arch = "x86_64")]
+use crate::mc::extended_warp as extended_warp_simd;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+#[path = "mc_8tap/extended_warp_neon.rs"]
+mod extended_warp_simd;
+
 use super::mc::{
     MAX_SIDE, Precision, assert_compound_size, prep_bilinear, prep_copy, put_bilinear_at,
     store_compound, store_pixels,
@@ -35,6 +44,15 @@ const EXT_WARP_FILTER_BITS: u32 = 7;
 const SHORT_EDGE: usize = 4;
 /// Side of an extended-warp block.
 const EXT_WARP_SIDE: usize = 4;
+// The NEON schedule skips the outer taps of every phase.
+const _: () = {
+    let mut phase = 0;
+    while phase < EXT_WARP_FILTER.len() {
+        let taps = EXT_WARP_FILTER[phase];
+        assert!(taps[0] == 0 && taps[7] == 0);
+        phase += 1;
+    }
+};
 /// Samples a filtered direction reads beyond the block: the taps around
 /// each output sample.
 const EXTRA: usize = TAPS - 1;
@@ -91,7 +109,7 @@ impl InterpFilter {
     /// The taps at 1/16-sample `phase` along an edge of `length` samples
     /// (`GET_H_FILTER`): short edges take the 4-tap regular filter (sharp
     /// too) or the 4-tap smooth one. `None` at phase 0.
-    fn taps(self, phase: i32, length: usize) -> Option<&'static [i8; TAPS]> {
+    pub(super) fn taps(self, phase: i32, length: usize) -> Option<&'static [i8; TAPS]> {
         let family = match (self, length > SHORT_EDGE) {
             (Self::Regular | Self::Sharp, false) => &SHORT_FAMILIES[0],
             (Self::Smooth, false) => &SHORT_FAMILIES[1],
@@ -526,6 +544,154 @@ pub fn ext_warp4x4t<T: Sample>(
         Filters::ext_warp(phase),
         depth,
     );
+}
+
+/// Extended-warp put for an 8-bit decoder using its validated SIMD tier.
+///
+/// # Panics
+/// As [`ext_warp4x4`].
+#[allow(unsafe_code)]
+#[inline]
+pub fn ext_warp4x4_with_dsp(
+    dsp: &Dsp,
+    (dst, dst_offset, dst_stride): (&mut [u8], usize, usize),
+    (src, src_offset, src_stride): (&[u8], usize, usize),
+    phase: (i32, i32),
+) {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    if ext_warp_simd_available(dsp)
+        && dst_stride >= EXT_WARP_SIDE
+        && let Some(window) = ext_warp_window(src, src_offset, src_stride, phase)
+    {
+        let output = &mut dst[dst_offset..][..ext_warp_dst_len(dst_stride)];
+        // SAFETY: the selected tier supports this kernel. The source and output
+        // slices cover every sample this phase reads and writes.
+        unsafe {
+            extended_warp_simd::put(
+                output.as_mut_ptr(),
+                dst_stride,
+                window.src.as_ptr(),
+                src_stride,
+                window.horizontal,
+                window.vertical,
+                window.padded,
+            );
+        }
+        return;
+    }
+    let _ = dsp;
+    ext_warp4x4(
+        dst,
+        dst_offset,
+        dst_stride,
+        src,
+        src_offset,
+        src_stride,
+        phase,
+        BitDepth::EIGHT,
+    );
+}
+
+/// Extended-warp prep for an 8-bit decoder using its validated SIMD tier.
+///
+/// # Panics
+/// As [`ext_warp4x4t`].
+#[allow(unsafe_code)]
+#[inline]
+pub fn ext_warp4x4t_with_dsp(
+    dsp: &Dsp,
+    (dst, dst_stride): (&mut [i16], usize),
+    (src, src_offset, src_stride): (&[u8], usize, usize),
+    phase: (i32, i32),
+) {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    if ext_warp_simd_available(dsp)
+        && dst_stride >= EXT_WARP_SIDE
+        && let Some(window) = ext_warp_window(src, src_offset, src_stride, phase)
+    {
+        let output = &mut dst[..ext_warp_dst_len(dst_stride)];
+        // SAFETY: as for ext_warp4x4_with_dsp, with a word output.
+        unsafe {
+            extended_warp_simd::prep(
+                output.as_mut_ptr(),
+                dst_stride,
+                window.src.as_ptr(),
+                src_stride,
+                window.horizontal,
+                window.vertical,
+                window.padded,
+            );
+        }
+        return;
+    }
+    let _ = dsp;
+    ext_warp4x4t(
+        dst,
+        dst_stride,
+        src,
+        src_offset,
+        src_stride,
+        phase,
+        BitDepth::EIGHT,
+    );
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn ext_warp_simd_available(dsp: &Dsp) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    return matches!(dsp.isa(), crate::Isa::Avx2 | crate::Isa::Avx512);
+    #[cfg(target_arch = "aarch64")]
+    return dsp.isa() != crate::Isa::Scalar;
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+struct ExtWarpWindow<'a> {
+    src: &'a [u8],
+    horizontal: Option<&'static [i8; TAPS]>,
+    vertical: Option<&'static [i8; TAPS]>,
+    padded: bool,
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn ext_warp_window(
+    src: &[u8],
+    offset: usize,
+    stride: usize,
+    phase: (i32, i32),
+) -> Option<ExtWarpWindow<'_>> {
+    if phase == (0, 0) {
+        return None;
+    }
+    let tap = |p: i32| (p != 0).then(|| &EXT_WARP_FILTER[(p - 1) as usize]);
+    let horizontal = tap(phase.0);
+    let vertical = tap(phase.1);
+    let x = usize::from(horizontal.is_some());
+    let y = usize::from(vertical.is_some());
+    let lead = stride
+        .checked_mul(TAP_CENTRE * y)?
+        .checked_add(TAP_CENTRE * x)?;
+    let start = offset.checked_sub(lead)?;
+    let last_row = stride.checked_mul(EXT_WARP_SIDE - 1 + EXTRA * y)?;
+    let window = src.get(start..)?;
+    let len = last_row.checked_add(EXT_WARP_SIDE + EXTRA * x)?;
+    if window.len() < len {
+        return None;
+    }
+    let padded = x != 0 && window.len() - last_row >= 16;
+    Some(ExtWarpWindow {
+        src: window,
+        horizontal,
+        vertical,
+        padded,
+    })
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn ext_warp_dst_len(stride: usize) -> usize {
+    stride
+        .checked_mul(EXT_WARP_SIDE - 1)
+        .and_then(|last| last.checked_add(EXT_WARP_SIDE))
+        .expect("extended warp destination stride too large")
 }
 
 #[cfg(test)]

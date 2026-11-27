@@ -245,6 +245,7 @@ impl<const SIDE: usize, const AREA: usize> Levels<SIDE, AREA> {
 
 /// Storage needed by the shared syntax walk. Pricing has no reconstructed output.
 trait LevelValues {
+    const TRACKS_SIGN: bool = true;
     fn get(&self, pos: usize) -> i32;
     fn set(&mut self, pos: usize, value: i32);
     fn template(&self, pos: usize) -> [u32; TEMPLATE.len()];
@@ -339,16 +340,21 @@ impl<'a, const SIDE: usize, const AREA: usize> SourceLevels<'a, SIDE, AREA> {
     }
 
     /// The grid index of raster position `pos` of the block.
+    #[inline]
     fn index(&self, pos: usize) -> usize {
         (pos >> self.log2) * Self::STRIDE + (pos & (self.width - 1))
     }
 }
 
 impl<const SIDE: usize, const AREA: usize> LevelValues for SourceLevels<'_, SIDE, AREA> {
+    const TRACKS_SIGN: bool = false;
+
+    #[inline]
     fn get(&self, pos: usize) -> i32 {
         self.source[pos].unsigned_abs() as i32
     }
 
+    #[inline]
     fn set(&mut self, pos: usize, value: i32) {
         let magnitude = value.unsigned_abs();
         let index = self.index(pos);
@@ -366,6 +372,7 @@ impl<const SIDE: usize, const AREA: usize> LevelValues for SourceLevels<'_, SIDE
         })
     }
 
+    #[inline]
     fn pass_one_template(&self, pos: usize) -> (u32, u32) {
         first_pass_template::<SIDE>(&self.first_pass, self.index(pos))
     }
@@ -378,29 +385,36 @@ fn template_span<const SIDE: usize, T>(grid: &[T], index: usize) -> &[T] {
     &grid[index..][..span]
 }
 
+#[inline]
 fn packed_first_pass(magnitude: u32) -> u8 {
     (pass_one_magnitude(magnitude) | u32::from(magnitude != 0) << NONZERO_SHIFT) as u8
 }
 
 #[inline]
 fn first_pass_template<const SIDE: usize>(grid: &[u8], index: usize) -> (u32, u32) {
+    const { assert!(TEMPLATE.len() == 5) };
     let reach = template_span::<SIDE, _>(grid, index);
+    let stride = SIDE + PAD;
+    // TEMPLATE: (1, 0), (2, 0), (1, 1), (0, 1), (0, 2).
     // At most 5 x 5 below the shift, 5 above it.
-    let packed: u32 = TEMPLATE
-        .iter()
-        .map(|&(dx, dy)| u32::from(reach[dy * (SIDE + PAD) + dx]))
-        .sum();
+    let packed = u32::from(reach[1])
+        + u32::from(reach[2])
+        + u32::from(reach[stride + 1])
+        + u32::from(reach[stride])
+        + u32::from(reach[2 * stride]);
     (packed & PASS_ONE_MASK, packed >> NONZERO_SHIFT)
 }
 
 /// A neighbour's magnitude as the first pass knows it: its flags imply at
 /// most 4 or 5 (`sumAbsPass1`, §9.3.4.2.8).
+#[inline]
 pub(crate) fn pass_one_magnitude(magnitude: u32) -> u32 {
     magnitude.min(4 + (magnitude & 1))
 }
 
 /// [`template_contexts`] of raster position `pos` of a block `1 << log2`
 /// wide.
+#[inline]
 fn contexts(values: &impl LevelValues, pos: usize, log2: u32, ch: usize) -> (usize, usize) {
     let (sum, count) = values.pass_one_template(pos);
     let diag = (pos & ((1 << log2) - 1)) + (pos >> log2);
@@ -421,6 +435,7 @@ pub(crate) const DIAGONAL_OFFSETS: [[(u8, u8); DIAGONAL_CLASSES]; 2] = [
 /// The `sig_coeff_flag` and greater-than/parity context offsets of a
 /// position on anti-diagonal `diag` whose template holds `count` nonzero
 /// levels summing to `sum` in first-pass magnitudes (§9.3.4.2.8).
+#[inline]
 pub(crate) fn template_contexts(sum: u32, count: u32, diag: usize, ch: usize) -> (usize, usize) {
     let (sig_offset, level_offset) =
         DIAGONAL_OFFSETS[usize::from(ch != 0)][diag.min(DIAGONAL_CLASSES - 1)];
@@ -541,10 +556,10 @@ pub(crate) fn next_state(state: u8, level: u32) -> u8 {
 /// from the group's last significant one). The group's first significant
 /// position hides its sign in the parity of the group's level sum when the
 /// group spans more than [`SIGN_HIDING_THRESHOLD`] positions (§7.3.11.11).
-fn signs(
-    io: &mut impl Bins,
+fn signs<B: Bins, V: LevelValues>(
+    io: &mut B,
     source: &[i32],
-    values: &mut impl LevelValues,
+    values: &mut V,
     scan: &[usize],
     nonzero: &[u16],
     hiding: bool,
@@ -553,6 +568,14 @@ fn signs(
         return Ok(());
     };
     let sign_hidden = hiding && usize::from(last_sig - first_sig) > SIGN_HIDING_THRESHOLD;
+    if !B::READS && !V::TRACKS_SIGN {
+        let count = nonzero.len() - usize::from(sign_hidden);
+        for &sp in &nonzero[..count] {
+            let p = scan[usize::from(sp)];
+            io.bypass(u32::from(source[p] < 0), 1)?;
+        }
+        return Ok(());
+    }
     let mut sum = 0u32;
     for (i, &sp) in nonzero.iter().enumerate() {
         let p = scan[usize::from(sp)];
@@ -808,6 +831,7 @@ fn walk<B: Bins>(
         significant |= 1 << gp;
         let mut nonzero = GroupPositions::default();
         let mut bypass = GroupPositions::default();
+        let mut has_gt3 = false;
         for sp in (first..=end).rev() {
             let p = scan[sp];
             if budget < MIN_REGULAR_BUDGET {
@@ -839,6 +863,7 @@ fn walk<B: Bins>(
                 let parity = io.bin(&mut c.parity[level_ctx], abs & 1 != 0)?;
                 let gt2 = io.bin(&mut c.gt2[level_ctx], abs > 3)?;
                 budget -= 2;
+                has_gt3 |= gt2;
                 level = 2 + u32::from(parity) + 2 * u32::from(gt2);
             }
             values.set(p, level as i32);
@@ -846,15 +871,17 @@ fn walk<B: Bins>(
             nonzero.push(sp);
         }
         // The nonzero levels so far are exactly the context-coded ones.
-        for p in nonzero.as_slice().iter().map(|&sp| scan[usize::from(sp)]) {
-            if values.get(p) >= 4 {
-                let rice_parameter = rice(values, p, 4);
-                let rem = remainder(
-                    io,
-                    source[p].unsigned_abs().saturating_sub(4) >> 1,
-                    rice_parameter,
-                )?;
-                values.set(p, values.get(p) + 2 * rem as i32);
+        if has_gt3 {
+            for p in nonzero.as_slice().iter().map(|&sp| scan[usize::from(sp)]) {
+                if values.get(p) >= 4 {
+                    let rice_parameter = rice(values, p, 4);
+                    let rem = remainder(
+                        io,
+                        source[p].unsigned_abs().saturating_sub(4) >> 1,
+                        rice_parameter,
+                    )?;
+                    values.set(p, values.get(p) + 2 * rem as i32);
+                }
             }
         }
         for sp in bypass.as_slice().iter().map(|&sp| usize::from(sp)) {

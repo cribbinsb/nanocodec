@@ -5,10 +5,10 @@
 //! Module map:
 //! - `instance`: the public [`Decoder`], which runs the decoding process
 //!   (`Core`, generic over the sample type: `u8` for 8-bit sequences,
-//!   `u16` for 10-bit ones) the current sequence needs;
+//!   `u16` for 10- and 12-bit ones) the current sequence needs;
 //! - `obu`: OBU framing and tile group headers (AV1 §5.3, §5.11.1);
 //! - `sequence`, `frame_header`: complete sequence and frame header syntax
-//!   (§5.5, §5.9) for Main streams (8- and 10-bit 4:2:0 and monochrome);
+//!   (§5.5, §5.9) of the Main, High and Professional profiles;
 //! - `subset`: the frame-level gate naming tools the block layer does not
 //!   decode yet (the conformance gap list);
 //! - `block_size`: the 22 block sizes and `Partition_Subsize`;
@@ -45,6 +45,7 @@ use block_size::{BlockSize, MI_SIZE_LOG2};
 use cdf::Cdfs;
 use frame_header::{FrameHeader, NUM_REF_FRAMES, PRIMARY_REF_NONE, SlotHeader};
 use motion_field::{MotionField, ProjectionSource, SavedMotion, TemporalField};
+use nc_common::colour::matrix;
 use nc_common::decode::{BitReader, DecodeError};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
@@ -106,7 +107,7 @@ struct SavedFrame<T: Pixel> {
 }
 
 /// The decoding process of one sample type (`docs/handoff/high-bit-depth.md`):
-/// `u8` decodes 8-bit sequences, `u16` 10-bit ones; [`Decoder`] holds the
+/// `u8` decodes 8-bit sequences, `u16` 10- and 12-bit ones; [`Decoder`] holds the
 /// one the current sequence needs. One temporal unit (low-overhead OBU
 /// format, as in IVF) in, the frame it shows out.
 #[derive(Debug)]
@@ -140,6 +141,10 @@ pub(crate) struct Core<T: Pixel> {
     /// `dav1d --filmgrain 0` do: what quality is scored on, since the grain
     /// is noise by design.
     apply_film_grain: bool,
+    /// Refuse frames beyond the level 6.3 size bound
+    /// ([`sequence::check_frame_size`]); off only on request, for streams
+    /// whose source is trusted (conformance suites).
+    size_limited: bool,
     /// Selected operating point index into the sequence header's
     /// `operating_point_idc[]` table (`0` = highest quality, AV1 §7.18).
     operating_point: u8,
@@ -211,6 +216,7 @@ impl<T: Pixel> Core<T> {
         let mut next = Core::<U>::new();
         next.operating_point = self.operating_point;
         next.apply_film_grain = self.apply_film_grain;
+        next.size_limited = self.size_limited;
         next.last_spatial_id = self.last_spatial_id;
         #[cfg(feature = "analysis")]
         {
@@ -249,6 +255,7 @@ impl<T: Pixel> Core<T> {
             shown: None,
             grain: None,
             apply_film_grain: true,
+            size_limited: true,
             operating_point: 0,
             last_spatial_id: None,
         }
@@ -281,6 +288,11 @@ impl<T: Pixel> Core<T> {
     /// their parameters signal; references are grain-free either way.
     pub fn set_film_grain(&mut self, apply: bool) {
         self.apply_film_grain = apply;
+    }
+    /// Refuse (`true`, the default) or decode frames beyond the level 6.3
+    /// size bound that guards untrusted input.
+    pub fn set_size_limit(&mut self, limited: bool) {
+        self.size_limited = limited;
     }
     /// Select the operating point (`0`..=`operating_points_cnt_minus_1`, at
     /// most [`MAX_OPERATING_POINT`], default `0` = highest quality, AV1 §7.18,
@@ -356,7 +368,9 @@ impl<T: Pixel> Core<T> {
             Some(g) => frame_window(g, &saved.header.size),
             None => visible(&saved),
         };
-        let mut output = self.pictures.take(view.width(), view.height(), 0)?;
+        let mut output =
+            self.pictures
+                .take_with_format(view.width(), view.height(), view.chroma_format(), 0)?;
         view.copy_to(&mut output);
         let spatial_id = saved.spatial_id;
         self.release_shown();
@@ -386,7 +400,12 @@ impl<T: Pixel> Core<T> {
                 Some(g) => frame_window(g, &saved.header.size),
                 None => visible(&saved),
             };
-            let mut output = self.pictures.take(view.width(), view.height(), 0)?;
+            let mut output = self.pictures.take_with_format(
+                view.width(),
+                view.height(),
+                view.chroma_format(),
+                0,
+            )?;
             view.copy_to(&mut output);
             outputs.push((output, saved.spatial_id));
             if let Some((_, Some(prev_grain))) = last_state.replace((saved, grain)) {
@@ -439,9 +458,21 @@ impl<T: Pixel> Core<T> {
             return Ok(None);
         }
         let size = (saved.header.size.upscaled_width, saved.header.size.height);
-        let mut output = self.pictures.take(size.0, size.1, 0)?;
+        let format = saved.picture.chroma_format();
+        let mut output = self.pictures.take_with_format(size.0, size.1, format, 0)?;
         let kernels = self.dsp.at(self.depth());
-        film_grain::apply(kernels, params, &saved.picture, size, &mut output)?;
+        let mc_identity = self.sequence.is_some_and(|seq| {
+            seq.colour
+                .description
+                .is_some_and(|d| d.matrix == matrix::IDENTITY)
+        });
+        film_grain::apply(
+            kernels,
+            (params, mc_identity),
+            &saved.picture,
+            size,
+            &mut output,
+        )?;
         Ok(Some(output))
     }
 
@@ -520,6 +551,9 @@ impl<T: Pixel> Core<T> {
                     let mut r = BitReader::new(unit.payload);
                     let header =
                         frame_header::parse(&mut r, &seq, &self.slot_headers(), unit.layer)?;
+                    if self.size_limited {
+                        sequence::check_frame_size(header.size.upscaled_width, header.size.height)?;
+                    }
                     if let Some(index) = header.show_existing {
                         let existing = self.show_existing(index, &header)?;
                         if !all_layers
@@ -741,9 +775,12 @@ impl<T: Pixel> Core<T> {
             height: coded_height,
             ..params
         };
-        let recon = self
-            .pictures
-            .take(coded_width, coded_height, RECON_BORDER)?;
+        let recon = self.pictures.take_with_format(
+            coded_width,
+            coded_height,
+            seq.chroma_format,
+            RECON_BORDER,
+        )?;
         let previous_segments =
             self.previous_segments(header, &params, (coded_width, coded_height))?;
         let temporal = temporal_field(&mut self.field, header, &seq, &references);
@@ -761,6 +798,7 @@ impl<T: Pixel> Core<T> {
                 intra_edge_filter: seq.enable_intra_edge_filter,
                 cdef: seq.enable_cdef,
                 mono_chrome: seq.mono_chrome,
+                chroma_format: seq.chroma_format,
                 bit_depth: seq.bit_depth,
             },
             inter_tools,
@@ -850,7 +888,10 @@ impl<T: Pixel> Core<T> {
             return Ok(coded);
         }
         let (width, height) = super::coded_picture_size(size.upscaled_width, size.height);
-        let mut upscaled = self.pictures.take(width, height, RECON_BORDER)?;
+        let format = coded.chroma_format();
+        let mut upscaled = self
+            .pictures
+            .take_with_format(width, height, format, RECON_BORDER)?;
         restoration::superres_upscale(&coded, size, &mut upscaled, depth)?;
         self.pictures.give(coded);
         Ok(upscaled)

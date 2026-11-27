@@ -50,7 +50,7 @@ pub(super) struct BlockQp {
     pub(super) group: QuantGroup,
     settings: Option<QuantizationSettings>,
     /// The current frame's quantisations by QP, built on first use.
-    by_qp: Vec<Option<FrameQuantization>>,
+    by_qp: Vec<Option<Box<FrameQuantization>>>,
     /// QP of the quantisation swapped in for the CU being coded.
     active: Option<i32>,
 }
@@ -96,7 +96,7 @@ impl HevcBackend {
             .expect("begin_frame sets the quantisation settings");
         let quantization = block_qp.by_qp[qp as usize]
             .take()
-            .unwrap_or_else(|| settings.at(qp));
+            .unwrap_or_else(|| Box::new(settings.at(qp)));
         block_qp.by_qp[self.qp as usize] =
             Some(mem::replace(&mut self.frame_quantization, quantization));
         block_qp.active = Some(qp);

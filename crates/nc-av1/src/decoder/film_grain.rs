@@ -10,8 +10,9 @@ use nc_dsp::{DepthKernels, Pixel};
 
 use super::frame_header::FilmGrainParams;
 
-/// The synthesis parameters of the parsed syntax.
-fn synthesis_params(g: &FilmGrainParams) -> Av1FilmGrainParams {
+/// The synthesis parameters of the parsed syntax, in a sequence whose
+/// colour matrix is the identity (`mc_identity`) or not.
+fn synthesis_params(g: &FilmGrainParams, mc_identity: bool) -> Av1FilmGrainParams {
     Av1FilmGrainParams {
         grain_seed: g.grain_seed,
         y_points: Av1ScalingPoints {
@@ -33,8 +34,7 @@ fn synthesis_params(g: &FilmGrainParams) -> Av1FilmGrainParams {
         cr_mult: (g.cr_mult, g.cr_luma_mult, g.cr_offset),
         overlap: g.overlap_flag,
         clip_to_restricted_range: g.clip_to_restricted_range,
-        // 4:2:0 cannot use the identity matrix.
-        mc_identity: false,
+        mc_identity,
     }
 }
 
@@ -62,16 +62,18 @@ fn writable<T: Pixel>(
     plane.region_mut(0, 0, width, height)
 }
 
-/// Add film grain to the `width` x `height` (upscaled) frame `input`,
+/// Add film grain to the `width` x `height` (upscaled) frame `input` of a
+/// sequence whose colour matrix is the identity (`mc_identity`) or not,
 /// writing the shown frame to `output`.
 pub(crate) fn apply<T: Pixel>(
     kernels: DepthKernels<'_>,
-    params: &FilmGrainParams,
+    (params, mc_identity): (&FilmGrainParams, bool),
     input: &Picture<T>,
     (width, height): (usize, usize),
     output: &mut Picture<T>,
 ) -> Result<(), DecodeError> {
-    let size = |plane: PlaneIndex| plane.size_in((width, height));
+    let format = input.chroma_format();
+    let size = |plane: PlaneIndex| format.plane_size(plane, (width, height));
     let views = PlaneIndex::ALL.map(|plane| {
         let (plane_w, plane_h) = size(plane);
         input.plane(plane).region(0, 0, plane_w, plane_h)
@@ -92,7 +94,7 @@ pub(crate) fn apply<T: Pixel>(
         ));
     };
     kernels.av1_add_film_grain(
-        &synthesis_params(params),
+        (&synthesis_params(params, mc_identity), format),
         [&luma, &cb, &cr],
         (width, height),
         [&mut grain_y, &mut grain_u, &mut grain_v],
@@ -125,7 +127,7 @@ mod tests {
         let dsp = nc_dsp::Dsp::new();
         apply(
             dsp.at(nc_common::BitDepth::EIGHT),
-            &params,
+            (&params, false),
             &input,
             (64, 48),
             &mut output,

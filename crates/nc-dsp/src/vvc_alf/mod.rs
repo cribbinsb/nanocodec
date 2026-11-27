@@ -73,13 +73,36 @@ pub(crate) use clipped::{
     check_chroma_row, check_clipped_block_row, check_clipped_row, chroma_row_at,
     clipped_block_row_at, clipped_row_at,
 };
-pub(crate) use cross::{check_cross_row, cross_row_at};
+pub(crate) use cross::{check_cross_row, check_cross_row_step, cross_row_at, cross_row_step_at};
 
-/// The deepest samples the ALF kernels take: VVC Main 10. Up to here a
-/// Laplacian group sum ([`vvc_alf_max_group_sum`]) fits `u16` and the
-/// direction products of [`class`] fit `u32`, and the clipping values of
-/// [`vvc_alf_clip_value`] fit `i16`.
+/// The deepest samples the SIMD ALF kernels and the 16-bit Laplacian sums
+/// take: VVC Main 10. Up to here a Laplacian group sum
+/// ([`vvc_alf_max_group_sum`]) fits `u16`, the direction products of
+/// [`class`] fit `u32` and every tap difference fits 16-bit lanes; deeper
+/// samples take the scalar references and 32-bit Laplacian sums.
 pub const VVC_ALF_MAX_BIT_DEPTH: u32 = 10;
+
+/// The deepest samples the scalar ALF references take: the clipping values
+/// of [`vvc_alf_clip_value`] (`2^BitDepth` at clipping index 0) fit `i16`
+/// up to 14 bits.
+pub const VVC_ALF_MAX_SCALAR_BIT_DEPTH: u32 = 14;
+
+/// A Laplacian group sum: `u16` up to [`VVC_ALF_MAX_BIT_DEPTH`], `u32`
+/// deeper (§8.8.5.3 sums of `|2c − a − b|`).
+pub(crate) trait VvcAlfSum: Copy + Default + Into<u32> {
+    /// The sum holding `value` (exact within its depth's range).
+    fn of(value: u32) -> Self;
+}
+impl VvcAlfSum for u16 {
+    fn of(value: u32) -> Self {
+        value as u16
+    }
+}
+impl VvcAlfSum for u32 {
+    fn of(value: u32) -> Self {
+        value
+    }
+}
 
 /// Clipping indices (`alf_luma_clip_idx`, `alf_chroma_clip_idx`, 0..=3).
 pub const VVC_ALF_CLIP_INDICES: usize = 4;
@@ -93,10 +116,14 @@ const CLIP_SHIFTS: [u32; VVC_ALF_CLIP_INDICES] = [0, 3, 5, 7];
 /// clipped neighbour difference of the nonlinear filters.
 ///
 /// # Panics
-/// If `clip_index` exceeds 3 or `depth` exceeds [`VVC_ALF_MAX_BIT_DEPTH`].
+/// If `clip_index` exceeds 3 or `depth` exceeds
+/// [`VVC_ALF_MAX_SCALAR_BIT_DEPTH`].
 #[must_use]
 pub fn vvc_alf_clip_value(clip_index: usize, depth: BitDepth) -> i16 {
-    assert!(depth.bits() <= VVC_ALF_MAX_BIT_DEPTH, "ALF at {depth:?}");
+    assert!(
+        depth.bits() <= VVC_ALF_MAX_SCALAR_BIT_DEPTH,
+        "ALF at {depth:?}"
+    );
     (1 << (depth.bits() - CLIP_SHIFTS[clip_index])) as i16
 }
 
@@ -109,11 +136,20 @@ fn clip_values(depth: BitDepth) -> [i16; VVC_ALF_CLIP_INDICES] {
     std::array::from_fn(|index| vvc_alf_clip_value(index, depth))
 }
 
-/// Check a depth the ALF kernels take.
+/// Check a depth the ALF filter kernels take (the SIMD tiers' up to
+/// [`VVC_ALF_MAX_BIT_DEPTH`], the scalar references' deeper).
 pub(crate) fn check_depth(depth: BitDepth) {
     assert!(
+        depth.bits() <= VVC_ALF_MAX_SCALAR_BIT_DEPTH,
+        "VVC ALF kernels take at most {VVC_ALF_MAX_SCALAR_BIT_DEPTH} bits, not {depth:?}"
+    );
+}
+
+/// Check a depth whose Laplacian sums fit `u16`.
+pub(crate) fn check_sum_depth(depth: BitDepth) {
+    assert!(
         depth.bits() <= VVC_ALF_MAX_BIT_DEPTH,
-        "VVC ALF kernels take at most {VVC_ALF_MAX_BIT_DEPTH} bits, not {depth:?}"
+        "16-bit ALF Laplacian sums take at most {VVC_ALF_MAX_BIT_DEPTH} bits, not {depth:?}"
     );
 }
 
@@ -244,6 +280,7 @@ pub(crate) type GramFn =
 pub const VVC_ALF_GRAM_TERMS: usize = VVC_ALF_GRAM_COLUMNS * (VVC_ALF_GRAM_COLUMNS + 1) / 2;
 
 /// Where Gram entry `(i, j)`, `i ≤ j`, lies in the packed upper triangle.
+#[inline]
 #[must_use]
 pub const fn vvc_alf_gram_index(i: usize, j: usize) -> usize {
     i * VVC_ALF_GRAM_COLUMNS - i * (i + 1) / 2 + j
@@ -494,7 +531,7 @@ fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
 }
 
 /// The checks of [`LaplacianFn`]'s contract (any sample type).
-pub(crate) fn check_laplacians<T: Sample>(rows: &[&[T]; 4], out: &[[u16; 4]]) {
+pub(crate) fn check_laplacians<T: Sample, S>(rows: &[&[T]; 4], out: &[[S; 4]]) {
     assert!(rows.iter().all(|row| row.len() >= 4 * out.len() + 2));
 }
 
@@ -507,9 +544,9 @@ pub(crate) fn check_laplacians<T: Sample>(rows: &[&[T]; 4], out: &[[u16; 4]]) {
 /// columns on row y + 1. Group `q` sums the columns `4q − 2 .. 4q + 1` (two
 /// grid points) into `[vertical, horizontal, diagonal 0, diagonal 1]`; a
 /// 4x4 block at column 4b reads groups b and b + 1.
-pub(crate) fn laplacians_at<T: Sample>(rows: &[&[T]; 4], out: &mut [[u16; 4]]) {
+pub(crate) fn laplacians_at<T: Sample, S: VvcAlfSum>(rows: &[&[T]; 4], out: &mut [[S; 4]]) {
     for (q, out) in out.iter_mut().enumerate() {
-        let mut sums = [0; 4];
+        let mut sums = [0u32; 4];
         for k in 0..4 {
             // Column 4q − 2 + k, at index 4q + 1 + k of rows starting at −3.
             let i = 4 * q + 1 + k;
@@ -527,10 +564,10 @@ pub(crate) fn laplacians_at<T: Sample>(rows: &[&[T]; 4], out: &mut [[u16; 4]]) {
                 laplacian(down[i - 1], up[i + 1]),
             ];
             for (sum, term) in sums.iter_mut().zip(terms) {
-                *sum += term as u16;
+                *sum += term;
             }
         }
-        *out = sums;
+        *out = sums.map(S::of);
     }
 }
 
@@ -633,15 +670,15 @@ pub(crate) fn check_classify(groups: &[[u16; 4]], out: &[[u8; 2]], depth: BitDep
 /// [`ClassifyFn`] at any depth (the activity shift is `BitDepth + 4`).
 /// Inlined so that the 8-bit table's call folds the depth to a constant.
 #[inline]
-pub(crate) fn classify_at(
-    groups: &[[u16; 4]],
+pub(crate) fn classify_at<S: VvcAlfSum>(
+    groups: &[[S; 4]],
     boundary: bool,
     out: &mut [[u8; 2]],
     depth: BitDepth,
 ) {
     for (out, pair) in out.iter_mut().zip(groups.windows(2)) {
         *out = class(
-            std::array::from_fn(|d| u32::from(pair[0][d]) + u32::from(pair[1][d])),
+            std::array::from_fn(|d| pair[0][d].into() + pair[1][d].into()),
             boundary,
             depth,
         );

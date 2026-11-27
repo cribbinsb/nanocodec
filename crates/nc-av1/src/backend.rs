@@ -572,9 +572,15 @@ pub struct Av1Backend {
     /// The block `try_static_skip` accepted (`av1.still_skip`): the next
     /// `encode_block` codes it with no residual.
     still_skipped: Option<(usize, usize)>,
-    /// The encoder information metadata OBU payload written after every
-    /// sequence header (`CodecBackend::set_encoder_info`).
+    /// The encoder information metadata OBU payload still to write, after
+    /// the next key frame's sequence header (`CodecBackend::set_encoder_info`).
+    /// A committed key frame that carried it clears it: it is written once
+    /// per setting, since dav1d logs every metadata OBU of a private type
+    /// ("Unknown Metadata OBU type 6") and libaom and SVT-AV1 write none.
     encoder_info: Option<Vec<u8>>,
+    /// The peak rate under rate control, for the sequence header's level
+    /// (`CodecBackend::set_stream_rate`).
+    max_bitrate_bps: Option<u64>,
     /// The block [`CodecBackend::encode_block`] last coded as a copy of the
     /// reference's luma (zero motion, no luma residual), by position.
     luma_copy: Option<(usize, usize)>,
@@ -1313,6 +1319,13 @@ impl CodecBackend for Av1Backend {
     ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Periodic keys at their own quantizer, without the reuse term's finer
+        // still cells (`reuse.rs`; owner, 2026-11-27: smaller periodic keys at
+        // neutral J). Final check (medium, 600 f keys every 150 and 900 f keys
+        // every 300, draw 2026-11-27, --strict-buffer): J +0.07% [-0.05, +0.21],
+        // no guard; FourPeople 854x480 400 kbps, keys every 150: 30.0 -> 19.9 KB.
+        // The other presets pin 2 until screened.
+        ("persist.reuse_keys", 0.0),
         // Where the winner walk runs (Slow), it also walks a winner at the
         // skip vector (NEARESTMV, `decision.winner_walk_keeps_skip` 0).
         // Codec reason: H.264 P_Skip and
@@ -1559,6 +1572,7 @@ impl CodecBackend for Av1Backend {
             scratch: Scratch::new(),
             still_skipped: None,
             encoder_info: None,
+            max_bitrate_bps: None,
             luma_copy: None,
             refresh: None,
             shave_min_zero_run: params.shave_min_zero_run.round() as usize,
@@ -2153,10 +2167,16 @@ impl CodecBackend for Av1Backend {
         self.r1_refine = active;
     }
 
-    /// A metadata OBU of a private type after every sequence header
-    /// (`obu::encoder_info_metadata`).
+    /// A metadata OBU of a private type after the first key frame's
+    /// sequence header (`obu::encoder_info_metadata`).
     fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
         self.encoder_info = payload.map(|payload| encoder_info_metadata(&payload));
+    }
+
+    /// The single-layer sequence header's levels cover `rate`'s peak from
+    /// the next key frame on (spatial layers take theirs per layer).
+    fn set_stream_rate(&mut self, rate: Option<nc_encoder::StreamRate>) {
+        self.max_bitrate_bps = rate.map(|rate| rate.peak_bps);
     }
 
     fn coded_skip_share(&self) -> Option<f32> {
@@ -2544,6 +2564,7 @@ impl CodecBackend for Av1Backend {
                         fixed_base_q_idx: (self.quantizer_mode == QuantizerMode::Fixed)
                             .then_some(self.base_q_idx),
                         random_decisions: self.random.is_some(),
+                        max_bitrate_bps: self.max_bitrate_bps,
                     },
                 ),
             );
@@ -2556,6 +2577,11 @@ impl CodecBackend for Av1Backend {
 
     fn commit_frame(&mut self) {
         self.cdef_outcome.commit();
+        // A key unit carried the message (`write_encoder_info`): a re-coded
+        // key writes it again, only a committed one counts.
+        if self.kind == FrameKind::Key {
+            self.encoder_info = None;
+        }
         let intra_only = self
             .spatial
             .as_ref()
@@ -3622,7 +3648,7 @@ impl Av1Backend {
     /// before the frame (AV1 §7.5: metadata OBUs may follow the sequence
     /// header); without an extension, it applies to every operating point.
     fn write_encoder_info(&self, unit: &mut Vec<u8>) {
-        if let Some(metadata) = &self.encoder_info {
+        if let Some(metadata) = self.encoder_info.as_ref() {
             write_obu(unit, ObuType::Metadata, None, metadata);
         }
     }

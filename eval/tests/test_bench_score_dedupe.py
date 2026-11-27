@@ -100,10 +100,32 @@ def test_a_failed_attempts_empty_file_is_not_the_streams_file(tmp_path, monkeypa
     enc = {"id": "f|c|cbr500", "stream": "streams/a.hevc", "stream_sha256": "aa", "bytes": 5}
     localscore.run_pass(run, base, [enc], work, 1)
     linked = work / "out" / "streams" / "a.hevc"
-    assert linked.resolve() == (twin / "streams" / "a.hevc").resolve()
+    assert linked.samefile(twin / "streams" / "a.hevc")
 
 
 def test_an_out_of_space_failure_is_not_an_encoder_failure():
     import report
     assert report.infrastructure_failure("V9: x exit 256: nanocodec: No space left on device (os error 28)")
     assert not report.infrastructure_failure("V9: x: decoded 149 frames of 150")
+
+
+def test_a_pass_scores_each_stream_once_and_copies_the_rest():
+    todo = [{"id": "a|c1|cbr500", "stream_sha256": "aa"}, {"id": "b|c1|cbr500", "stream_sha256": "aa"},
+            {"id": "a|c2|cbr500", "stream_sha256": "bb"}]
+    assert [r["id"] for r in localscore.one_per_stream(todo)] == ["a|c1|cbr500", "a|c2|cbr500"]
+
+
+def test_a_pass_takes_at_most_its_share_whole_clips_first(monkeypatch):
+    todo = [{"id": f"f|{clip}|cbr{n}"} for n in (300, 500) for clip in ("c2", "c1")]
+    assert localscore.pass_share(todo) == todo  # unset: every stream
+    monkeypatch.setenv(localscore.PASS_STREAMS_ENV, "2")
+    assert [r["id"] for r in localscore.pass_share(todo)] == ["f|c1|cbr300", "f|c1|cbr500"]
+
+
+def test_a_stream_link_survives_its_file_moving(tmp_path):
+    box = tmp_path / "box0" / "streams"
+    box.mkdir(parents=True)
+    (box / "a.ivf").write_bytes(b"stream")
+    localscore.link_stream(box / "a.ivf", tmp_path / "a.ivf")
+    (box / "a.ivf").rename(tmp_path / "moved.ivf")  # the series' merge at the run's end
+    assert (tmp_path / "a.ivf").read_bytes() == b"stream"

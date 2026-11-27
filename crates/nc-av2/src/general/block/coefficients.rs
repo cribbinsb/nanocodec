@@ -16,7 +16,9 @@ use super::Tile;
 use super::context::NO_COEFFICIENTS;
 use super::size::BlockSize;
 use super::transform::TxSize;
+use crate::general::sample::{Av2Sample, Coefficient};
 use nc_common::decode::{DecodeError, Result};
+use nc_dsp::Av1Coefficient;
 
 /// dav2d `enum TxfmType`: horizontal 1-D type | class << 3 | vertical
 /// 1-D type << 5 (`levels.h`).
@@ -60,6 +62,9 @@ pub mod tx_type {
     /// The horizontal (bit 1) and vertical (bit 6) "is an ADST" bits.
     pub const HORIZONTAL_ADST_BIT: u16 = 0x02;
     pub const VERTICAL_ADST_BIT: u16 = 0x40;
+    /// The bits of a horizontal or vertical (flip)ADST or identity.
+    pub const HORIZONTAL_NOT_DCT_BITS: u16 = 0x03;
+    pub const VERTICAL_NOT_DCT_BITS: u16 = 0x60;
     /// The type's low byte; the secondary or cross-chroma transform rides
     /// above it.
     pub const TYPE_MASK: u16 = 0xff;
@@ -69,8 +74,8 @@ pub mod tx_type {
 use tx_type::{
     ADST_ADST, ADST_DCT, ADST_FLIPADST, CLASS_2D, CLASS_2D_INV, CLASS_H, CLASS_MASK, CLASS_SHIFT,
     CLASS_V, DCT_ADST, DCT_DCT, DCT_FLIPADST, EXTRA_SHIFT, FLIPADST_ADST, FLIPADST_DCT,
-    FLIPADST_FLIPADST, H_ADST, H_DCT, H_FLIPADST, HORIZONTAL_ADST_BIT, IDTX, IDTX_INV, V_ADST,
-    V_DCT, V_FLIPADST, VERTICAL_ADST_BIT, WHT_WHT,
+    FLIPADST_FLIPADST, H_ADST, H_DCT, H_FLIPADST, HORIZONTAL_ADST_BIT, HORIZONTAL_NOT_DCT_BITS,
+    IDTX, IDTX_INV, V_ADST, V_DCT, V_FLIPADST, VERTICAL_ADST_BIT, VERTICAL_NOT_DCT_BITS, WHT_WHT,
 };
 
 /// What a transform's coefficients decode to.
@@ -251,8 +256,6 @@ const CHROMA_TYPES: [u16; 14] = [
 /// The three largest end-of-block classes escape at 7 with one or two
 /// bypass bits.
 const EOB_ESCAPE: usize = 7;
-/// Chroma sides of 32 samples (8 units) or more take no ADST.
-const CHROMA_ADST_MAX_UNITS: u32 = 8;
 /// The secondary transform set by mode and coded index (dav2d
 /// `inv_most_probable_stx_mapping` and its `ADST_ADST` variant).
 const STX_SETS: [[u8; 7]; 12] = [
@@ -307,8 +310,9 @@ const IDTX_MAX_BASE_RANGE: i32 = 6;
 /// Remainder magnitudes are kept in 20 bits, dequantized products in 24.
 const TOKEN_MASK: u32 = 0xf_ffff;
 const PRODUCT_MASK: u32 = 0xff_ffff;
-/// The largest dequantized 8-bit magnitude (dav2d `cf_max`).
-const COEFFICIENT_MAX: u32 = 0x7fff;
+/// The largest dequantized magnitude is `bd + 7` bits (dav2d `cf_max =
+/// ~(~127U << bpc)`: `0x7fff` at 8 bits); this is the 7.
+const COEFFICIENT_EXTRA_BITS: u32 = 7;
 /// Dequantization rounds by 4 before its shift of 3 (+1 with TCQ, + the
 /// size context beyond 2).
 const DEQUANT_ROUNDING: u32 = 4;
@@ -403,7 +407,13 @@ fn tcq_quantizer(state: i32) -> i32 {
     (state & 2) >> 1
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
+    /// The largest dequantized magnitude at the sequence's depth (dav2d
+    /// `cf_max`; a constant in 8-bit tiles).
+    fn coefficient_max(&self) -> u32 {
+        (1 << (self.depth().bits() + COEFFICIENT_EXTRA_BITS)) - 1
+    }
+
     /// Decode one transform's coefficients into `coefficients` (dav2d's
     /// layout: column-major at the coded size) given its above and left
     /// level contexts.
@@ -413,7 +423,7 @@ impl Tile<'_, '_> {
         depth: usize,
         input: &TransformInput,
         (above, left): (&[u8], &[u8]),
-        coefficients: &mut [i16],
+        coefficients: &mut [Coefficient<T>],
     ) -> Result<Residual> {
         let chroma = input.plane > 0;
         let tx = input.tx;
@@ -629,16 +639,30 @@ impl Tile<'_, '_> {
         if self.sequence.transform.chroma_dct_only {
             return DCT_DCT;
         }
-        let (tw, th) = input.tx.units();
         let tx_type = if input.intra {
             CHROMA_TYPES[usize::from(input.uv_mode)]
         } else {
             input.luma_type
         };
+        // The chroma size's transform set (AVM v1.0.0 `av2_get_tx_type`
+        // takes DCT_DCT for a type outside it; dav2d ec810ff1): no
+        // (flip)ADST from 32 samples, no identity along a 64-sample side,
+        // only DCT_DCT and IDTX at 32x32, only DCT_DCT from 32x64 up.
+        let (tw, th) = (input.tx.w, input.tx.h);
+        let excluded = |side: u8, adst: u16, not_dct: u16| {
+            side >= TX32_LOG2 && tx_type & if side == TX64_LOG2 { not_dct } else { adst } != 0
+        };
         let square16 = input.tx == TxSize { w: 2, h: 2 };
-        if (tw >= CHROMA_ADST_MAX_UNITS && tx_type & HORIZONTAL_ADST_BIT != 0)
-            || (th >= CHROMA_ADST_MAX_UNITS && tx_type & VERTICAL_ADST_BIT != 0)
+        let square32 = input.tx
+            == TxSize {
+                w: TX32_LOG2,
+                h: TX32_LOG2,
+            };
+        if excluded(tw, HORIZONTAL_ADST_BIT, HORIZONTAL_NOT_DCT_BITS)
+            || excluded(th, VERTICAL_ADST_BIT, VERTICAL_NOT_DCT_BITS)
             || (square16 && ((tx_type & 0x47) == 0x41 || (tx_type & 0xe2) == 0x22))
+            || (square32 && (tx_type == V_DCT || tx_type == H_DCT))
+            || (tw.min(th) >= TX32_LOG2 && tw.max(th) == TX64_LOG2)
         {
             DCT_DCT
         } else if tx_type == IDTX_INV {
@@ -872,7 +896,7 @@ impl Walk {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// The level walk of every class but forward skip coding (dav2d
     /// `DECODE_COEFS_CLASS` and the DC that follows).
     #[allow(clippy::too_many_lines, reason = "dav2d's walk")]
@@ -883,7 +907,7 @@ impl Tile<'_, '_> {
         eob: u16,
         flags: LevelFlags,
         dc_sign_context: usize,
-        coefficients: &mut [i16],
+        coefficients: &mut [Coefficient<T>],
         state: &mut LevelState,
     ) -> Result<()> {
         let chroma = input.plane > 0;
@@ -977,7 +1001,8 @@ impl Tile<'_, '_> {
                 if chroma { "uv" } else { "y" }
             );
             tcq_state = tcq_next(tcq_state, token);
-            coefficients[if flags.stx { eob as usize } else { rc }] = token as i16;
+            coefficients[if flags.stx { eob as usize } else { rc }] =
+                Av1Coefficient::from_i32(token);
             levels[level_index] = token as i8;
             let mut i = eob - 1;
             loop {
@@ -1030,7 +1055,8 @@ impl Tile<'_, '_> {
                 );
                 tcq_state = tcq_next(tcq_state, token);
                 levels[level_index] = token as i8;
-                coefficients[if flags.stx { i as usize } else { rc }] = token as i16;
+                coefficients[if flags.stx { i as usize } else { rc }] =
+                    Av1Coefficient::from_i32(token);
                 i -= 1;
             }
             // DC
@@ -1143,7 +1169,7 @@ impl Tile<'_, '_> {
         input: &TransformInput,
         (eob, walk, scan, flags): (i32, Walk, &[u16], LevelFlags),
         (tcq_state, hr_average, parity): (&mut i32, &mut i32, u32),
-        coefficients: &mut [i16],
+        coefficients: &mut [Coefficient<T>],
         state: &mut LevelState,
     ) -> Result<()> {
         let chroma = input.plane > 0;
@@ -1164,7 +1190,7 @@ impl Tile<'_, '_> {
                     (((x << walk.shift2) | y) as usize, y)
                 }
             };
-            let mut token = i32::from(coefficients[rc]);
+            let mut token = coefficients[rc].to_i32();
             if token == 0 {
                 *tcq_state = tcq_next(*tcq_state, 0);
                 continue;
@@ -1221,7 +1247,7 @@ impl Tile<'_, '_> {
                 let level = ((token << tcq_on) - tcq) as u32;
                 let value = ((level.wrapping_mul(step) & PRODUCT_MASK) + DEQUANT_ROUNDING)
                     >> state.dequant_shift;
-                value.min(COEFFICIENT_MAX + u32::from(sign))
+                value.min(self.coefficient_max() + u32::from(sign))
             } else {
                 let level = ((token << tcq_on) - tcq) as u32;
                 (level.wrapping_mul(step) + DEQUANT_ROUNDING) >> state.dequant_shift
@@ -1240,7 +1266,7 @@ impl Tile<'_, '_> {
         mut token: i32,
         (tcq_state, hr_average, parity): (i32, i32, u32),
         dc_sign_context: usize,
-        coefficients: &mut [i16],
+        coefficients: &mut [Coefficient<T>],
         state: &mut LevelState,
     ) -> Result<()> {
         let chroma = input.plane > 0;
@@ -1283,7 +1309,12 @@ impl Tile<'_, '_> {
                 self,
                 depth, "Post-residual_ph[pos=0,{remainder}->{token}]: r={range}"
             );
-            ((token as u32).wrapping_mul(step) + DEQUANT_ROUNDING) >> state.dequant_shift
+            // Masked and clamped as the other high-range path (dav2d
+            // b11a8fd0).
+            token &= TOKEN_MASK as i32;
+            let value = (((token as u32).wrapping_mul(step) & PRODUCT_MASK) + DEQUANT_ROUNDING)
+                >> state.dequant_shift;
+            value.min(self.coefficient_max() + u32::from(sign))
         } else if token >= max_base_range - tcq_on {
             let remainder = self.high_range(hr_average)?;
             token += remainder << tcq_on;
@@ -1296,7 +1327,7 @@ impl Tile<'_, '_> {
             let level = ((token << tcq_on) - tcq) as u32;
             let value = ((level.wrapping_mul(step) & PRODUCT_MASK) + DEQUANT_ROUNDING)
                 >> state.dequant_shift;
-            value.min(COEFFICIENT_MAX + u32::from(sign))
+            value.min(self.coefficient_max() + u32::from(sign))
         } else {
             let level = ((token << tcq_on) - tcq) as u32;
             (level.wrapping_mul(step) + DEQUANT_ROUNDING) >> state.dequant_shift
@@ -1315,7 +1346,7 @@ impl Tile<'_, '_> {
         depth: usize,
         input: &TransformInput,
         eob: u16,
-        coefficients: &mut [i16],
+        coefficients: &mut [Coefficient<T>],
         state: &mut LevelState,
     ) -> Result<()> {
         let tx = input.tx;
@@ -1340,7 +1371,7 @@ impl Tile<'_, '_> {
             (1 + x) * stride + 1 + y
         };
         let rc = scan[bob as usize];
-        coefficients[usize::from(rc)] = token as i16;
+        coefficients[usize::from(rc)] = Av1Coefficient::from_i32(token);
         levels[at(rc)] = token as i8;
         let range = self.reader.range();
         trace!(
@@ -1357,7 +1388,7 @@ impl Tile<'_, '_> {
             if token == 3 {
                 token += self.symbol(|m| &mut m.range_idtx[size_context][hr_context])? as i32;
             }
-            coefficients[usize::from(rc)] = token as i16;
+            coefficients[usize::from(rc)] = Av1Coefficient::from_i32(token);
             levels[index] = token as i8;
             let range = self.reader.range();
             trace!(
@@ -1373,7 +1404,7 @@ impl Tile<'_, '_> {
         let shift = state.dequant_shift - u32::from(self.frame.tcq && !self.lossless());
         for i in bob..=last {
             let rc = scan[i as usize];
-            let mut token = i32::from(coefficients[usize::from(rc)]);
+            let mut token = coefficients[usize::from(rc)].to_i32();
             if token == 0 {
                 continue;
             }
@@ -1403,7 +1434,7 @@ impl Tile<'_, '_> {
                 token &= TOKEN_MASK as i32;
                 let value = (((token as u32).wrapping_mul(step) & PRODUCT_MASK) + DEQUANT_ROUNDING)
                     >> shift;
-                value.min(COEFFICIENT_MAX + u32::from(sign))
+                value.min(self.coefficient_max() + u32::from(sign))
             } else {
                 ((token as u32).wrapping_mul(step) + DEQUANT_ROUNDING) >> shift
             };
@@ -1457,10 +1488,11 @@ fn weighted(step: u32, matrix: Option<&[u8]>, position: impl FnOnce() -> u16) ->
     })
 }
 
-/// A dequantized magnitude with its sign, as dav2d's 16-bit store.
-fn signed(value: u32, negative: bool) -> i16 {
+/// A dequantized magnitude with its sign, as dav2d's `coef` store (16
+/// bits at 8 bpc, where the magnitude is at most `0x8000`).
+fn signed<C: Av1Coefficient>(value: u32, negative: bool) -> C {
     let value = value as i32;
-    (if negative { -value } else { value }) as i16
+    C::from_i32(if negative { -value } else { value })
 }
 
 /// The all-zero flag's context (dav2d `get_skip_ctx`).

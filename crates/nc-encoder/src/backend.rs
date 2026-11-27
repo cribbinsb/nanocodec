@@ -507,10 +507,20 @@ pub trait CodecBackend {
     /// The encoder information message (`encoder_info.rs`): `payload` is
     /// `uuid_iso_iec_11578` followed by the settings text, written in the
     /// codec's informative syntax with the sequence headers of every key
-    /// frame from now on (`None`: none). It must not change decoding. The
+    /// frame from now on (AV1, AV2: of the next key frame only; `None`:
+    /// none). It must not change decoding. The
     /// default writes nothing (VP9 has no such syntax).
     fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
         let _ = payload;
+    }
+
+    /// The rate the stream is delivered at under rate control (`None`: a
+    /// fixed quantizer), for the level the sequence headers of the next key
+    /// frame on signal ([`crate::StreamRate`]). It must not change the
+    /// coded pictures. The default ignores it (the codec has no level
+    /// syntax, or signals none).
+    fn set_stream_rate(&mut self, rate: Option<crate::StreamRate>) {
+        let _ = rate;
     }
 
     /// Whether this backend codes an inter frame predicted from any
@@ -843,7 +853,7 @@ pub trait CodecBackend {
     /// Finalize a multi-layer spatial temporal unit's coded bytes (`data`, the
     /// layers' pictures of `layer_lengths` bytes each) once all scheduled
     /// layers of the temporal unit have been encoded (VP9: the Annex B
-    /// superframe index, and the picture showing a unit's lone hidden base).
+    /// superframe index).
     fn finish_spatial_tu(&mut self, data: &mut Vec<u8>, layer_lengths: &[usize]) {
         let _ = (data, layer_lengths);
     }
@@ -1303,9 +1313,11 @@ pub trait CodecBackend {
     /// block, whatever mode the engine chose. Codecs that can split a block's
     /// motion finer than the engine's partition (H.264 16x8 / 8x16 / 8x8
     /// macroblock partitions) use these as candidate vectors; the default
-    /// ignores them.
-    fn sub_block_motion(&mut self, block: &Block, vectors: &[Mv]) {
-        let _ = (block, vectors);
+    /// ignores them. `split` says the engine's split override
+    /// (`split_override.rs`) opens `block`: its own partition search must
+    /// then not take an early exit that keeps the block whole.
+    fn sub_block_motion(&mut self, block: &Block, vectors: &[Mv], split: bool) {
+        let _ = (block, vectors, split);
     }
 
     /// Whether [`CodecBackend::sub_block_motion`] is worth calling: gathering

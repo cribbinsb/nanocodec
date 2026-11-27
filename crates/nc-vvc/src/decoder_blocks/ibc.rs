@@ -68,7 +68,7 @@ impl Parser<'_> {
             |test: fn(&Unit) -> bool| neighbours.iter().filter(|u| u.is_some_and(test)).count();
         let skip_context = count(|u| u.skip);
         let ibc_context = count(|u| matches!(u.inter, Some(Inter::Ibc(_))));
-        let intra_context = usize::from(count(|u| u.inter.is_none()) != 0);
+        let intra_context = usize::from(count(Unit::intra) != 0);
         let ibc = if self.header.kind == 2 || constraint == Constraint::Intra {
             // Only intra and IBC are possible; a skipped CU is IBC.
             if !allowed {
@@ -214,7 +214,7 @@ pub(super) fn inside(
 
 /// Copy a block's prediction from the picture's reconstruction so far
 /// (before the loop filters), displaced by the block vector; chroma uses the
-/// halved vector (§8.6.3).
+/// vector divided by the subsampling (§8.6.3).
 pub(super) fn predict<T: nc_common::Sample>(
     picture: &Picture<T>,
     plane: PlaneIndex,
@@ -222,11 +222,11 @@ pub(super) fn predict<T: nc_common::Sample>(
     (x, y, width, height): (usize, usize, usize, usize),
     out: &mut [T],
 ) {
-    let shift = FRACTION_BITS + u32::from(plane != PlaneIndex::Y);
+    let (sx, sy) = picture.chroma_format().plane_subsampling(plane);
     // Motion derivation accepted the vector (`inside`), so the region exists.
     if let Some(source) = picture.plane(plane).region(
-        x as isize + (vector.x >> shift) as isize,
-        y as isize + (vector.y >> shift) as isize,
+        x as isize + (vector.x >> (FRACTION_BITS + sx as u32)) as isize,
+        y as isize + (vector.y >> (FRACTION_BITS + sy as u32)) as isize,
         width,
         height,
     ) {

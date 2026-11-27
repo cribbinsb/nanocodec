@@ -475,6 +475,16 @@ def generate(defaults, hashes):
               '#[allow(clippy::too_many_lines, reason = "generated: one loop per model family")]',
               'pub fn average_with(&mut self, other: &Self) {']
     model += visit_pair(lambda a, b: f'{a}.average_with({b});')
+    model += ['}', '/// Divide every model by `1 << shift`: the first term of the average',
+              '/// of several tiles\' final models (dav2d `dav2d_cdf_shift`).',
+              '#[allow(clippy::too_many_lines, reason = "generated: one loop per model family")]',
+              'pub fn scale_down(&mut self, shift: u32) {']
+    model += visit('self', lambda e: f'{e}.scale_down(shift);')
+    model += ['}', '/// Add `other` divided by `1 << shift`: a further term of the average',
+              '/// of several tiles\' final models (dav2d `dav2d_cdf_shift_accumulate`).',
+              '#[allow(clippy::too_many_lines, reason = "generated: one loop per model family")]',
+              'pub fn add_scaled(&mut self, other: &Self, shift: u32) {']
+    model += visit_pair(lambda a, b: f'{a}.add_scaled({b}, shift);')
     model += ['} }', '#[cfg(test)] mod tests { use super::*; use crate::entropy::Writer;',
               'fn trace<const N: usize>(cdf: &mut Cdf<N>, hash: &mut u64) { let mut writer = Writer::new();',
               'for step in 0..65 { writer.symbol((step * 7 + step / 3) % N, cdf).unwrap();',

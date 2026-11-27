@@ -227,7 +227,11 @@ impl<'a> RateModel<'a> {
     }
 
     /// Code `level` at the position `state` has entered: its bits after
-    /// the transition's, and `state` moved past it.
+    /// the transition's, and `state` moved past it. Inlined (with
+    /// [`Self::record`]): out of line (1.6M calls on 60 frames of 360p,
+    /// Default) its bits were still looked up for
+    /// [`CoeffRateModel::advance`], which discards them.
+    #[inline]
     fn code_level(&self, state: &mut ContextState, position: &Position, level: u32) -> f32 {
         let c = self.contexts;
         let ch = self.ch;
@@ -287,6 +291,7 @@ impl<'a> RateModel<'a> {
     }
 
     /// [`Self::code_level`], keeping `level` as the survivor's decision.
+    #[inline]
     fn record(
         &self,
         state: &mut ContextState,

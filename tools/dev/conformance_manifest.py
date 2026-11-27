@@ -9,7 +9,7 @@ them); nothing in them is executed. Per suite, `SUITES` names the codec's
 probe and the reference decoder's command line.
 
 Usage:
-    python3 -I tools/dev/conformance_manifest.py --suite hevc-v1|vvc-v1|av1-libaom|h264|h264-x264|h264-jm|vp9-libvpx
+    python3 -I tools/dev/conformance_manifest.py --suite hevc-v1|hevc-rext|vvc-v1|vvc-rext|av1-libaom|h264|h264-x264|h264-jm|h264-chroma|h264-x264-chroma|vp9-libvpx
         [--profiles "Main,Main 10,Main Still Picture"] [--max-bit-depth 10]
         [--chroma 4:2:0,4:0:0] [--only A,B] [--jobs 4]
 
@@ -87,6 +87,25 @@ SUBSAMPLING = {0: (1, 1), 1: (2, 2), 2: (2, 1), 3: (1, 1)}
 CHROMA_NAMES = {0: "4:0:0", 1: "4:2:0", 2: "4:2:2", 3: "4:4:4"}
 
 
+#: Format range extensions and high throughput (H.265 §A.3.5, §A.3.6).
+HEVC_REXT_PROFILE_IDCS = {4: "Main", 5: "High Throughput"}
+
+
+def hevc_rext_profile(profile_idc, constraints):
+    """The range-extensions profile name from the ten general constraint
+    flags max_12bit .. max_14bit (H.265 Tables A.2, A.3): e.g. "Main 4:2:2
+    10", "Monochrome 12", "Main 4:4:4 16 Intra", "Main 4:4:4 Still Picture"."""
+    flag = [constraints >> (9 - i) & 1 for i in range(10)]
+    max12, max10, max8, max422, max420, mono, intra, one_picture, _lower_rate, max14 = flag
+    depth = "" if max8 else "10" if max10 else "12" if max12 else "14" if max14 else "16"
+    if mono:
+        return " ".join(filter(None, ("Monochrome", depth)))
+    chroma = "" if max420 else "4:2:2" if max422 else "4:4:4"
+    kind = "Still Picture" if one_picture else "Intra" if intra else ""
+    name = " ".join(filter(None, (HEVC_REXT_PROFILE_IDCS[profile_idc], chroma, depth, kind)))
+    return "Main" if name == "Main" else name
+
+
 def probe_hevc(path):
     """Profile, chroma format, depths and cropped size from the first SPS
     (H.265 §7.3.2.2), or None."""
@@ -100,7 +119,9 @@ def probe_hevc(path):
         r.u(2), r.u(1)
         profile_idc = r.u(5)
         compatibility = r.u(32)
-        r.u(48), r.u(8)  # constraint flags, general_level_idc
+        r.u(4)  # progressive, interlaced, non-packed, frame-only source flags
+        constraints = r.u(10)  # general_max_12bit_constraint_flag .. max_14bit
+        r.u(34), r.u(8)  # the remaining constraint flags, general_level_idc
         present = [(r.u(1), r.u(1)) for _ in range(sub_layers)]
         if sub_layers:
             r.u(2 * (8 - sub_layers))
@@ -116,13 +137,15 @@ def probe_hevc(path):
         if profile_idc == 0:
             # Some streams signal the profile only in the compatibility flags.
             profile_idc = next((j for j in range(1, 32) if compatibility >> (31 - j) & 1), 0)
+        profile = HEVC_PROFILES.get(profile_idc, f"profile_idc {profile_idc}")
+        if profile_idc in HEVC_REXT_PROFILE_IDCS:
+            profile = hevc_rext_profile(profile_idc, constraints)
         sub_w, sub_h = SUBSAMPLING[chroma]
         w = width - sub_w * (crop[0] + crop[1])
         h = height - sub_h * (crop[2] + crop[3])
         chroma_samples = 0 if chroma == 0 else 2 * (w // sub_w) * (h // sub_h)
         sample_bytes = 2 if max(depths) > 8 else 1
-        return {"profile": HEVC_PROFILES.get(profile_idc, f"profile_idc {profile_idc}"),
-                "chroma_format": CHROMA_NAMES[chroma], "bit_depth": depths,
+        return {"profile": profile, "chroma_format": CHROMA_NAMES[chroma], "bit_depth": depths,
                 "width": w, "height": h, "frame_bytes": (w * h + chroma_samples) * sample_bytes}
     return None
 
@@ -133,6 +156,15 @@ H264_HIGH_PROFILE_IDCS = {100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 13
 #: profile_idc -> name; constraint_set flags refine some (H.264 Annex A.2).
 H264_PROFILES = {66: "Baseline", 77: "Main", 88: "Extended", 100: "High", 110: "High 10",
                  122: "High 4:2:2", 244: "High 4:4:4 Predictive", 44: "CAVLC 4:4:4 Intra"}
+#: `aspect_ratio_idc` of an explicit SAR and `matrix_coefficients` of GBR
+#: (H.264 Tables E-1, E-5).
+H264_EXTENDED_SAR = 255
+H264_MATRIX_GBR = 0
+#: JM's output plane holding each coded plane of a GBR picture: it writes
+#: R (Cr), G (Y), B (Cb).
+JM_RGB_PLANE_ORDER = [1, 2, 0]
+#: The intra profiles signalled by constraint_set3_flag (Annex A.2.8..A.2.10).
+H264_INTRA_PROFILES = {110: "High 10 Intra", 122: "High 4:2:2 Intra", 244: "High 4:4:4 Intra"}
 #: Table 7-6: slice_type % 5.
 H264_SLICE_P, H264_SLICE_B, H264_SLICE_I, H264_SLICE_SP, H264_SLICE_SI = range(5)
 H264_PARTITION_NAL_TYPES = {2, 3, 4}
@@ -149,8 +181,9 @@ def skip_h264_scaling_list(r, size):
 
 
 def h264_sps(nal):
-    """Profile, chroma format, depths and cropped frame size of an SPS RBSP
-    (H.264 §7.3.2.1.1, cropping §7.4.2.1.1)."""
+    """Profile, chroma format, depths, cropped frame size and VUI
+    `matrix_coefficients` (None when absent) of an SPS RBSP (H.264
+    §7.3.2.1.1, cropping §7.4.2.1.1, VUI §E.1.1)."""
     r = Bits(nal[1:])
     profile_idc, constraints, _level = r.u(8), r.u(8), r.u(8)
     r.ue()
@@ -180,6 +213,17 @@ def h264_sps(nal):
         r.u(1)
     r.u(1)
     crop = [r.ue() for _ in range(4)] if r.u(1) else [0, 0, 0, 0]
+    matrix = None
+    if r.u(1):  # vui_parameters_present_flag
+        if r.u(1) and r.u(8) == H264_EXTENDED_SAR:  # aspect_ratio_info_present_flag
+            r.u(32)
+        if r.u(1):  # overscan_info_present_flag
+            r.u(1)
+        if r.u(1):  # video_signal_type_present_flag
+            r.u(4)
+            if r.u(1):  # colour_description_present_flag
+                r.u(16)
+                matrix = r.u(8)
     sub_w, sub_h = SUBSAMPLING[chroma] if chroma else (1, 1)
     unit_x, unit_y = sub_w, sub_h * (2 - frame_mbs_only)
     w = width * 16 - unit_x * (crop[0] + crop[1])
@@ -187,9 +231,9 @@ def h264_sps(nal):
     name = H264_PROFILES.get(profile_idc, f"profile_idc {profile_idc}")
     if profile_idc == 66 and constraints & 0x40:
         name = "Constrained Baseline"
-    elif profile_idc == 110 and constraints & 0x10:
-        name = "High 10 Intra"
-    return name, chroma, depths, w, h
+    elif profile_idc in H264_INTRA_PROFILES and constraints & 0x10:
+        name = H264_INTRA_PROFILES[profile_idc]
+    return name, chroma, depths, w, h, matrix
 
 
 def h264_trace(path):
@@ -224,7 +268,8 @@ def h264_features(path):
     or MBAFF frames)."""
     packets = h264_trace(path)
     if not packets:
-        return ["unparsed headers (FMO)"], "progressive"
+        # ffmpeg parses neither slice groups nor separate colour planes.
+        return ["headers ffmpeg cannot parse (FMO, separate colour planes)"], "progressive"
     seen = {}
     aso = False
     for packet in packets:
@@ -282,37 +327,117 @@ def probe_h264(path):
     for nal in annex_b_units(path.read_bytes()):
         if not nal or nal[0] & 31 != H264_SPS:
             continue
-        name, chroma, depths, w, h = h264_sps(nal)
+        name, chroma, depths, w, h, matrix = h264_sps(nal)
         features, scan = h264_features(path)
         # Monochrome pictures are output as 4:2:0 with mid-grey chroma (JM, ffmpeg).
         chroma_samples = 2 * ((w + 1) // 2) * ((h + 1) // 2) if chroma in (0, 1) else \
             2 * (w // SUBSAMPLING[chroma][0]) * (h // SUBSAMPLING[chroma][1])
         sample_bytes = 2 if max(depths) > 8 else 1
-        return {"profile": name, "chroma_format": CHROMA_NAMES[chroma], "bit_depth": depths,
+        info = {"profile": name, "chroma_format": CHROMA_NAMES[chroma], "bit_depth": depths,
                 "width": w, "height": h, "frame_bytes": (w * h + chroma_samples) * sample_bytes,
                 "scan": scan, "features": features}
+        if chroma == 3 and matrix == H264_MATRIX_GBR:
+            # JM writes GBR (matrix_coefficients 0) 4:4:4 pictures in R, G, B
+            # plane order (ldecod output.c, `rgb_output`); the hashes are of
+            # the decoded planes in their coded order, Y (G), Cb (B), Cr (R).
+            info["reference_plane_order"] = JM_RGB_PLANE_ORDER
+        return info
     return None
 
 
 VVC_PROFILES = {"Main 10": "Main 10", "65": "Main 10 Still Picture",
-                "Main 10 Still Picture": "Main 10 Still Picture"}
+                "Main 10 Still Picture": "Main 10 Still Picture",
+                "Main 10 4:4:4": "Main 10 4:4:4", "33": "Main 10 4:4:4",
+                "97": "Main 10 4:4:4 Still Picture",
+                "Main 10 4:4:4 Still Picture": "Main 10 4:4:4 Still Picture",
+                # The range extension profiles, by general_profile_idc
+                # (H.266 Table A.1), which ffprobe prints as numbers.
+                "2": "Main 12", "10": "Main 12 Intra", "66": "Main 12 Still Picture",
+                "34": "Main 12 4:4:4", "42": "Main 12 4:4:4 Intra",
+                "98": "Main 12 4:4:4 Still Picture", "35": "Main 16 4:4:4",
+                "43": "Main 16 4:4:4 Intra", "99": "Main 16 4:4:4 Still Picture"}
 #: ffprobe pixel formats: chroma format and bit depth.
 PIXEL_FORMATS = {"gray": ("4:0:0", 8), "yuv420p": ("4:2:0", 8), "gray10le": ("4:0:0", 10),
-                 "yuv420p10le": ("4:2:0", 10), "yuv422p10le": ("4:2:2", 10),
-                 "yuv444p10le": ("4:4:4", 10), "yuv444p": ("4:4:4", 8)}
+                 "yuv420p10le": ("4:2:0", 10), "yuv422p": ("4:2:2", 8),
+                 "yuv422p10le": ("4:2:2", 10), "yuv444p10le": ("4:4:4", 10),
+                 "yuv444p": ("4:4:4", 8),
+                 **{f"{name}{depth}le": (chroma, depth) for depth in (12, 14, 16)
+                    for name, chroma in (("gray", "4:0:0"), ("yuv420p", "4:2:0"),
+                                         ("yuv422p", "4:2:2"), ("yuv444p", "4:4:4"))}}
+
+
+#: chroma_format_idc names (H.266 Table 2).
+VVC_CHROMA = {0: "4:0:0", 1: "4:2:0", 2: "4:2:2", 3: "4:4:4"}
+#: nal_unit_type of an SPS (H.266 Table 5).
+VVC_SPS_NUT = 15
+#: Fixed bits of general_constraints_info before gci_num_additional_bits.
+VVC_GCI_FIXED_BITS = 71
+
+
+def vvc_sps_format(path):
+    """chroma_format_idc's name, the bit depth and the cropped size of the
+    first SPS (H.266 §7.3.2.4), for what ffprobe does not describe (16
+    bits, or streams it gives up on); None for an SPS with subpictures,
+    which this reader does not follow."""
+    for unit in annex_b_units(path.read_bytes()):
+        if len(unit) < 3 or unit[1] >> 3 != VVC_SPS_NUT:
+            continue
+        r = Bits(unit[2:])
+        r.u(8)  # sps_seq_parameter_set_id, sps_video_parameter_set_id
+        sublayers = r.u(3)
+        chroma = r.u(2)
+        r.u(2)  # sps_log2_ctu_size_minus5
+        if r.u(1):  # sps_ptl_dpb_hrd_params_present_flag: profile_tier_level()
+            r.u(7 + 1 + 8 + 1 + 1)  # profile, tier, level, frame only, multilayer
+            if r.u(1):  # gci_present_flag
+                r.u(VVC_GCI_FIXED_BITS)
+                r.u(r.u(8))
+            r.pos = (r.pos + 7) // 8 * 8
+            present = [r.u(1) for _ in range(sublayers)]
+            r.pos = (r.pos + 7) // 8 * 8
+            r.u(8 * sum(present))
+            r.u(32 * r.u(8))  # ptl_num_sub_profiles, general_sub_profile_idc
+        r.u(1)  # sps_gdr_enabled_flag
+        if r.u(1):  # sps_ref_pic_resampling_enabled_flag
+            r.u(1)
+        width, height = r.ue(), r.ue()
+        crop = [r.ue() for _ in range(4)] if r.u(1) else [0] * 4
+        if r.u(1):  # sps_subpic_info_present_flag
+            return None
+        sub_w, sub_h = {0: (1, 1), 1: (2, 2), 2: (2, 1), 3: (1, 1)}[chroma]
+        size = (width - sub_w * (crop[0] + crop[1]), height - sub_h * (crop[2] + crop[3]))
+        return VVC_CHROMA[chroma], r.ue() + 8, size
+    return None
+
+
+def vvc_profile_idc(path):
+    """general_profile_idc of the first SPS, as ffprobe prints it."""
+    for unit in annex_b_units(path.read_bytes()):
+        if len(unit) > 4 and unit[1] >> 3 == VVC_SPS_NUT:
+            r = Bits(unit[2:])
+            r.u(8 + 3 + 2 + 2 + 1)
+            return str(r.u(7))
+    return None
 
 
 def probe_vvc(path):
     """Profile, chroma format, depth and cropped size from ffprobe (its VVC
     parser reads the SPS, subpictures included), or None."""
-    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
-                             "stream=profile,pix_fmt,width,height", "-of", "json", str(path)],
-                            capture_output=True, text=True, timeout=60, check=False)
-    streams = json.loads(result.stdout or "{}").get("streams", [])
-    if len(streams) != 1 or streams[0].get("pix_fmt") not in PIXEL_FORMATS:
+    try:
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                                 "stream=profile,pix_fmt,width,height", "-of", "json", str(path)],
+                                capture_output=True, text=True, timeout=60, check=False)
+        streams = json.loads(result.stdout or "{}").get("streams", [])
+    except subprocess.TimeoutExpired:
+        streams = []
+    info = streams[0] if len(streams) == 1 else {}
+    if info.get("pix_fmt") in PIXEL_FORMATS:
+        chroma, depth = PIXEL_FORMATS[info["pix_fmt"]]
+    elif (format_ := vvc_sps_format(path)) is not None:
+        chroma, depth, (info["width"], info["height"]) = format_
+        info.setdefault("profile", vvc_profile_idc(path))
+    else:
         return None
-    info = streams[0]
-    chroma, depth = PIXEL_FORMATS[info["pix_fmt"]]
     w, h = info["width"], info["height"]
     sub_w, sub_h = {"4:0:0": (1, 1), "4:2:0": (2, 2), "4:2:2": (2, 1), "4:4:4": (1, 1)}[chroma]
     chroma_samples = 0 if chroma == "4:0:0" else 2 * (w // sub_w) * (h // sub_h)
@@ -412,13 +537,39 @@ def probe_av1(path):
     high = r.u(1)
     depth = (12 if r.u(1) else 10) if profile == 2 and high else (10 if high else 8)
     mono = 0 if profile == 1 else r.u(1)
+    subsampling = av1_subsampling(r, profile, depth, mono)
     sample_bytes = 2 if depth > 8 else 1
-    # Monochrome pictures are output with grey chroma planes too.
-    chroma = ((width + 1) // 2) * ((height + 1) // 2) * 2
+    # Monochrome pictures are output with grey 4:2:0 chroma planes too.
+    chroma_w = (width + subsampling[0]) >> subsampling[0]
+    chroma_h = (height + subsampling[1]) >> subsampling[1]
     return {"profile": AV1_PROFILES.get(profile, f"seq_profile {profile}"),
-            "chroma_format": "4:0:0" if mono else "4:2:0" if profile == 0 else "4:4:4 or 4:2:2",
+            "chroma_format": "4:0:0" if mono else AV1_CHROMA_NAMES[subsampling],
             "bit_depth": [depth, depth], "width": width, "height": height,
-            "frame_bytes": (width * height + chroma) * sample_bytes}
+            "frame_bytes": (width * height + 2 * chroma_w * chroma_h) * sample_bytes}
+
+
+AV1_CHROMA_NAMES = {(1, 1): "4:2:0", (1, 0): "4:2:2", (0, 0): "4:4:4"}
+#: color_description: BT.709 primaries, sRGB transfer, identity matrix (sRGB).
+AV1_SRGB = (1, 13, 0)
+
+
+def av1_subsampling(r, profile, depth, mono):
+    """(subsampling_x, subsampling_y) from the rest of color_config()
+    (AV1 §5.5.2); monochrome is output as 4:2:0."""
+    description = (r.u(8), r.u(8), r.u(8)) if r.u(1) else None
+    if mono:
+        return (1, 1)
+    if description == AV1_SRGB:
+        return (0, 0)
+    r.u(1)  # color_range
+    if profile == 0:
+        return (1, 1)
+    if profile == 1:
+        return (0, 0)
+    if depth == 12:
+        x = r.u(1)
+        return (x, r.u(1) if x else 0)
+    return (1, 0)
 
 
 VP9_KEY_FRAME = 0
@@ -492,12 +643,27 @@ SUITES = {
         "-o", str(out), "-d", "0"]),
     "hevc-v1": (probe_hevc, lambda bitstream, out: [
         str(DATA / "anchors/x86_64/bin/TAppDecoder"), "-b", str(bitstream), "-o", str(out), "-d", "0"]),
+    # HM built with high bit depth (tools/anchors/build_anchors.sh hmhbd):
+    # the default build refuses extended precision processing and 16-bit
+    # samples. It writes each picture in its own chroma format (4:0:0 as
+    # one plane) and depth.
+    "hevc-rext": (probe_hevc, lambda bitstream, out: [
+        str(DATA / "anchors/x86_64/bin/TAppDecoder-hbd"), "-b", str(bitstream), "-o", str(out),
+        "-d", "0"]),
     # aomdec --i420 writes each picture at its own depth (16-bit
     # little-endian beyond 8 bits), monochrome with mid-grey chroma planes
     # (what libaom's per-frame MD5s hash; --rawvideo would drop them), film
     # grain applied.
     "av1-libaom": (probe_av1, lambda bitstream, out: [
         str(DATA / "anchors/x86_64/bin/aomdec"), "--i420", "-o", str(out), str(bitstream)]),
+    # The High and Professional profile streams of
+    # tools/dev/av1_profile_streams.sh: 4:2:2 and 4:4:4 in their own format
+    # (--rawvideo; --i420 would convert them), 4:2:0 and monochrome as
+    # above.
+    "av1-profiles": (probe_av1, lambda bitstream, out: [
+        str(DATA / "anchors/x86_64/bin/aomdec"),
+        "--i420" if probe_av1(bitstream)["chroma_format"] in ("4:2:0", "4:0:0") else "--rawvideo",
+        "-o", str(out), str(bitstream)]),
     # vpxdec built with high bit depth (tools/anchors/build_anchors.sh
     # vpxhbd): shown frames at their own size, 8-bit samples as bytes and
     # deeper ones as 16-bit little-endian (the form of libvpx's .md5 files);
@@ -521,22 +687,48 @@ SUITES["h264-x264"] = SUITES["h264"]
 SUITES["h264-jm"] = (probe_h264, lambda bitstream, out: [
     "cp", str(bitstream.with_suffix(".yuv")), str(out)])
 SUITES["av1-supplementary"] = SUITES["av1-libaom"]
+SUITES["h264-chroma"] = SUITES["h264"]
+SUITES["h264-x264-chroma"] = SUITES["h264"]
+
+#: ffmpeg's raw output format of JM's: 4:0:0 as 4:2:0, the stream's format
+#: otherwise, 16-bit little-endian beyond 8 bits (10 for 9-bit streams, as
+#: before the 4:2:2 / 4:4:4 suite).
+H264_PIXEL_FORMATS = {"4:0:0": "yuv420p", "4:2:0": "yuv420p", "4:2:2": "yuv422p",
+                      "4:4:4": "yuv444p"}
+
+
+def h264_pixel_format(info):
+    depth = max(info["bit_depth"])
+    suffix = "" if depth == 8 else f"{max(depth, 10)}le"
+    return H264_PIXEL_FORMATS[info["chroma_format"]] + suffix
+
+# VTM built with ENABLE_HIGH_BITDEPTH (32-bit samples and coefficients),
+# which extended precision and 16-bit streams need.
+SUITES["vvc-rext"] = (probe_vvc, lambda bitstream, out: [
+    str(DATA / "work/standards-eval/src/VTM-hbd/bin/DecoderAppStatic"), "-b", str(bitstream),
+    "-o", str(out), "-d", "0"])
 
 # suite -> a second decoder's command for (bitstream, output path, probe
 # info): its whole-output MD5 is recorded as a cross-check of the reference.
 CROSS_CHECKS = {
     "h264": lambda bitstream, out, info: [
         "ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(bitstream), "-fps_mode", "passthrough",
-        "-f", "rawvideo", "-pix_fmt", "yuv420p10le" if max(info["bit_depth"]) > 8 else "yuv420p",
-        str(out)],
+        "-f", "rawvideo", "-pix_fmt", h264_pixel_format(info), str(out)],
 }
 CROSS_CHECKS["h264-x264"] = CROSS_CHECKS["h264"]
 CROSS_CHECKS["h264-jm"] = CROSS_CHECKS["h264"]
+CROSS_CHECKS["h264-chroma"] = CROSS_CHECKS["h264"]
+CROSS_CHECKS["h264-x264-chroma"] = CROSS_CHECKS["h264"]
 # FFmpeg's native VP9 decoder; it scales resized pictures to the first
 # size, so those streams record a disagreement.
 VP9_PIXEL_FORMATS = {"4:2:0": "yuv420p", "4:2:2": "yuv422p", "4:4:0": "yuv440p",
                      "4:4:4": "yuv444p"}
 VP9_DEPTH_SUFFIX = {8: "", 10: "10le", 12: "12le"}
+# dav1d writes the native format (monochrome as luma only, so those
+# streams record a disagreement), deeper samples as 16-bit little-endian.
+CROSS_CHECKS["av1-profiles"] = lambda bitstream, out, info: [
+    str(DATA / "anchors/x86_64/bin/dav1d"), "-q", "-i", str(bitstream), "-o", str(out),
+    "--muxer", "yuv"]
 CROSS_CHECKS["vp9-libvpx"] = lambda bitstream, out, info: [
     "ffmpeg", "-v", "error", "-nostdin", "-y", "-c:v", "vp9", "-i", str(bitstream),
     "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt",
@@ -571,14 +763,39 @@ def shipped_md5s(directory):
     return found
 
 
-def reference_hashes(command, frame_bytes):
-    """Hash the reference decoder's output, written into a FIFO; also its
+class PlaneOrderHashes:
+    """[`Hashes`] of a reference output whose 4:4:4 planes come in another
+    order: each picture is buffered, its three equal planes put back in
+    coded order (`order[k]`: the output plane holding coded plane k)."""
+
+    def __init__(self, frame_bytes, order):
+        self.inner, self.order = Hashes(frame_bytes), order
+        self.frame_bytes, self.pending = frame_bytes, b""
+
+    def update(self, chunk):
+        self.pending += chunk
+        plane = self.frame_bytes // 3
+        while len(self.pending) >= self.frame_bytes:
+            frame, self.pending = self.pending[:self.frame_bytes], self.pending[self.frame_bytes:]
+            self.inner.update(b"".join(frame[k * plane:(k + 1) * plane] for k in self.order))
+
+    def __getattr__(self, name):
+        # Trailing bytes of a partial picture are hashed as they came.
+        if self.pending:
+            self.inner.update(self.pending)
+            self.pending = b""
+        return getattr(self.inner, name)
+
+
+def reference_hashes(command, frame_bytes, plane_order=None):
+    """Hash the reference decoder's output, written into a FIFO (its 4:4:4
+    planes put back in coded order when `plane_order` is given); also its
     exit status (VTM exits 1 on a picture-hash SEI mismatch, as after a GDR
     start, though its output is the conformance output)."""
     with tempdirs.temp_dir("conformance") as scratch:
         fifo = Path(scratch) / "out.yuv"
         os.mkfifo(fifo)
-        hashes = Hashes(frame_bytes)
+        hashes = PlaneOrderHashes(frame_bytes, plane_order) if plane_order else Hashes(frame_bytes)
 
         def drain():
             with open(fifo, "rb") as pipe:
@@ -612,7 +829,8 @@ def build_entry(suite, streams, directory):
     if info is None:
         return directory.name, None
     try:
-        hashes, status = reference_hashes(lambda out: reference(path, out), info["frame_bytes"])
+        hashes, status = reference_hashes(lambda out: reference(path, out), info["frame_bytes"],
+                                          info.get("reference_plane_order"))
     except subprocess.TimeoutExpired:
         print(f"skip {directory.name}: reference decoder timed out", file=sys.stderr)
         return directory.name, None

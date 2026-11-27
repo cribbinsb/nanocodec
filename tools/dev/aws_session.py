@@ -34,9 +34,11 @@ not lose it; files move as tar streams over SSH.
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import itertools
 import json
 import os
@@ -44,6 +46,7 @@ import re
 import shlex
 import signal
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.request
@@ -864,29 +867,80 @@ class Session:
         """The files under `remote_dir` changed since the last call with `marker` (all of
         them on the first) into `local_dir`: a checkpoint that a spot reclaim cannot
         take back. Returns the bytes moved (billed as egress); `names` gains the paths
-        of the files brought back (under `local_dir`)."""
+        of the files brought back (under `local_dir`), also when a later batch fails.
+
+        The new files go in batches over PULL_STREAMS parallel ssh links, one tar per batch:
+        one ssh stream from a US box carried 2-3 MB/s on 2026-11-27 (a box's 46 GB of
+        streams would have taken ~2 h more); 8 parallel links carried 24-32 MB/s from one
+        us-west-2 box against 12 MB/s for one (docs/aws-cost-guide.md "Pulling results
+        back"). Every file is verified on arrival against the size and SHA-256 the box took
+        of the bytes it sent, and only then renamed into place (receive_batch): a cut or
+        damaged copy never appears under its real name. The marker moves on only when every
+        file has arrived whole; a failed call (a reclaim) keeps the files that landed, and the
+        next call skips the files already here whole (same size and mtime), so a retry
+        fetches only what is missing."""
         local_dir.mkdir(parents=True, exist_ok=True)
-        ssh = subprocess.Popen([*self.ssh_base(), checkpoint_command(remote_dir, marker)],
-                               stdout=subprocess.PIPE)
-        untar = subprocess.Popen(["tar", "-C", str(local_dir), "-xvf", "-"],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        listing = []
-        reader = threading.Thread(target=lambda: listing.extend(
-            untar.stdout.read().decode().splitlines()))
-        reader.start()
-        moved = 0
-        while chunk := ssh.stdout.read(1 << 20):
-            moved += len(chunk)
-            untar.stdin.write(chunk)
-        untar.stdin.close()
-        status = untar.wait()
-        reader.join()
-        if ssh.wait() != 0 or status != 0:
-            raise RuntimeError(f"checkpoint download of {remote_dir} failed")
-        if names is not None:
-            names.extend(local_dir / name for name in listing if not name.endswith("/"))
+        listing = self.ssh(new_files_command(remote_dir, marker), check=False, quiet=True)
+        if listing.returncode != 0:
+            raise RuntimeError(f"checkpoint listing of {remote_dir} failed")
+        todo = [f for f in parse_new_files(listing.stdout) if not f.arrived(local_dir)]
+        moved, failed = self._fetch_batches(remote_dir, local_dir, pull_batches(todo), names)
         self.egress_bytes += moved
+        if failed:
+            raise RuntimeError(f"checkpoint download of {remote_dir} failed "
+                               f"({failed} batches missing)")
+        if self.ssh(advance_marker_command(remote_dir, marker), check=False,
+                    quiet=True).returncode != 0:
+            raise RuntimeError(f"checkpoint of {remote_dir} could not move on")
         return moved
+
+    def _fetch_batches(self, remote_dir: str, local_dir: Path,
+                       batches: list[list[RemoteFile]], names: list[Path] | None
+                       ) -> tuple[int, int]:
+        """`batches` over PULL_STREAMS parallel links, each tried PULL_ATTEMPTS times, a retry
+        asking only for the files that did not arrive whole: (bytes moved, batches that never
+        arrived)."""
+        moved, failed = 0, 0
+        lock = threading.Lock()
+
+        def one(batch: list[RemoteFile]) -> None:
+            nonlocal moved, failed
+            todo = batch
+            for _ in range(PULL_ATTEMPTS):
+                settled = self._fetch_batch(remote_dir, local_dir, todo)
+                with lock:
+                    for f in todo:
+                        if settled.get(f.path):
+                            moved += f.size
+                            if names is not None:
+                                names.append(local_dir / f.path)
+                todo = [f for f in todo if f.path not in settled]
+                if not todo:
+                    return
+            with lock:
+                failed += 1
+        with concurrent.futures.ThreadPoolExecutor(PULL_STREAMS) as pool:
+            list(pool.map(one, batches))
+        return moved, failed
+
+    def _fetch_batch(self, remote_dir: str, local_dir: Path,
+                     batch: list[RemoteFile]) -> dict[str, bool]:
+        """One batch over its own ssh link (receive_batch): each settled file's path, True
+        when it landed whole, False when the box no longer had it as listed."""
+        ssh = subprocess.Popen([*self.ssh_base(), batch_send_command(remote_dir)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+        try:
+            ssh.stdin.write(b"".join(f"{f.size} {f.mtime} {f.path}".encode() + b"\0"
+                                     for f in batch))
+            ssh.stdin.close()
+        except BrokenPipeError:
+            pass  # the link died: what arrived says so
+        try:
+            return receive_batch(ssh.stdout, local_dir)
+        finally:
+            ssh.stdout.close()
+            ssh.wait()
 
     @contextlib.contextmanager
     def pulling(self, remote_dir: str, local_dir: Path, marker: str,
@@ -1015,17 +1069,185 @@ class Session:
 LAUNCHED, NO_ROOM, QUOTA = "launched", "no capacity", "quota full"
 
 
-def checkpoint_command(remote_dir: str, marker: str) -> str:
-    """The box's side of download_new: a tar of the files under `remote_dir` newer than
-    `marker` (all on the first call). Other jobs on a warm box write the same point
-    cache at the same time, so their in-progress temporary files (dot files, renamed
-    into place when complete) are left out, and a file that vanishes between the list
-    and the tar is skipped, not an error (2026-11-21: one job's checkpoint failed on
-    another's `.cbr150-....json.qlpmzmbo.times.txt`)."""
-    files = "find . -type f ! -name '.*'"
+#: Parallel ssh links (one tar each) of one download_new; see its doc for the measurement.
+PULL_STREAMS = 8
+#: A batch is at most this big: a lost link resends at most this much.
+PULL_BATCH_BYTES = 256 << 20
+#: ... and at least this big when there is that much (one ssh setup is ~1 s across the
+#: Atlantic: smaller batches would spend more time connecting than moving).
+PULL_MIN_BATCH_BYTES = 8 << 20
+#: Tries per batch within one call (a lost link is retried once; a reclaimed box fails fast).
+PULL_ATTEMPTS = 2
+#: The files a checkpoint may bring: another job's in-progress temporaries on a shared box
+#: are dot files, renamed into place when complete, so they are left out (2026-11-21: one
+#: job's checkpoint failed on another's `.cbr150-....json.qlpmzmbo.times.txt`).
+#: A writer's `*.partial` temporaries (renamed into place when whole, nceval.cbr) are left out
+#: too: copying one mid-write brought truncated streams to the PC.
+CHECKPOINT_FILES = "find . -type f ! -name '.*' ! -name '*.partial'"
+#: The member that ends every batch (batch_send_command): each sent file's size and SHA-256,
+#: hashed from the bytes sent, and the listed files the box no longer had.
+BATCH_MANIFEST = ".nanocodec-batch-manifest.json"
+#: Bytes per read while a batch is received and hashed.
+RECEIVE_CHUNK = 1 << 20
+
+
+@dataclass(frozen=True)
+class RemoteFile:
+    """One file a checkpoint lists: its path under the pulled directory, size and mtime."""
+    path: str
+    size: int
+    mtime: int
+
+    def arrived(self, local_dir: Path) -> bool:
+        """Whether an earlier (failed) call already brought this exact file whole: tar keeps
+        the mtime, so the same size and whole-second mtime mean the same file."""
+        try:
+            here = (local_dir / self.path).stat()
+        except OSError:
+            return False
+        return here.st_size == self.size and int(here.st_mtime) == self.mtime
+
+
+def new_files_command(remote_dir: str, marker: str) -> str:
+    """The box's list of the files under `remote_dir` newer than `marker` (all on the first
+    call), NUL-separated `size mtime path` records. `marker`.next is stamped first, so a
+    file written during the pull is listed again next time, never missed."""
+    listed = f"{CHECKPOINT_FILES} -printf '%s %T@ %P\\0'"
     return (f"cd {remote_dir} && touch {marker}.next && "
-            f"{{ if [ -f {marker} ]; then {files} -newer {marker}; else {files}; fi; }}"
-            f" | tar --ignore-failed-read -cf - -T - 2>/dev/null && mv {marker}.next {marker}")
+            f"{{ if [ -f {marker} ]; then {listed} -newer {marker}; else {listed}; fi; }}")
+
+
+def parse_new_files(listing: str) -> list[RemoteFile]:
+    files = []
+    for record in filter(None, listing.split("\0")):
+        size, mtime, path = record.split(" ", 2)
+        files.append(RemoteFile(path, int(size), int(float(mtime))))
+    return files
+
+
+def pull_batches(files: list[RemoteFile], streams: int = PULL_STREAMS) -> list[list[RemoteFile]]:
+    """`files` in path order (a clip's streams together), cut into batches of about a
+    `streams`-th of the total, kept within PULL_MIN_BATCH_BYTES..PULL_BATCH_BYTES, so a small
+    pull still spreads over the links and a large one never risks more than a batch a link."""
+    total = sum(f.size for f in files)
+    target = min(PULL_BATCH_BYTES, max(PULL_MIN_BATCH_BYTES, -(-total // streams)))
+    batches, batch, size = [], [], 0
+    for f in sorted(files, key=lambda f: f.path):
+        if batch and size + f.size > target:
+            batches.append(batch)
+            batch, size = [], 0
+        batch.append(f)
+        size += f.size
+    return batches + ([batch] if batch else [])
+
+
+#: The box's sender of one batch (batch_send_command): stdin holds the NUL-separated
+#: `size mtime path` records of the listing; stdout is a tar of exactly the listed bytes of
+#: each file (an appended log is sent as listed, not as it grew since), its listed mtime
+#: kept, and BATCH_MANIFEST last. A file renamed away or shrunk since the listing is skipped
+#: (and named so); the next listing has whatever replaced it.
+SEND_SCRIPT = r"""
+import hashlib, io, json, os, sys, tarfile
+
+class Hashed:
+    def __init__(self, f):
+        self.f, self.sha = f, hashlib.sha256()
+    def read(self, n=-1):
+        data = self.f.read(n)
+        self.sha.update(data)
+        return data
+
+sent, skipped = {}, []
+with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.GNU_FORMAT) as tar:
+    for record in filter(None, sys.stdin.buffer.read().split(b"\0")):
+        size, mtime, path = record.decode().split(" ", 2)
+        try:
+            f = open(path, "rb")
+        except OSError:
+            skipped.append(path)
+            continue
+        with f:
+            if os.fstat(f.fileno()).st_size < int(size):
+                skipped.append(path)
+                continue
+            info = tarfile.TarInfo(path)
+            info.size, info.mtime = int(size), int(mtime)
+            reader = Hashed(f)
+            tar.addfile(info, reader)
+            sent[path] = [int(size), reader.sha.hexdigest()]
+    body = json.dumps({"files": sent, "skipped": skipped}).encode()
+    info = tarfile.TarInfo(sys.argv[1])
+    info.size = len(body)
+    tar.addfile(info, io.BytesIO(body))
+"""
+
+
+def batch_send_command(remote_dir: str) -> str:
+    """The box's command that sends one batch (SEND_SCRIPT)."""
+    return (f"cd {remote_dir} && python3 -c {shlex.quote(SEND_SCRIPT)} "
+            f"{shlex.quote(BATCH_MANIFEST)}")
+
+
+def receive_batch(stream, local_dir: Path) -> dict[str, bool]:
+    """One batch's tar (SEND_SCRIPT) from `stream` into `local_dir`: the settled paths, True
+    for each that landed whole, False for each the box skipped. Every file is written under
+    a dot temporary beside its destination and hashed on the way; only when the batch's
+    manifest has arrived are the files whose size and SHA-256 match it renamed into place.
+    A link that dies mid-batch, a truncated or damaged file, leaves nothing under its real
+    name (2026-11-27: tar extraction of a cut link left streams truncated at 512-byte
+    blocks, which then scored as decoder mismatches), so the retry fetches it again."""
+    staged: dict[str, tuple[Path, Path, int, str, int]] = {}
+    settled: dict[str, bool] = {}
+    try:
+        with tarfile.open(fileobj=stream, mode="r|") as tar:
+            for member in tar:
+                if member.name == BATCH_MANIFEST:
+                    manifest = json.loads(tar.extractfile(member).read())
+                    for path, (size, digest) in manifest["files"].items():
+                        if path in staged and staged[path][2:4] == (size, digest):
+                            temp, final, _, _, mtime = staged.pop(path)
+                            os.utime(temp, (mtime, mtime))
+                            os.replace(temp, final)
+                            settled[path] = True
+                    settled.update({path: False for path in manifest["skipped"]})
+                    break
+                if member.isfile():
+                    staged[member.name] = stage_member(tar, member, local_dir)
+    except (tarfile.TarError, OSError, ValueError, KeyError):
+        pass  # a cut link: whatever had not been confirmed is fetched again
+    finally:
+        for temp, *_ in staged.values():
+            temp.unlink(missing_ok=True)
+    return settled
+
+
+def stage_member(tar: tarfile.TarFile, member: tarfile.TarInfo, local_dir: Path
+                 ) -> tuple[Path, Path, int, str, int]:
+    """One received file under a dot temporary beside its destination: (temporary,
+    destination, bytes received, their SHA-256, the listed mtime)."""
+    relative = Path(member.name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"unsafe path in a batch: {member.name}")
+    final = local_dir / relative
+    final.parent.mkdir(parents=True, exist_ok=True)
+    temp = final.with_name(f".{final.name}.incoming")
+    sha, size = hashlib.sha256(), 0
+    source = tar.extractfile(member)
+    try:
+        with temp.open("wb") as sink:
+            while chunk := source.read(RECEIVE_CHUNK):
+                sha.update(chunk)
+                size += len(chunk)
+                sink.write(chunk)
+    except BaseException:  # cut mid-file: the temporary goes too
+        temp.unlink(missing_ok=True)
+        raise
+    return temp, final, size, sha.hexdigest(), int(member.mtime)
+
+
+def advance_marker_command(remote_dir: str, marker: str) -> str:
+    """The box's checkpoint moves on to the moment its last pull was listed."""
+    return f"cd {remote_dir} && mv {marker}.next {marker}"
 
 
 def try_launch_lock(region: str, family: str = ""):

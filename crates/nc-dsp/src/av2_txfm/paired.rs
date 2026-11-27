@@ -15,7 +15,8 @@
 //!   folds sums of `N / (2H)` residuals, so its differences are at most
 //!   `255 · N / H <= 255 · 64 = 16320`.
 //! - Forward row pass: its inputs reach `255 · 5760 >> 3` (module docs of
-//!   `av2_txfm`), beyond `i16`, so it uses 32-bit products.
+//!   `av2_txfm`). Large odd levels check their folded differences before
+//!   packing, with 32-bit products when a difference exceeds `i16`.
 //!
 //! Matrix entries are at most 90 in magnitude, so every weight fits `i16`.
 
@@ -364,22 +365,33 @@ mod forward_pass {
             sums[i] = a.add(b);
             *difference = a.sub(b);
         }
-        let paired = PAIRED && H >= 2;
-        let pairs = pair_up(&differences);
+        let pairs = if PAIRED && H >= 2 {
+            Some(pair_up(&differences))
+        } else if H == 8 || H == 16 {
+            V::checked_word_pairs(&differences)
+        } else {
+            None
+        };
+        if let Some(pairs) = pairs {
+            for (r, weights) in packed.iter().enumerate() {
+                let k = (2 * r + 1) * step;
+                if k >= outputs {
+                    break;
+                }
+                y[k] = paired_dot::<V, H>(&pairs, weights, H / 2);
+            }
+            return;
+        }
         for (r, row) in odd_matrix.iter().enumerate() {
             let k = (2 * r + 1) * step;
             if k >= outputs {
                 break;
             }
-            y[k] = if paired {
-                paired_dot::<V, H>(&pairs, &packed[r], H / 2)
-            } else {
-                let mut acc = differences[0].mul_scalar(row[0]);
-                for j in 1..H {
-                    acc = acc.add(differences[j].mul_scalar(row[j]));
-                }
-                acc
-            };
+            let mut acc = differences[0].mul_scalar(row[0]);
+            for j in 1..H {
+                acc = acc.add(differences[j].mul_scalar(row[j]));
+            }
+            y[k] = acc;
         }
     }
 
@@ -410,7 +422,7 @@ mod forward_pass {
         y[0] = sums[0].mul_scalar(DC_WEIGHT);
     }
 
-    /// `generic::forward`: paired column pass, 32-bit row pass.
+    /// `generic::forward`: paired columns and checked row products.
     ///
     /// # Safety
     ///

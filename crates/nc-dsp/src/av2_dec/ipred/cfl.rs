@@ -26,6 +26,9 @@ const AC_SHIFT: u32 = 11;
 const MAX_PAIRS: usize = 8;
 /// Sides of this length count only every other edge sample in the DC.
 const SUBSAMPLED_SIDE: usize = 64;
+/// Widest and tallest chroma block (64x64: the chroma of a 128x128 luma
+/// block in 4:2:0).
+const MAX_SIDE: usize = 64;
 /// Bits of the explicit alphas once extracted (1/32 units scaled by 32).
 const ALPHA_EXTRACT_BITS: u32 = 5;
 /// The GAUSS filter's top tap stays in the row at multiples of 32 rows
@@ -215,12 +218,25 @@ fn explicit_alphas(flags: u32) -> [i32; 2] {
     [u, v]
 }
 
-/// The rounded mean of `sum` over `count` samples.
-fn mean(sum: i32, count: usize) -> i32 {
+/// Whether `pad` 4-sample units of a 4:2:0 chroma side of `side` samples
+/// can lie past the picture: at least one 4-sample unit when padded (none
+/// for 4-sample sides), and at least 4 samples visible, 8 for a side of
+/// 64 (its 128-sample luma is split when half or less is visible). Regions
+/// crossing the frame's edge (extended SDP) can leave fewer than half
+/// visible (dav2d a5f62216).
+fn pad_in_range(pad: usize, side: usize) -> bool {
+    const LARGE_CHROMA_SIDE: usize = 64;
+    let unit = if side == LARGE_CHROMA_SIDE { 8 } else { 4 };
+    pad == 0 || (pad >= usize::from(side > 4) && pad < side / unit)
+}
+
+/// The rounded mean of `sum` over `count` samples, at most `max`: the
+/// approximate division can overshoot (dav2d 518e8e32 clips it).
+fn mean(sum: i32, count: usize, max: i32) -> i32 {
     if count.is_power_of_two() {
         (sum + (count >> 1) as i32) >> count.trailing_zeros()
     } else {
-        fast_div32_dc(sum as u32, count as u32) as i32
+        (fast_div32_dc(sum as u32, count as u32) as i32).min(max)
     }
 }
 
@@ -251,7 +267,7 @@ pub fn cfl_pred_420<T: Sample>(
     depth: BitDepth,
 ) {
     let depth = depth.of::<T>();
-    debug_assert!(wpad * 4 < w / 2 && hpad * 4 < h / 2);
+    debug_assert!(pad_in_range(wpad, w) && pad_in_range(hpad, h));
     let has_t = flags & CFL_HAS_TOP != 0;
     let has_l = flags & CFL_HAS_LEFT != 0;
     let xlim = w - 4 * wpad;
@@ -311,7 +327,10 @@ pub fn cfl_pred_420<T: Sample>(
         } else {
             0
         };
-        stats.sum.map(|s| mean(s, count))
+        // Luma's mean keeps its fraction bits.
+        let luma_max = (depth.max() << LUMA_FRACTION_BITS) | ((1 << LUMA_FRACTION_BITS) - 1);
+        let maxima = [luma_max, depth.max(), depth.max()];
+        std::array::from_fn(|plane| mean(stats.sum[plane], count, maxima[plane]))
     } else {
         // Mid-grey: luma `4 << bitdepth` (with its fraction bits), chroma
         // `(bitdepth_max + 1) >> 1`.
@@ -347,7 +366,7 @@ pub fn cfl_pred_420<T: Sample>(
     );
 }
 
-/// The block's downsampled luma minus its DC, `xlim` x `ylim` (32 wide).
+/// The block's downsampled luma minus its DC, `xlim` x `ylim`.
 fn luma_ac<T: Sample>(
     luma: SampleRef<'_, T>,
     ys: isize,
@@ -355,8 +374,8 @@ fn luma_ac<T: Sample>(
     xlim: usize,
     ylim: usize,
     dc: i32,
-) -> [[i32; 32]; 32] {
-    let mut ac = [[0; 32]; 32];
+) -> [[i32; MAX_SIDE]; MAX_SIDE] {
+    let mut ac = [[0; MAX_SIDE]; MAX_SIDE];
     for (y, ac_row) in ac.iter_mut().enumerate().take(ylim) {
         let row = luma.shifted(2 * y as isize * ys);
         let above = if y % GAUSS_TOP_ROW_PERIOD == 0 { 0 } else { ys };
@@ -375,7 +394,7 @@ fn luma_ac<T: Sample>(
 fn write_plane<T: Sample>(
     plane: &mut CflChroma<'_, T>,
     stride: usize,
-    ac: &[[i32; 32]; 32],
+    ac: &[[i32; MAX_SIDE]; MAX_SIDE],
     alpha: i32,
     dc: i32,
     (xlim, ylim): (usize, usize),

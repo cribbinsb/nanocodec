@@ -18,7 +18,22 @@ pub struct VvcLfnst {
     pub prediction_size: (usize, usize),
 }
 
+/// The inverse LFNST of `coefficients` in place, 16-bit (§8.7.4.2).
 pub(super) fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &mut [i16]) {
+    inverse_clipped(size, transform, coefficients, |value| {
+        value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    });
+}
+
+/// The inverse LFNST of `coefficients` in place, each output rounded by 7
+/// bits and then `clip`ped (to 16 bits, or with extended precision to
+/// `CoeffMin..=CoeffMax`, §8.7.4.2).
+pub(super) fn inverse_clipped<C: Copy + Into<i32>>(
+    size: (usize, usize),
+    transform: VvcLfnst,
+    coefficients: &mut [C],
+    clip: impl Fn(i32) -> C,
+) {
     let (width, height) = size;
     let (pred_width, pred_height) = transform.prediction_size;
     let wide =
@@ -46,12 +61,12 @@ pub(super) fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &
     } else {
         &tables::LFNST4[set][index]
     };
-    let mut input = [0; 16];
+    let mut input = [0i32; 16];
     let mut i = 0;
     for diagonal in 0usize..7 {
         for x in diagonal.saturating_sub(3)..=diagonal.min(3) {
             let y = diagonal - x;
-            input[i] = coefficients[y * width + x];
+            input[i] = coefficients[y * width + x].into();
             i += 1;
         }
     }
@@ -67,15 +82,14 @@ pub(super) fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &
             let sum: i32 = matrix[position][..active]
                 .iter()
                 .zip(&input[..active])
-                .map(|(&basis, &value)| i32::from(basis) * i32::from(value))
+                .map(|(&basis, &value)| i32::from(basis) * value)
                 .sum();
             let destination = if transpose {
                 x * width + y
             } else {
                 y * width + x
             };
-            coefficients[destination] =
-                ((sum + 64) >> 7).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            coefficients[destination] = clip((sum + 64) >> 7);
             position += 1;
         }
     }

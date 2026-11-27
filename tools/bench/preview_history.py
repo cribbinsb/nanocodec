@@ -26,6 +26,8 @@ import re
 import statistics
 from pathlib import Path
 
+import report
+
 DEFAULT_DAYS = Path.home() / "nanocodec-data" / "bench" / "bp4-prep" / "history" / "days-bp4.json"
 #: The earlier history page's captions (per day: summary, structural landings, per-codec
 #: items). Only the structural landings are reused: the per-codec items quote figures of the
@@ -55,7 +57,7 @@ TRACKING_LIMIT = 1.0
 #: The full set the history subset is checked against: the "ours" report of the same machine.
 FULL_REPORT = "ours"
 DROP_SUFFIX = "+drop"
-BENCHMARK_BUILD = "BP-4 benchmark build"
+BENCHMARK_CAPTION = "The BP-4 benchmark build: the build the main results pages measure."
 
 NOTES = (
     "CBR only, strict buffer (bound 1.0), the first key frame's lookahead off. Builds from "
@@ -72,9 +74,9 @@ NOTES = (
     "so they are shown on those clips, their own set, and do not define the common set. The "
     "clip count is in each frame's heading.",
     "Key interval: a key every 150 frames is the primary series; one key in 600 frames is the "
-    "long-window view of key-frame and start-up behaviour (procedure section 14). The last "
-    "build (the BP-4 benchmark build) was coded with one key in 600 frames only, so it is the "
-    "last frame of that view alone.",
+    "long-window view of key-frame and start-up behaviour (procedure section 14). The BP-4 "
+    "benchmark build's single-key run is its own frame of that view (its key-every-150 frame "
+    "is the main run on the same clips).",
     "References: the fixed builds of the same report, drawn as the same points on every frame, "
     "with their own front.",
     "Compliance is each frame's worst over our families. AV2 key-frame positions are unchecked.",
@@ -123,11 +125,12 @@ def compliance(families: dict) -> list[dict]:
             if value is not None]
 
 
-def by_day(families: dict) -> dict[tuple[str, str], dict[str, dict]]:
+def by_day(families: dict, listed: set[str]) -> dict[tuple[str, str], dict[str, dict]]:
     """Our history families grouped by (key variant, day): {"<codec>@<preset>": row}. The
     benchmark build's own families (`nanocodec-<codec>@<preset>`, from the main run on the
-    history clips, primary key interval) are the newest day's primary frame: the benchmark
-    build is the newest build the history coded."""
+    history clips, primary key interval) are the primary frame of the benchmark build's day:
+    the newest day the days file does not list (`listed`), since a listed day is a dated
+    build of its own (a release day after the benchmark build, 2026-11-27, keeps its frame)."""
     days: dict[tuple[str, str], dict[str, dict]] = {}
     benchmark: dict[str, dict] = {}
     for family, row in families.items():
@@ -139,8 +142,9 @@ def by_day(families: dict) -> dict[tuple[str, str], dict[str, dict]]:
             days.setdefault((variant or PRIMARY_KEY, day), {})[f"{codec}@{preset}"] = row
         elif BENCHMARK_FAMILY.match(family):
             benchmark[family.removeprefix(OWN_PREFIX)] = row
-    if benchmark and days:
-        days[(PRIMARY_KEY, max(day for _, day in days))] = benchmark
+    unlisted = [day for _, day in days if day not in listed]
+    if benchmark and unlisted:
+        days[(PRIMARY_KEY, max(unlisted))] = benchmark
     return days
 
 
@@ -153,7 +157,8 @@ def frame(day: str, rows: dict[str, dict], build: dict, captions: dict, finite) 
     return {
         "id": day, "label": build.get("label", day), "tick": day[5:],
         "commit": build["commit"][:COMMIT_SHOWN], "codecs": sorted(rungs),
-        "rungs": rungs, "caption": list((captions.get(day) or {}).get("structural") or []),
+        "rungs": rungs, "caption": list(build.get("caption") or [])
+        + list((captions.get(day) or {}).get("structural") or []),
         "view": finite({"clips": max(r["clips"] for r in rows.values()),
                         "values": {k: point(r) for k, r in rows.items()},
                         "compliance": compliance({OWN_PREFIX + k: r for k, r in rows.items()})}),
@@ -176,9 +181,11 @@ def machine_view(report: dict, machine: str, builds: dict[str, dict], captions: 
     body = report["series"][machine]
     families = body["families"]
     own = dig(report, "provenance", "encoders", OWN_BINARY) or {}
-    benchmark = {"commit": own.get("commit") or "", "label": BENCHMARK_BUILD}
+    # The benchmark build is a day's build like the others (the newest the history coded):
+    # labelled by its day, with what it is in the caption.
+    benchmark = {"commit": own.get("commit") or "", "caption": [BENCHMARK_CAPTION]}
     series = {key: [frame(day, rows, builds.get(day, benchmark), captions, finite)
-                    for (variant, day), rows in sorted(by_day(families).items(),
+                    for (variant, day), rows in sorted(by_day(families, set(builds)).items(),
                                                        key=lambda item: item[0][1])
                     if variant == key]
               for key in KEYS}
@@ -202,8 +209,12 @@ def tracking_check(history: dict, full: dict) -> dict:
                and (full_families.get(f) or {}).get("clips")}
     median = statistics.median(offsets.values())
     outside = {f: o for f, o in offsets.items() if abs(o - median) > TRACKING_LIMIT}
-    front = sorted(set(history["front"]).intersection(offsets))
-    full_front = sorted(set(full["front"]).intersection(offsets))
+    # Each report's own front also holds families the other lacks (the earlier days' builds in
+    # the history report), which can push current families off it; compare fronts drawn over
+    # the shared families alone.
+    shared = set(offsets)
+    front = report.front({f: r for f, r in families.items() if f in shared})
+    full_front = report.front({f: r for f, r in full_families.items() if f in shared})
     return {"families": len(offsets), "median_offset": median, "limit": TRACKING_LIMIT,
             "outside": dict(sorted(outside.items())), "offsets": dict(sorted(offsets.items())),
             "front_same": front == full_front, "passed": not outside and front == full_front,

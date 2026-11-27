@@ -49,11 +49,14 @@ impl Coeffs {
 /// A residual block of a 4x4 luma or chroma block (§7.3.5.3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Block4x4 {
-    /// `Intra16x16ACLevel` of the block at (`x4`, `y4`): 15 coefficients.
+    /// `Intra16x16ACLevel` (or the Cb / Cr one of 4:4:4) at (`x4`, `y4`):
+    /// 15 coefficients.
     LumaAc(usize, usize),
-    /// `LumaLevel4x4`: 16 coefficients.
+    /// `LumaLevel4x4` (or `CbLevel4x4`, `CrLevel4x4`) at (`x4`, `y4`): 16
+    /// coefficients.
     Luma(usize, usize),
-    /// `ChromaACLevel` of component `comp` (0 Cb, 1 Cr), block 0..=3.
+    /// `ChromaACLevel` of component `comp` (0 Cb, 1 Cr), block
+    /// `chroma4x4BlkIdx` (0..=3 in 4:2:0, 0..=7 in 4:2:2).
     ChromaAc(usize, usize),
 }
 
@@ -95,34 +98,40 @@ pub(super) trait MbSyntax {
         x4: usize,
         y4: usize,
     ) -> Result<[i32; 2]>;
-    /// `coded_block_pattern` (both parts) of a non-`Intra_16x16` macroblock.
-    fn coded_block_pattern(
-        &mut self,
-        nb: &Neighbours<'_>,
-        cur: &MbState,
-        monochrome: bool,
-    ) -> Result<u8>;
+    /// `coded_block_pattern` (both parts; luma only where there are no
+    /// chroma blocks) of a non-`Intra_16x16` macroblock.
+    fn coded_block_pattern(&mut self, nb: &Neighbours<'_>, cur: &MbState) -> Result<u8>;
     fn mb_qp_delta(&mut self) -> Result<i32>;
     /// A macroblock without `mb_qp_delta` (CABAC context of the next one).
     fn no_qp_delta(&mut self) {}
-    /// `Intra16x16DCLevel`.
-    fn luma_dc(&mut self, nb: &Neighbours<'_>, cur: &mut MbState, out: &mut Coeffs) -> Result<()>;
-    fn block_4x4(
+    /// `Intra16x16DCLevel` of component `PLANE` (0 luma; 1 Cb and 2 Cr
+    /// coded like luma, 4:4:4; a constant, so each component's context
+    /// selection is its own code).
+    fn luma_dc<const PLANE: usize>(
+        &mut self,
+        nb: &Neighbours<'_>,
+        cur: &mut MbState,
+        out: &mut Coeffs,
+    ) -> Result<()>;
+    /// A 4x4 block: luma-like ones of component `PLANE`, chroma AC ones
+    /// (`PLANE` 0).
+    fn block_4x4<const PLANE: usize>(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &mut MbState,
         block: Block4x4,
         out: &mut Coeffs,
     ) -> Result<()>;
-    /// `LumaLevel8x8` of 8x8 block `b8` (64 coefficients, zig-zag order).
-    fn luma_8x8(
+    /// `LumaLevel8x8` of component `PLANE` (Cb and Cr: 4:4:4), 8x8 block
+    /// `b8` (64 coefficients, zig-zag order).
+    fn luma_8x8<const PLANE: usize>(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &mut MbState,
         b8: usize,
         out: &mut Coeffs,
     ) -> Result<()>;
-    /// `ChromaDCLevel` of component `comp`.
+    /// `ChromaDCLevel` of component `comp` (`4 * NumC8x8` coefficients).
     fn chroma_dc(
         &mut self,
         nb: &Neighbours<'_>,

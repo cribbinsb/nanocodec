@@ -106,18 +106,34 @@ transform sizes, and sub-8x8 chroma motion. Plan, about two days (M):
 | # | Gap | Spec (AVM v1.0.0 / dav2d) | In target? | Who produces it | Fix |
 |---|---|---|---|---|---|
 | 11 | **10-bit** (`general/sequence.rs:465`) | seq header `bit_depth` | yes (AVM's main profile takes 8- and 10-bit 4:2:0, as AV1 Main does; to confirm against the draft text) | `avmenc --bit-depth=10`, any 10-bit input; the 13th dav2d test vector | L (sample-generic port, as done for AV1/VP9/VVC) |
-| 12 | **Several tiles** (`general/block.rs:261`) and several tile groups (`general/decoder.rs:407`) | tile_info, OBU_TILE_GROUP | yes | `avmenc --tile-columns/--tile-rows`; large-resolution presets | M |
-| 13 | References of another size (reference scaling) — `general/decoder.rs:515` | frame size override + scaled MC | yes | `avmenc --resize-mode`, RTC resolution switching, spatial SVC | M |
-| 14 | 4:0:0 (monochrome) — `general/sequence.rs:462` | seq header chroma format | likely (AV1 Main allows it; to confirm against the draft) | `avmenc --monochrome` | S–M |
-| 15 | Multi-frame headers (`general/frame_header.rs:571`) and bridge frames (`general/decoder.rs:427`) | MFH OBU, bridge frame OBU | yes (normative tools) | not in avmenc's default configs; which options emit them is not checked | M |
-| 16 | Wedge compound when motion fields are stored (`general/block/motion_resolution.rs:471`) | compound wedge + TMVP store | yes | possible wherever compound wedge is on (random access); not met in the 30-stream corpus | S |
-| 17 | Embedded / extended layers (`general/decoder.rs:334/337`) | layer syntax | scalable profiles | avmenc SVC configs | M |
+| 12 | **Several tiles** (`general/block.rs:261`) and several tile groups (`general/decoder.rs:407`) | tile_info, OBU_TILE_GROUP | yes | `avmenc --tile-columns/--tile-rows`; large-resolution presets | done 2026-11-27 (docs/handoff/av2.md "Several tiles and tile groups"); `disable_loopfilters_across_tiles` applied in all five loop filters as avmdec does (dav2d does not), 2026-11-27 |
+| 13 | References of another size (reference scaling) — `general/decoder.rs:515` | frame size override + scaled MC | yes | `avmenc --resize-mode`, RTC resolution switching, spatial SVC | done 2026-11-27 (docs/handoff/av2.md "References of another size") |
+| 14 | 4:0:0 (monochrome) — `general/sequence.rs:462` | seq header chroma format | likely (AV1 Main allows it; to confirm against the draft) | `avmenc --monochrome` | done 2026-11-27 (docs/handoff/av2.md "Monochrome (4:0:0)"): 9 of 9 avmenc `--monochrome` streams (8- and 10-bit, film grain) bit-exact with avmdec and dav2d |
+| 15 | Multi-frame headers (`general/frame_header.rs:571`) and bridge frames (`general/decoder.rs:427`) | MFH OBU, bridge frame OBU | yes (normative tools) | MFH: `avmenc --enable-mfh-obu-signaling=1`; bridge frames: `avmenc --resize-mode=5` (AVM's bridge-frame test pattern) | MFH and bridge frames done 2026-11-27 (docs/handoff/av2.md "Multi-frame headers and layers", "Bridge frames"; bridge streams avmdec only: dav2d has no bridge frames) |
+| 16 | Wedge compound when motion fields are stored (`general/block/motion_resolution.rs:471`) | compound wedge + TMVP store | yes | `avmenc` default random access and low delay (wedge is on by default); several dav2d vectors | done 2026-11-27: the rejection was unreachable (every wedge block computes its split); corpus streams with wedge blocks in frames that store motion fields were already bit-exact (`avm-v15.0.0-bus.64x64.l5`: 10 wedge blocks over 4 such frames; `avm.bus.64x64.l17.qm1`: 20) |
+| 17 | Embedded / extended layers (`general/decoder.rs:334/337`) | layer syntax | scalable profiles | `avmenc --enable-lcr=1 --enable-operating-point-sets=1` (LCR/OPS OBUs); embedded layers: the dav2d `layers-t1m2` vectors (avmenc has no layer options) | LCR/OPS OBUs and embedded-layer syntax done 2026-11-27; the `layers-t1m2` vectors still differ in temporal motion candidates of same-order lower-layer references (newer dav2d `refmvs.c`); extended layers (multiplexed streams) open |
 | 18 | Bilinear chroma phase of odd eighth-sample vectors (handoff "Known gap") | MC filter | yes | not met in corpus | S |
 
 Suite: none exists (searched 2026-11-15). Checked: 30 streams (12 dav2d test-data
 streams + 18 avmenc v1.0.0 streams we made, all 640x360 or smaller, single tile,
 8-bit), bit-exact against avmdec and dav2d. This is a smoke corpus, not
 conformance.
+
+2026-11-27 (`tools/dev/av2_foreign/compare.py`, 128 streams with the newer
+dav2d-test-data vectors, 10-bit, tile, scaling, MFH and bridge streams): 89
+bit-exact with avmdec and dav2d 237229e, 19 more with avmdec alone (the
+pinned dav2d predates those vectors; avmdec's hashes match the vectors'
+meson.build). Fixes ported from upstream dav2d (d5c6a57f) and checked against
+AVM v1.0.0: 256x256 blocks in 64x64 pieces (a panic before), chroma contexts
+of their pieces, deblocking caps at the frame's right/bottom, loop filters
+within tiles, cdef_idx context, TMVP priority, lossless block-copy chroma
+type, restoration units per tile row, boundary partitions, chroma transform
+sets, compound syntax for same-order references, same-order and overlay
+references in the temporal motion setup, TIP references and dav2d's
+reference order, TIP frames' signalled primary reference (S-frame vector).
+Left: 4:2:2/4:4:4/4:0:0 (out of scope); every other stream of the corpus is
+bit-exact (closed-loop key frames' coded order hint, dav2d 236742f2, fixed
+`clk-kf70`).
 
 ## Conformance suites: run vs not run
 

@@ -8,6 +8,7 @@
 
 use nc_encoder::Mv;
 
+use super::chroma::ChromaArray;
 use super::direct::{DirectContext, Spatial};
 use super::mbstate::{
     self, CBP_CHROMA_SHIFT, DC_PRED_MODE, LISTS, MbKind, MbState, Neighbours, PCM_CBP,
@@ -37,7 +38,7 @@ const P_INTRA_BASE: u32 = 5;
 const QP_RANGE: i32 = 52;
 /// Samples of an `I_PCM` macroblock: 256 luma, 128 chroma (4:2:0).
 pub(super) const PCM_LUMA_SAMPLES: usize = 256;
-pub(super) const PCM_CHROMA_SAMPLES: usize = 128;
+const MAX_PCM_CHROMA_SAMPLES: usize = 512;
 
 /// What a slice tells its macroblocks.
 #[derive(Debug, Clone, Copy)]
@@ -54,13 +55,17 @@ pub(super) struct SliceParams<'a> {
     pub direct: Option<&'a DirectContext<'a>>,
     pub transform_8x8_mode: bool,
     pub constrained_intra_pred: bool,
-    pub monochrome: bool,
+    /// `ChromaArrayType`.
+    pub chroma: ChromaArray,
     /// An SP or SI slice: its P and SI macroblocks keep their levels for
     /// §8.6.
     pub switching: bool,
     pub dequantiser: &'a Dequantiser,
     /// `QpBdOffsetY` (eq. 7-4).
     pub qp_bd_offset: i32,
+    /// `qpprime_y_zero_transform_bypass_flag`: macroblocks with `QP′Y` 0
+    /// are coded without transform (lossless).
+    pub transform_bypass: bool,
     /// Bits of a luma and a chroma `I_PCM` sample (the bit depths).
     pub pcm_bits: [u32; 2],
 }
@@ -70,7 +75,7 @@ pub(super) struct SliceParams<'a> {
 /// macroblock §8.6 reconstructs.
 #[derive(Debug)]
 pub(super) struct MbExtra {
-    pub pcm: [u16; PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES],
+    pub pcm: [u16; PCM_LUMA_SAMPLES + MAX_PCM_CHROMA_SAMPLES],
     pub levels: Coeffs,
     pub switching: SwitchingLevels,
 }
@@ -78,7 +83,7 @@ pub(super) struct MbExtra {
 impl MbExtra {
     pub fn new() -> Self {
         Self {
-            pcm: [0; PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES],
+            pcm: [0; PCM_LUMA_SAMPLES + MAX_PCM_CHROMA_SAMPLES],
             levels: Coeffs::new(),
             switching: SwitchingLevels::new(),
         }
@@ -86,13 +91,28 @@ impl MbExtra {
 }
 
 /// Where the parsed levels of a residual go: dequantised into the
-/// macroblock's residual (§8.5), or kept for §8.6.
+/// macroblock's residual (§8.5), or kept for §8.6. The luma-like blocks
+/// are those of component `PLANE` (Cb and Cr: 4:4:4).
 trait LevelSink {
-    fn luma_dc(&mut self, levels: &Coeffs, qp: (i32, &Scan));
-    /// Luma 4x4 block `block` (raster index); `kind`: (`Intra16x16ACLevel`,
+    /// Start a macroblock coded with (lossless) or without transform bypass.
+    fn set_bypass(&mut self, bypass: bool);
+    fn luma_dc<const PLANE: usize>(&mut self, levels: &Coeffs, qp: (i32, &Scan));
+    /// 4x4 block `block` (raster index); `kind`: (`Intra16x16ACLevel`,
     /// intra).
-    fn luma_4x4(&mut self, levels: &Coeffs, kind: (bool, bool), qp: (i32, &Scan), block: usize);
-    fn luma_8x8(&mut self, levels: &Coeffs, intra: bool, qp: (i32, &Scan), b8: usize);
+    fn luma_4x4<const PLANE: usize>(
+        &mut self,
+        levels: &Coeffs,
+        kind: (bool, bool),
+        qp: (i32, &Scan),
+        block: usize,
+    );
+    fn luma_8x8<const PLANE: usize>(
+        &mut self,
+        levels: &Coeffs,
+        intra: bool,
+        qp: (i32, &Scan),
+        b8: usize,
+    );
     fn chroma_dc(&mut self, levels: &Coeffs, intra: bool, qp: i32, comp: usize);
     fn chroma_ac(&mut self, levels: &Coeffs, intra: bool, qp: (i32, &Scan), block: (usize, usize));
     /// Luma 4x4 blocks with coefficients (deblocking, bit `y4 * 4 + x4`).
@@ -107,20 +127,38 @@ struct Dequantise<'a, C> {
 
 impl<C: Coefficient> LevelSink for Dequantise<'_, C> {
     #[inline]
-    fn luma_dc(&mut self, levels: &Coeffs, qp: (i32, &Scan)) {
-        self.dequantiser.luma_dc(levels, qp, self.residual);
+    fn set_bypass(&mut self, bypass: bool) {
+        self.residual.set_bypass(bypass);
     }
 
     #[inline]
-    fn luma_4x4(&mut self, levels: &Coeffs, kind: (bool, bool), qp: (i32, &Scan), block: usize) {
+    fn luma_dc<const PLANE: usize>(&mut self, levels: &Coeffs, qp: (i32, &Scan)) {
         self.dequantiser
-            .luma_4x4(levels, kind, qp, block, self.residual);
+            .luma_dc::<C, PLANE>(levels, qp, self.residual);
     }
 
     #[inline]
-    fn luma_8x8(&mut self, levels: &Coeffs, intra: bool, qp: (i32, &Scan), b8: usize) {
+    fn luma_4x4<const PLANE: usize>(
+        &mut self,
+        levels: &Coeffs,
+        kind: (bool, bool),
+        qp: (i32, &Scan),
+        block: usize,
+    ) {
         self.dequantiser
-            .luma_8x8(levels, intra, qp, b8, self.residual);
+            .luma_4x4::<C, PLANE>(levels, kind, qp, block, self.residual);
+    }
+
+    #[inline]
+    fn luma_8x8<const PLANE: usize>(
+        &mut self,
+        levels: &Coeffs,
+        intra: bool,
+        qp: (i32, &Scan),
+        b8: usize,
+    ) {
+        self.dequantiser
+            .luma_8x8::<C, PLANE>(levels, intra, qp, b8, self.residual);
     }
 
     #[inline]
@@ -143,13 +181,16 @@ impl<C: Coefficient> LevelSink for Dequantise<'_, C> {
 
 /// §8.6 macroblocks (P in SP slices, SI) are never `Intra_16x16` nor use
 /// the 8x8 transform (no Extended-profile PPS enables it, `switching.rs`):
-/// only 4x4 luma and chroma levels reach this sink.
+/// only 4x4 luma and chroma levels of 4:2:0 reach this sink, without
+/// transform bypass (an Extended-profile SPS has neither).
 impl LevelSink for SwitchingLevels {
-    fn luma_dc(&mut self, _levels: &Coeffs, _qp: (i32, &Scan)) {
+    fn set_bypass(&mut self, _bypass: bool) {}
+
+    fn luma_dc<const PLANE: usize>(&mut self, _levels: &Coeffs, _qp: (i32, &Scan)) {
         unreachable!("an Intra_16x16 macroblock reconstructed by §8.6");
     }
 
-    fn luma_4x4(
+    fn luma_4x4<const PLANE: usize>(
         &mut self,
         levels: &Coeffs,
         _kind: (bool, bool),
@@ -159,7 +200,13 @@ impl LevelSink for SwitchingLevels {
         Self::luma_4x4(self, levels, scan, block);
     }
 
-    fn luma_8x8(&mut self, _levels: &Coeffs, _intra: bool, _qp: (i32, &Scan), _b8: usize) {
+    fn luma_8x8<const PLANE: usize>(
+        &mut self,
+        _levels: &Coeffs,
+        _intra: bool,
+        _qp: (i32, &Scan),
+        _b8: usize,
+    ) {
         unreachable!("an 8x8 transform in an SP or SI slice");
     }
 
@@ -257,14 +304,10 @@ pub(super) fn decode<S: MbSyntax, C: Coefficient>(
             cur.qp = *qp as i8;
             cur.cbp = PCM_CBP;
             cur.total_coeff = [PCM_TOTAL_COEFF; 16];
-            cur.chroma_total_coeff = [[PCM_TOTAL_COEFF; 4]; 2];
+            cur.chroma_total_coeff = [[PCM_TOTAL_COEFF; 16]; 2];
             cur.dc_coded = [true; 3];
             cur.nonzero = u16::MAX;
-            let samples = if params.monochrome {
-                PCM_LUMA_SAMPLES
-            } else {
-                PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES
-            };
+            let samples = PCM_LUMA_SAMPLES + 2 * params.chroma.pcm_chroma_samples();
             syntax.pcm_samples(&mut extra.pcm[..samples], params.pcm_bits)?;
             syntax.no_qp_delta();
             Ok(())
@@ -275,7 +318,7 @@ pub(super) fn decode<S: MbSyntax, C: Coefficient>(
                 cur.transform_8x8 = syntax.transform_size_8x8_flag(nb)?;
             }
             intra_nxn_modes(syntax, params, nb, cur)?;
-            if !params.monochrome {
+            if params.chroma.has_chroma_blocks() {
                 cur.chroma_pred_mode = syntax.intra_chroma_pred_mode(nb)?;
             }
             coded_residual(
@@ -300,7 +343,7 @@ pub(super) fn decode<S: MbSyntax, C: Coefficient>(
                 0
             };
             cur.cbp = luma | (chroma as u8) << CBP_CHROMA_SHIFT;
-            if !params.monochrome {
+            if params.chroma.has_chroma_blocks() {
                 cur.chroma_pred_mode = syntax.intra_chroma_pred_mode(nb)?;
             }
             *qp = next_qp(*qp, syntax.mb_qp_delta()?, params.qp_bd_offset);
@@ -322,7 +365,7 @@ fn si_macroblock<S: MbSyntax>(
 ) -> Result<()> {
     cur.kind = MbKind::Si;
     intra_nxn_modes(syntax, params, nb, cur)?;
-    if !params.monochrome {
+    if params.chroma.has_chroma_blocks() {
         cur.chroma_pred_mode = syntax.intra_chroma_pred_mode(nb)?;
     }
     let levels = &mut extra.levels;
@@ -351,7 +394,7 @@ fn coded_residual<S: MbSyntax, K: LevelSink>(
     levels: &mut Coeffs,
     no_8x8: bool,
 ) -> Result<()> {
-    cur.cbp = syntax.coded_block_pattern(nb, cur, params.monochrome)?;
+    cur.cbp = syntax.coded_block_pattern(nb, cur)?;
     if !cur.is_intra() && cur.cbp_luma() != 0 && params.transform_8x8_mode && !no_8x8 {
         cur.transform_8x8 = syntax.transform_size_8x8_flag(nb)?;
     }
@@ -372,10 +415,37 @@ fn next_qp(pred: i32, delta: i32, qp_bd_offset: i32) -> i32 {
     (pred + delta + qp_bd_offset).rem_euclid(QP_RANGE + qp_bd_offset) - qp_bd_offset
 }
 
-/// `residual()` (§7.3.5.3) for 4:2:0 / 4:0:0, into `sink`.
+/// `residual()` (§7.3.5.3), into `sink`: the luma blocks, then the
+/// chroma DC and AC blocks (4:2:0, 4:2:2) or the Cb and Cr blocks coded
+/// like luma (4:4:4).
 fn residual_layer<S: MbSyntax, K: LevelSink>(
     syntax: &mut S,
     params: &SliceParams<'_>,
+    nb: &Neighbours<'_>,
+    cur: &mut MbState,
+    sink: &mut K,
+    coeffs: &mut Coeffs,
+) -> Result<()> {
+    // TransformBypassModeFlag (§8.5.15): QP′Y is 0.
+    sink.set_bypass(params.transform_bypass && i32::from(cur.qp) == -params.qp_bd_offset);
+    residual_luma::<S, K, 0>(syntax, nb, cur, sink, coeffs)?;
+    cur.nonzero = sink.luma_nonzero();
+    match params.chroma {
+        ChromaArray::Mono => Ok(()),
+        ChromaArray::Yuv444 => {
+            residual_luma::<S, K, 1>(syntax, nb, cur, sink, coeffs)?;
+            residual_luma::<S, K, 2>(syntax, nb, cur, sink, coeffs)
+        }
+        ChromaArray::Yuv420 | ChromaArray::Yuv422 => {
+            residual_chroma(syntax, params, nb, cur, sink, coeffs)
+        }
+    }
+}
+
+/// `residual_luma()` (§7.3.5.3.1) of component `PLANE`: luma, or Cb and
+/// Cr coded like luma (4:4:4).
+fn residual_luma<S: MbSyntax, K: LevelSink, const PLANE: usize>(
+    syntax: &mut S,
     nb: &Neighbours<'_>,
     cur: &mut MbState,
     sink: &mut K,
@@ -386,16 +456,16 @@ fn residual_layer<S: MbSyntax, K: LevelSink>(
     let i16x16 = matches!(cur.kind, MbKind::Intra16x16(_));
     let scan = Scan::of(cur.field);
     if i16x16 {
-        syntax.luma_dc(nb, cur, coeffs)?;
-        sink.luma_dc(coeffs, (qp, scan));
+        syntax.luma_dc::<PLANE>(nb, cur, coeffs)?;
+        sink.luma_dc::<PLANE>(coeffs, (qp, scan));
     }
     for b8 in 0..4 {
         if (cur.cbp_luma() >> b8) & 1 == 0 {
             continue;
         }
         if cur.transform_8x8 {
-            syntax.luma_8x8(nb, cur, b8, coeffs)?;
-            sink.luma_8x8(coeffs, intra, (qp, scan), b8);
+            syntax.luma_8x8::<PLANE>(nb, cur, b8, coeffs)?;
+            sink.luma_8x8::<PLANE>(coeffs, intra, (qp, scan), b8);
             continue;
         }
         for i in 0..4 {
@@ -405,22 +475,37 @@ fn residual_layer<S: MbSyntax, K: LevelSink>(
             } else {
                 Block4x4::Luma(x, y)
             };
-            syntax.block_4x4(nb, cur, block, coeffs)?;
-            sink.luma_4x4(coeffs, (i16x16, intra), (qp, scan), y * 4 + x);
+            syntax.block_4x4::<PLANE>(nb, cur, block, coeffs)?;
+            sink.luma_4x4::<PLANE>(coeffs, (i16x16, intra), (qp, scan), y * 4 + x);
         }
     }
-    cur.nonzero = sink.luma_nonzero();
-    if params.monochrome || cur.cbp_chroma() == 0 {
+    Ok(())
+}
+
+/// The chroma DC and AC blocks of 4:2:0 and 4:2:2 (§7.3.5.3: `4 *
+/// NumC8x8` blocks per component, in `chroma4x4BlkIdx` order).
+fn residual_chroma<S: MbSyntax, K: LevelSink>(
+    syntax: &mut S,
+    params: &SliceParams<'_>,
+    nb: &Neighbours<'_>,
+    cur: &mut MbState,
+    sink: &mut K,
+    coeffs: &mut Coeffs,
+) -> Result<()> {
+    if cur.cbp_chroma() == 0 {
         return Ok(());
     }
+    let intra = cur.is_intra();
+    let qp = i32::from(cur.qp);
+    let scan = Scan::of(cur.field);
     for comp in 0..2 {
         syntax.chroma_dc(nb, cur, comp, coeffs)?;
         sink.chroma_dc(coeffs, intra, qp, comp);
     }
     if cur.cbp_chroma() == 2 {
         for comp in 0..2 {
-            for b in 0..4 {
-                syntax.block_4x4(nb, cur, Block4x4::ChromaAc(comp, b), coeffs)?;
+            for b in 0..params.chroma.chroma_blocks() {
+                syntax.block_4x4::<0>(nb, cur, Block4x4::ChromaAc(comp, b), coeffs)?;
                 sink.chroma_ac(coeffs, intra, (qp, scan), (comp, b));
             }
         }

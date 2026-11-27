@@ -53,6 +53,18 @@ pub enum TimingSignal {
     Variable,
 }
 
+/// The rate a rate-controlled stream may be delivered at, for the level its
+/// headers signal (H.264 `MaxBR`/`MaxCPB` Table A-1, HEVC and VVC Table
+/// A.8/A.1, AV1 `MaxBitrate` Annex A.3): x264 raises its level for the VBV
+/// the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamRate {
+    /// The peak drain rate, bits per second.
+    pub peak_bps: u64,
+    /// The decoder buffer, bits.
+    pub buffer_bits: u64,
+}
+
 /// Informative signalling written to the sequence headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StreamSignal {

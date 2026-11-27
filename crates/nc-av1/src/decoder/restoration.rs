@@ -13,7 +13,7 @@
 //! width: superres reads them (§7.16), as libaom's frame buffers do.
 
 use nc_common::decode::DecodeError;
-use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView};
+use nc_common::{BitDepth, ChromaFormat, Picture, PlaneIndex, PlaneView};
 use nc_dsp::av1_restoration::{
     Av1LoopRestoration, Av1LrFilter, Av1LrScratch, Av1StripeBoundaries, Av1Superres,
     av1_lr_unit_count,
@@ -35,20 +35,27 @@ fn plane_view<T: Pixel>(
         .ok_or(DecodeError::Malformed("AV1 plane smaller than its frame"))
 }
 
-/// The superres resampling of each plane, when the frame uses it.
-fn superres(size: &FrameSize) -> Option<[Av1Superres; 3]> {
+/// The superres resampling of each plane of a frame in `format`, when the
+/// frame uses it (§7.16: each plane's own downscaled and upscaled widths).
+fn superres(size: &FrameSize, format: ChromaFormat) -> Option<[Av1Superres; 3]> {
     (size.width != size.upscaled_width).then(|| {
         PlaneIndex::ALL.map(|plane| {
-            let (down, _) = plane.size_in((size.width, size.height));
-            let (up, _) = plane.size_in((size.upscaled_width, size.height));
+            let (down, _) = format.plane_size(plane, (size.width, size.height));
+            let (up, _) = format.plane_size(plane, (size.upscaled_width, size.height));
             Av1Superres::new(down, up)
         })
     })
 }
 
 /// Width of the samples superres reads in each plane: `MiCols * 4` luma.
-fn readable_width(plane: PlaneIndex, size: &FrameSize) -> usize {
-    (size.mi_cols() * 4) >> u32::from(plane.is_subsampled())
+fn readable_width(plane: PlaneIndex, size: &FrameSize, format: ChromaFormat) -> usize {
+    (size.mi_cols() * 4) >> format.plane_subsampling(plane).0
+}
+
+/// Whether `plane` of `format` is subsampled vertically (the restoration
+/// stripes' chroma offset).
+fn vertically_subsampled(plane: PlaneIndex, format: ChromaFormat) -> bool {
+    format.plane_subsampling(plane).1 == 1
 }
 
 /// The deblocked rows around each internal stripe edge of each plane.
@@ -66,12 +73,13 @@ impl<T: Pixel> StripeBoundaries<T> {
         size: &FrameSize,
         depth: BitDepth,
     ) -> Result<Self, DecodeError> {
-        let scalers = superres(size);
+        let format = picture.chroma_format();
+        let scalers = superres(size, format);
         let mut planes = Vec::with_capacity(PlaneIndex::ALL.len());
         for (index, plane) in PlaneIndex::ALL.into_iter().enumerate() {
-            let (coded, rows) = plane.size_in((size.width, size.height));
+            let (coded, rows) = format.plane_size(plane, (size.width, size.height));
             let width = if scalers.is_some() {
-                readable_width(plane, size)
+                readable_width(plane, size, format)
             } else {
                 coded
             };
@@ -79,7 +87,7 @@ impl<T: Pixel> StripeBoundaries<T> {
             let scaler = scalers.as_ref().map(|s| &s[index]);
             planes.push(Av1StripeBoundaries::save_at(
                 &deblocked,
-                plane.is_subsampled(),
+                vertically_subsampled(plane, format),
                 scaler,
                 depth,
             ));
@@ -97,10 +105,12 @@ pub(crate) fn superres_upscale<T: Pixel>(
     upscaled: &mut Picture<T>,
     depth: BitDepth,
 ) -> Result<(), DecodeError> {
-    let scalers = superres(size).ok_or(DecodeError::Malformed("AV1 superres without scaling"))?;
+    let format = coded.chroma_format();
+    let scalers =
+        superres(size, format).ok_or(DecodeError::Malformed("AV1 superres without scaling"))?;
     for (plane, scaler) in PlaneIndex::ALL.into_iter().zip(&scalers) {
-        let (_, rows) = plane.size_in((size.width, size.height));
-        let source = plane_view(coded, plane, (readable_width(plane, size), rows))?;
+        let (_, rows) = format.plane_size(plane, (size.width, size.height));
+        let source = plane_view(coded, plane, (readable_width(plane, size, format), rows))?;
         let mut dst = upscaled
             .plane_mut(plane)
             .region_mut(0, 0, scaler.upscaled_width(), rows)
@@ -123,8 +133,9 @@ pub(crate) struct RestorationUnits {
 }
 
 impl RestorationUnits {
-    /// The unit grid of each plane of a frame of `size` with `lr_params`.
-    pub(crate) fn new(lr: &Restoration, size: &FrameSize) -> Self {
+    /// The unit grid of each plane of a frame of `size` in `format` with
+    /// `lr_params`.
+    pub(crate) fn new(lr: &Restoration, size: &FrameSize, format: ChromaFormat) -> Self {
         let mut units = Self {
             unit_size: lr.unit_size,
             columns: [0; 3],
@@ -136,7 +147,7 @@ impl RestorationUnits {
             if !units.enabled[index] {
                 continue;
             }
-            let (width, height) = plane.size_in((size.upscaled_width, size.height));
+            let (width, height) = format.plane_size(plane, (size.upscaled_width, size.height));
             units.columns[index] = av1_lr_unit_count(lr.unit_size[index], width);
             units.rows[index] = av1_lr_unit_count(lr.unit_size[index], height);
             units.filters[index] =
@@ -172,11 +183,12 @@ pub(crate) fn apply<T: Pixel>(
     units: &RestorationUnits,
     size: &FrameSize,
 ) -> Result<(), DecodeError> {
+    let format = frame.chroma_format();
     for (index, plane) in PlaneIndex::ALL.into_iter().enumerate() {
         if !units.enabled[index] {
             continue;
         }
-        let (width, height) = plane.size_in((size.upscaled_width, size.height));
+        let (width, height) = format.plane_size(plane, (size.upscaled_width, size.height));
         let mut view = frame
             .plane_mut(plane)
             .region_mut(0, 0, width, height)
@@ -190,7 +202,10 @@ pub(crate) fn apply<T: Pixel>(
         kernels.av1_loop_restoration(
             &restoration,
             &mut view,
-            (&boundaries.planes[index], plane.is_subsampled()),
+            (
+                &boundaries.planes[index],
+                vertically_subsampled(plane, format),
+            ),
             scratch,
         );
     }
@@ -239,7 +254,7 @@ mod tests {
         let original = textured(96, 80);
         let mut frame = original.clone();
         let boundaries = StripeBoundaries::save(&frame, &frame_size, BitDepth::EIGHT).unwrap();
-        let mut units = RestorationUnits::new(&lr, &frame_size);
+        let mut units = RestorationUnits::new(&lr, &frame_size, ChromaFormat::Yuv420);
         let (columns, rows) = units.grid(PlaneIndex::Y);
         for row in 0..rows {
             for column in 0..columns {

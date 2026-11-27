@@ -11,7 +11,7 @@ use nc_dsp::{Av1Coefficient, Dsp};
 
 use crate::bool_coder::{BitSink, BoolReader};
 use crate::probs::{BandCounts, Counts, EOB_MODEL_TOKEN, FrameContext};
-use crate::recorder::{TileRecorder, coef_slot};
+use crate::recorder::{TileRecorder, coef_model, coef_slot};
 use crate::tables::{self, BandProbs};
 use crate::transform::{TxSize, TxType};
 
@@ -206,6 +206,7 @@ fn scan_order(tx: TxSize, ty: TxType) -> ScanOrder {
     }
 }
 
+#[inline]
 fn band(tx: TxSize, c: usize) -> usize {
     usize::from(if tx == TxSize::Tx4 {
         tables::BANDS_4X4[c]
@@ -215,6 +216,7 @@ fn band(tx: TxSize, c: usize) -> usize {
 }
 
 /// `vp9_pt_energy_class` of a token magnitude.
+#[inline]
 fn energy(magnitude: i32) -> u8 {
     match magnitude {
         0 => 0,
@@ -227,6 +229,7 @@ fn energy(magnitude: i32) -> u8 {
 }
 
 /// Context of scan position `c` from its two already-coded neighbours.
+#[inline]
 fn context(cache: &[u8], c: usize, initial: usize, neighbors: &[u16]) -> usize {
     if c == 0 {
         initial
@@ -284,14 +287,28 @@ impl<'a> Coder<'a> {
     }
 }
 
-fn write_magnitude(emit: &mut impl FnMut(bool, u8), value: i32, pivot: u8) {
-    let token = BASE.iter().rposition(|&base| value >= base).unwrap();
+/// Emit a magnitude above one: its Pareto tail bits (each with the tail
+/// node it codes, `Some(0..PARETO_NODES)`; their probabilities follow the
+/// pivot) and its category's extra bits (`None`: fixed probabilities).
+#[inline]
+fn write_magnitude(emit: &mut impl FnMut(bool, u8, Option<usize>), value: i32, pivot: u8) {
+    let token = if value <= 4 {
+        (value - 2) as usize
+    } else if value < 11 {
+        if value < 7 { 3 } else { 4 }
+    } else if value < 35 {
+        if value < 19 { 5 } else { 6 }
+    } else if value < 67 {
+        7
+    } else {
+        8
+    };
     let (code, length) = TAIL_CODES[token];
     let probs = &tables::PARETO[usize::from(pivot) - 1];
     let mut node = 0;
     for shift in (0..length).rev() {
         let bit = (code >> shift) & 1 != 0;
-        emit(bit, probs[node]);
+        emit(bit, probs[node], Some(node));
         let child = TAIL_TREE[node][usize::from(bit)];
         if child < 0 {
             break;
@@ -303,6 +320,7 @@ fn write_magnitude(emit: &mut impl FnMut(bool, u8), value: i32, pivot: u8) {
         emit(
             (offset >> (EXTRA[token].len() - 1 - i)) & 1 != 0,
             probability,
+            None,
         );
     }
 }
@@ -338,6 +356,7 @@ fn read_magnitude(reader: &mut BoolReader<'_>, pivot: u8, categories: &Categorie
 /// Emit the token bits of raster-order `levels`, whose end of block is
 /// `eob` ([`end_of_block`]), with neighbour context `initial`, counting
 /// them when `counts` is given.
+#[inline]
 fn emit_tokens(
     levels: &[i32],
     eob: usize,
@@ -377,7 +396,17 @@ fn emit_tokens(
     }
 }
 
+/// One past the last nonzero level of `levels` in `order`'s scan (0: none).
+fn scanned_eob(levels: &[i32], order: &ScanOrder) -> usize {
+    order
+        .scan
+        .iter()
+        .rposition(|&p| levels[usize::from(p)] != 0)
+        .map_or(0, |c| c + 1)
+}
+
 /// [`emit_tokens`] with a token cache of `AREA` (the transform's area).
+#[inline]
 fn emit_tokens_sized<const AREA: usize>(
     levels: &[i32],
     eob: usize,
@@ -389,32 +418,25 @@ fn emit_tokens_sized<const AREA: usize>(
 ) {
     debug_assert_eq!(model.tx.area(), AREA);
     let order = scan_order(model.tx, model.ty);
-    debug_assert_eq!(
-        eob,
-        order
-            .scan
-            .iter()
-            .rposition(|&p| levels[usize::from(p)] != 0)
-            .map_or(0, |c| c + 1)
-    );
+    debug_assert_eq!(eob, scanned_eob(levels, &order));
+    let bands: &[u8] = if AREA == 16 {
+        &tables::BANDS_4X4
+    } else {
+        &tables::BANDS_8X8_PLUS
+    };
     let mut cache = [0u8; AREA];
     let mut needs_eob = true;
-    for (c, &position) in order.scan.iter().enumerate() {
-        let (b, ctx) = (
-            band(model.tx, c),
-            context(&cache, c, initial, order.neighbors),
-        );
+    for (c, &position) in order.scan[..eob].iter().enumerate() {
+        let b = usize::from(bands[c]);
+        let ctx = context(&cache, c, initial, order.neighbors);
         let probs = &probs[b][ctx];
         let mut count = counts.as_deref_mut().map(|counts| &mut counts[b][ctx]);
         if needs_eob {
             if let Some(count) = count.as_deref_mut() {
                 count.eob_branch += 1;
-                if c == eob {
-                    count.tokens[EOB_MODEL_TOKEN] += 1;
-                }
             }
             emit(
-                c < eob,
+                true,
                 probs[0],
                 Some(Node {
                     band: b,
@@ -422,9 +444,6 @@ fn emit_tokens_sized<const AREA: usize>(
                     index: 0,
                 }),
             );
-            if c == eob {
-                break;
-            }
         }
         let value = levels[usize::from(position)];
         let magnitude = value.abs();
@@ -443,24 +462,72 @@ fn emit_tokens_sized<const AREA: usize>(
         );
         needs_eob = magnitude != 0;
         if magnitude != 0 {
-            emit(magnitude > 1, probs[2], None);
+            emit(
+                magnitude > 1,
+                probs[2],
+                Some(Node {
+                    band: b,
+                    ctx,
+                    index: PIVOT_NODE,
+                }),
+            );
             if magnitude > 1 {
-                write_magnitude(&mut |bit, prob| emit(bit, prob, None), magnitude, probs[2]);
+                write_magnitude(
+                    &mut |bit, prob, tail| {
+                        emit(
+                            bit,
+                            prob,
+                            tail.map(|k| Node {
+                                band: b,
+                                ctx,
+                                index: FIRST_TAIL_NODE + k,
+                            }),
+                        );
+                    },
+                    magnitude,
+                    probs[2],
+                );
             }
             emit(value < 0, 128, None);
         }
         cache[usize::from(position)] = energy(magnitude);
     }
+    if eob < AREA {
+        debug_assert!(needs_eob);
+        let b = usize::from(bands[eob]);
+        let ctx = context(&cache, eob, initial, order.neighbors);
+        if let Some(counts) = counts {
+            let count = &mut counts[b][ctx];
+            count.eob_branch += 1;
+            count.tokens[EOB_MODEL_TOKEN] += 1;
+        }
+        emit(
+            false,
+            probs[b][ctx][0],
+            Some(Node {
+                band: b,
+                ctx,
+                index: 0,
+            }),
+        );
+    }
 }
 
-/// A node decision of one band/context model (nodes 0 and 1 may take
-/// forward probability updates).
+/// A decision of one band/context model: its nodes 0 and 1, the pivot
+/// node ([`PIVOT_NODE`]) and the Pareto tail nodes the pivot sets
+/// (`FIRST_TAIL_NODE + k`), all of whose probabilities forward updates
+/// may change.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Node {
     pub band: usize,
     pub ctx: usize,
     pub index: usize,
 }
+
+/// Node 2 of a model: "one" or more; it also selects the Pareto tail.
+pub(crate) const PIVOT_NODE: usize = 2;
+/// [`Node::index`] of tail node 0 (`tables::PARETO`'s first column).
+pub(crate) const FIRST_TAIL_NODE: usize = 3;
 
 /// Write (into the tile recorder) and count raster-order `levels`, whose
 /// end of block is `eob` ([`end_of_block`]), with neighbour context
@@ -481,10 +548,16 @@ pub(crate) fn write(
         Some(coder.counts),
         initial,
         &mut |bit, prob, node| match node {
-            Some(n) => recorder.write_coef(
+            Some(n) if n.index < PIVOT_NODE => recorder.write_coef(
                 bit,
                 prob,
                 coef_slot(model.tx, plane, reference, n.band, n.ctx, n.index),
+            ),
+            Some(n) => recorder.write_pivot(
+                bit,
+                prob,
+                coef_model(model.tx, plane, reference, n.band, n.ctx),
+                n.index - PIVOT_NODE,
             ),
             None => recorder.write(bit, prob),
         },
@@ -855,10 +928,8 @@ mod tests {
                                 eob
                             })
                             .collect();
-                        let packet = writer.finish(
-                            &crate::recorder::slot_probs(&context.coef),
-                            [0; crate::segmentation::TREE_PROBS],
-                        );
+                        let packet =
+                            writer.finish(&context.coef, [0; crate::segmentation::TREE_PROBS]);
                         let mut reader = BoolReader::new(&packet).unwrap();
                         let mut decoded = vec![0i16; area];
                         let mut cache = TokenCache::new();

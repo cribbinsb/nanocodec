@@ -41,6 +41,7 @@ mod key_oracle;
 mod label_columns;
 mod label_dump;
 mod md5;
+mod mux;
 #[cfg(test)]
 mod outcome_tests;
 mod params;
@@ -70,9 +71,9 @@ use nc_common::{Picture, yuv};
 
 use crate::input::{FrameReader, InputFormat};
 use nc_encoder::{
-    Codec, CodecBackend, EncodedFrame, Encoder, EncoderConfig, FrameRate, MICROS_PER_SECOND,
-    ParamOverrides, RateControlConfig, RateControlStats, ScalabilityMode, SessionSwitches,
-    StreamSignal, TimingSignal,
+    Codec, CodecBackend, EncodedFrame, Encoder, EncoderConfig, FrameRate, FrameType,
+    MICROS_PER_SECOND, ParamOverrides, RateControlConfig, RateControlStats, ScalabilityMode,
+    SessionSwitches, StreamSignal, TimingSignal,
 };
 use nc_h264::H264Backend;
 use nc_hevc::HevcBackend;
@@ -701,6 +702,30 @@ fn encoder_config(args: &EncodeArgs) -> EncoderConfig {
 fn encode(args: &EncodeArgs) -> Result<(), String> {
     let config = encoder_config(args);
     let path = args.output.as_ref().ok_or("missing --output")?;
+    if let Some(container) = mux::Container::for_path(path, args.codec)? {
+        let time_base = if args.timestamps.is_some() {
+            mux::TimeBase::MICROSECONDS
+        } else {
+            mux::TimeBase::frames(args.frame_rate)
+        };
+        let track = mux::Track {
+            codec: args.codec,
+            width: u32::try_from(args.width).map_err(|_| "width too large")?,
+            height: u32::try_from(args.height).map_err(|_| "height too large")?,
+            frame_rate: args.frame_rate,
+            colour: args.signal.colour,
+            time_base,
+        };
+        let sink = mux::Writer::create(path, container, track)?;
+        return match args.codec {
+            Codec::H264 => run::<H264Backend, _>(args, config, sink),
+            Codec::Hevc => run::<HevcBackend, _>(args, config, sink),
+            Codec::Vvc => run::<nc_vvc::VvcBackend, _>(args, config, sink),
+            Codec::Av1 => run::<Av1Backend, _>(args, config, sink),
+            Codec::Vp9 => run::<Vp9Backend, _>(args, config, sink),
+            Codec::Av2 => run::<Av2Backend, _>(args, config, sink),
+        };
+    }
     let output = stdio::create(path)?;
     match args.codec {
         Codec::Av1 | Codec::Vp9 | Codec::Av2 => {
@@ -791,18 +816,30 @@ fn write_rate_row(
 
 /// Where coded frames go: a container or a raw elementary stream.
 trait FrameSink {
-    /// Append a frame presented at `pts` time-base ticks.
-    fn write_frame(&mut self, data: &[u8], pts: u64) -> Result<(), String>;
-    fn finish(self) -> Result<(), String>;
+    /// Append a frame presented at `pts` time-base ticks (a key frame when
+    /// `key`).
+    fn write_frame(&mut self, data: &[u8], pts: u64, key: bool) -> Result<(), String>;
+    /// Complete the output; the last frame shows until `end_pts`.
+    fn finish(self, end_pts: u64) -> Result<(), String>;
 }
 
 impl<W: Write> FrameSink for IvfWriter<W> {
-    fn write_frame(&mut self, data: &[u8], pts: u64) -> Result<(), String> {
+    fn write_frame(&mut self, data: &[u8], pts: u64, _key: bool) -> Result<(), String> {
         IvfWriter::write_frame(self, data, pts).map_err(|e| e.to_string())
     }
 
-    fn finish(self) -> Result<(), String> {
+    fn finish(self, _end_pts: u64) -> Result<(), String> {
         IvfWriter::finish(self).map(drop).map_err(|e| e.to_string())
+    }
+}
+
+impl FrameSink for mux::Writer {
+    fn write_frame(&mut self, data: &[u8], pts: u64, key: bool) -> Result<(), String> {
+        mux::Writer::write_frame(self, data, pts, key)
+    }
+
+    fn finish(self, end_pts: u64) -> Result<(), String> {
+        mux::Writer::finish(self, end_pts)
     }
 }
 
@@ -810,11 +847,11 @@ impl<W: Write> FrameSink for IvfWriter<W> {
 struct AnnexB<W: Write>(W);
 
 impl<W: Write> FrameSink for AnnexB<W> {
-    fn write_frame(&mut self, data: &[u8], _pts: u64) -> Result<(), String> {
+    fn write_frame(&mut self, data: &[u8], _pts: u64, _key: bool) -> Result<(), String> {
         self.0.write_all(data).map_err(|e| e.to_string())
     }
 
-    fn finish(mut self) -> Result<(), String> {
+    fn finish(mut self, _end_pts: u64) -> Result<(), String> {
         self.0.flush().map_err(|e| e.to_string())
     }
 }
@@ -1083,6 +1120,7 @@ fn run<B: CodecBackend, S: FrameSink>(
     let mut telemetry = SpatialTelemetry::default();
     input.look_ahead_second(&mut encoder)?;
     let mut pending = PendingChanges::new(args);
+    let mut end_pts = 0;
     for index in 0..args.frames {
         pending.apply(index, &mut encoder, &mut input)?;
         if let Some(replay) = &args.qp_replay {
@@ -1104,8 +1142,9 @@ fn run<B: CodecBackend, S: FrameSink>(
         let uncoded = frame.metadata.dropped || frame.metadata.held;
         let lost = apply_simulated_loss(args.simulate_loss, &mut frame, &mut encoder, uncoded)?;
         let coded = !uncoded && !lost;
+        end_pts = next_pts(args, timestamp, pts);
         if coded {
-            sink.write_frame(&frame.data, pts)?;
+            sink.write_frame(&frame.data, pts, is_key(&frame))?;
             rtp::write(rtp_out.as_mut(), &frame, &encoder)?;
             telemetry.observe(&frame);
             recon_out.write_layers(index, &frame, &encoder)?;
@@ -1153,7 +1192,24 @@ fn run<B: CodecBackend, S: FrameSink>(
     if let Some(out) = timestamps_out {
         out.finish().map_err(|e| e.to_string())?;
     }
-    sink.finish()
+    sink.finish(end_pts)
+}
+
+/// Whether `frame` is a key frame (containers index them for seeking).
+fn is_key(frame: &EncodedFrame) -> bool {
+    frame.metadata.frame_type == FrameType::Key
+}
+
+/// When the frame presented at `pts` (captured at `timestamp`, when
+/// timed) stops showing, if nothing follows it: one nominal frame later.
+fn next_pts(args: &EncodeArgs, timestamp: Option<i64>, pts: u64) -> u64 {
+    match (&args.timestamps, timestamp) {
+        (Some(_), Some(_)) => {
+            pts + u64::from(args.frame_rate.den) * MICROS_PER_SECOND as u64
+                / u64::from(args.frame_rate.num.max(1))
+        }
+        _ => pts + 1,
+    }
 }
 
 /// `--filter-stats`: one JSON object per (tool, frame role) with the units

@@ -389,7 +389,7 @@ fn independent_cabac_decodes_decisions_bypass_and_termination() {
             encoder.encode_terminate(true);
             let bytes = encoder.finish();
             let mut decoder =
-                cabac::Cabac::new(&bytes, slice_type, init_idc, i32::from(qp)).unwrap();
+                cabac::Cabac::new(&bytes, (slice_type, init_idc), i32::from(qp), false).unwrap();
             for (context, value) in bins {
                 let actual = if let Some(context) = context {
                     decoder.decision(context)

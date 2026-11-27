@@ -180,6 +180,8 @@ pub(super) struct Core<T: Pixel> {
     /// Working memory of block decoding.
     scratch: Scratch<T>,
     colour: Option<ColourInfo>,
+    /// Whether the last activated SPS codes luma only (4:0:0).
+    monochrome: bool,
     dsp: Dsp,
     scans: Scans,
 }
@@ -215,6 +217,7 @@ impl<T: Pixel> Core<T> {
             filter: LoopFilter::default(),
             scratch: Scratch::default(),
             colour: None,
+            monochrome: false,
             dsp: Dsp::new(),
             scans: Scans::new(),
         }
@@ -232,6 +235,7 @@ impl<T: Pixel> Core<T> {
         next.sequence = std::mem::take(&mut previous.sequence);
         next.next_id = previous.next_id;
         next.colour = previous.colour;
+        next.monochrome = previous.monochrome;
         #[cfg(feature = "analysis")]
         {
             next.scratch.stats = previous.scratch.stats.take();
@@ -297,6 +301,13 @@ impl<T: Pixel> Core<T> {
     /// Colour signalling of the last activated SPS (`None` before the first).
     pub fn colour(&self) -> Option<ColourInfo> {
         self.colour
+    }
+
+    /// Whether the last activated SPS codes luma only (4:0:0): its
+    /// pictures' chroma planes are mid-grey, and the reference decoder
+    /// writes luma alone.
+    pub fn is_monochrome(&self) -> bool {
+        self.monochrome
     }
 
     /// Bit depths of the last decoded picture (`None` before the first).
@@ -404,8 +415,8 @@ impl<T: Pixel> Core<T> {
 
     /// Decode one NAL unit (without start code).
     /// # Errors
-    /// Rejects malformed or truncated data and syntax outside the Main and
-    /// Main 10 profiles; the decoder should then be reset before further
+    /// Rejects malformed or truncated data and syntax outside the
+    /// supported profiles; the decoder should then be reset before further
     /// use.
     pub fn push_nal(&mut self, nal: &[u8]) -> Result<(), DecodeError> {
         if nal.len() < 2 {
@@ -466,6 +477,10 @@ impl<T: Pixel> Core<T> {
     }
 
     /// Decode one slice segment NAL unit.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "header, picture start and the slice's whole decoding context in order"
+    )]
     fn slice_segment(
         &mut self,
         rbsp: &[u8],
@@ -565,6 +580,14 @@ impl<T: Pixel> Core<T> {
             dsp: &self.dsp,
             scans: &self.scans,
             depths: current.sps.depths.of::<T>(),
+            residual: ctu::ResidualPath::of(&current.sps, &current.pps),
+            transform_skip_log2: if current.pps.transform_skip {
+                current.pps.range.log2_max_transform_skip
+            } else {
+                0
+            },
+            wide: ctu::WideRange::of(&current.sps),
+            chroma: ctu::ChromaLayout::of(&current.sps),
         };
         ctu::decode_segment(
             &cx,
@@ -633,6 +656,7 @@ impl<T: Pixel> Core<T> {
         }
         let set = ids.indices(&self.dpb)?;
         self.colour = Some(sps.colour);
+        self.monochrome = sps.chroma.is_none();
         let layout = match &self.layout {
             Some((s, p, layout)) if Rc::ptr_eq(s, &sps) && Rc::ptr_eq(p, &pps) => layout.clone(),
             _ => {

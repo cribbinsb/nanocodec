@@ -1,7 +1,10 @@
 //! In-place CDEF of a picture, one band of rows at a time (AV1 §7.15, AVM
-//! `av2_cdef_frame` for 8-bit 4:2:0): the picture driver shared by the AV1
-//! decoder and any codec with AV1's 8x8 units, 64x64 strength sets and
-//! luma-derived directions (AV2).
+//! `av2_cdef_frame`): the picture driver shared by the AV1 decoder and any
+//! codec with AV1's 8x8 units, 64x64 strength sets and luma-derived
+//! directions (AV2). Chroma blocks are the unit's chroma in the picture's
+//! format: 4x4 (4:2:0), 4x8 (4:2:2, two 4x4 blocks: every output sample
+//! depends only on its own unfiltered neighbourhood, the direction and the
+//! strengths) or 8x8 (4:4:4, the luma block kernels).
 //!
 //! The structure is dav1d's `cdef_brow` (`src/cdef_apply_tmpl.c`,
 //! BSD-2-Clause, Copyright © 2018 `VideoLAN` and dav1d authors, Copyright ©
@@ -37,6 +40,60 @@ use nc_common::{BitDepth, Picture, PlaneIndex, PlaneViewMut, Sample};
 /// Side of a luma CDEF unit, and of its 4:2:0 chroma blocks.
 const LUMA_SIZE: usize = 8;
 const CHROMA_SIZE: usize = 4;
+/// `Cdef_Uv_Dir` (AV1 §7.15.1) of 4:2:2: the chroma direction of each luma
+/// direction, in a plane half as wide (the other formats keep it).
+const DIRECTION_422: [u8; 8] = [7, 0, 2, 4, 5, 6, 6, 6];
+
+/// How a unit's chroma is filtered, resolved once per band: the
+/// subsampling (log2 per axis), the side and count of the square blocks
+/// the unit's chroma is filtered as (one 4x4 in 4:2:0, two 4x4 stacked in
+/// 4:2:2, one 8x8 in 4:4:4) and the chroma direction of each luma one
+/// (`Cdef_Uv_Dir`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChromaLayout {
+    sub_x: usize,
+    sub_y: usize,
+    side: usize,
+    blocks: usize,
+    directions: [u8; 8],
+}
+
+impl ChromaLayout {
+    fn of<T: Sample>(picture: &Picture<T>) -> Self {
+        let (sub_x, sub_y) = picture.chroma_format().subsampling();
+        let side = LUMA_SIZE >> sub_x;
+        Self {
+            sub_x,
+            sub_y,
+            side,
+            blocks: (LUMA_SIZE >> sub_y) / side,
+            directions: if (sub_x, sub_y) == (1, 0) {
+                DIRECTION_422
+            } else {
+                core::array::from_fn(|d| d as u8)
+            },
+        }
+    }
+    /// Chroma rows per luma unit.
+    fn rows(self) -> usize {
+        LUMA_SIZE >> self.sub_y
+    }
+    /// 4:2:0: one 4x4 block per plane, the format of every encoder,
+    /// filtered inline; the others go out of line.
+    fn is_420(self) -> bool {
+        (self.sub_x, self.sub_y) == (1, 1)
+    }
+    /// The chroma direction of luma direction `dir`.
+    fn direction(self, dir: u8) -> u8 {
+        self.directions[usize::from(dir)]
+    }
+    /// The origin of the `index`th chroma block of the luma unit at (`x`,
+    /// `y`).
+    fn block(self, (x, y): (usize, usize), index: usize) -> (usize, usize) {
+        (x >> self.sub_x, (y >> self.sub_y) + index * self.side)
+    }
+}
+
 /// Largest primary strength.
 const MAX_PRIMARY: u8 = 15;
 
@@ -207,6 +264,7 @@ fn prepare_band_lines<T: Sample>(
     sets: &CdefSets,
 ) -> bool {
     let filters_chroma = sets.sets().iter().any(|set| set.filters_chroma());
+    let layout = ChromaLayout::of(picture);
     let [luma_lines, u_lines, v_lines] = &mut lines.planes;
     let luma_view = picture.plane(PlaneIndex::Y).view();
     let u_view = picture.plane(PlaneIndex::U).view();
@@ -228,7 +286,7 @@ fn prepare_band_lines<T: Sample>(
     if units.is_empty() || !sets.filters() {
         luma_lines.drop_rows_before(rows.start.saturating_sub(CDEF_PADDING));
         if filters_chroma {
-            let c_drop = (rows.start / 2).saturating_sub(CDEF_PADDING);
+            let c_drop = (rows.start >> layout.sub_y).saturating_sub(CDEF_PADDING);
             u_lines.drop_rows_before(c_drop);
             v_lines.drop_rows_before(c_drop);
         }
@@ -252,8 +310,12 @@ fn prepare_band_lines<T: Sample>(
     luma_lines.drop_rows_before(first_y.saturating_sub(CDEF_PADDING));
     luma_lines.fill_rows_to(&luma_view, band_fill_end(last_y + LUMA_SIZE, rows.end));
     if filters_chroma {
-        let c_drop = (first_y / 2).saturating_sub(CDEF_PADDING);
-        let c_end = band_fill_end(last_y / 2 + CHROMA_SIZE, rows.end.div_ceil(2));
+        let sub_y = layout.sub_y;
+        let c_drop = (first_y >> sub_y).saturating_sub(CDEF_PADDING);
+        let c_end = band_fill_end(
+            (last_y >> sub_y) + layout.rows(),
+            (rows.end + sub_y) >> sub_y,
+        );
         for (source, view) in [(&mut *u_lines, &u_view), (&mut *v_lines, &v_view)] {
             source.drop_rows_before(c_drop);
             source.fill_rows_to(view, c_end);
@@ -284,6 +346,7 @@ impl Dsp {
         if !prepare_band_lines(lines, picture, &rows, units, sets) {
             return;
         }
+        let layout = ChromaLayout::of(picture);
         let [luma_plane, u_plane, v_plane] = picture.planes_mut();
         let [luma_lines, u_lines, v_lines] = &lines.planes;
         let mut luma = luma_plane.view_mut();
@@ -323,12 +386,29 @@ impl Dsp {
             }
             if set.filters_chroma() {
                 let dir = if set.chroma_primary == 0 { 0 } else { dir };
-                self.cdef_filter_chroma(
-                    &sets.chroma[index].with_dir(dir),
-                    [u_lines, v_lines],
-                    (unit.x / 2, unit.y / 2),
-                    &mut chroma,
-                );
+                if layout.is_420() {
+                    self.cdef_filter_chroma(
+                        &sets.chroma[index].with_dir(dir),
+                        [u_lines, v_lines],
+                        (unit.x / 2, unit.y / 2),
+                        &mut chroma,
+                    );
+                } else {
+                    // `Cdef_Uv_Dir` maps the direction a primary strength uses.
+                    let dir = if set.chroma_primary == 0 {
+                        0
+                    } else {
+                        layout.direction(dir)
+                    };
+                    let args = sets.chroma[index].with_dir(dir);
+                    self.cdef_filter_chroma_blocks(
+                        layout,
+                        &args,
+                        [u_lines, v_lines],
+                        (unit.x, unit.y),
+                        &mut chroma,
+                    );
+                }
             }
         }
     }
@@ -347,8 +427,35 @@ impl Dsp {
         unsafe { (self.cdef_kernels().find_dir)(&lines.samples()[start..], lines.width()) }
     }
 
+    /// Filter the chroma of the luma unit at (`x`, `y`) in a format other
+    /// than 4:2:0: `layout`'s blocks of U and V.
+    #[inline(never)]
+    fn cdef_filter_chroma_blocks(
+        &self,
+        layout: ChromaLayout,
+        args: &CdefArgs,
+        lines: [&CdefSource; 2],
+        unit: (usize, usize),
+        planes: &mut [PlaneViewMut<'_>; 2],
+    ) {
+        for block in 0..layout.blocks {
+            let origin = layout.block(unit, block);
+            if layout.side == CHROMA_SIZE {
+                self.cdef_filter_chroma(args, lines, origin, planes);
+            } else {
+                for (source, plane) in lines.into_iter().zip(planes.iter_mut()) {
+                    self.cdef_filter_block_at(layout.side, source, origin, args, plane);
+                }
+            }
+        }
+    }
+
     /// Filter the U and V blocks at (`x`, `y`) of `planes`, two at a time
     /// where the ISA can and the blocks are interior.
+    // Inlined into the band loop, as it was with one caller (the 4:2:0
+    // path's instruction count is the measure, docs/handoff/chroma-formats.md).
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     fn cdef_filter_chroma(
         &self,
         args: &CdefArgs,
@@ -420,6 +527,7 @@ impl Dsp {
         if !prepare_band_lines(lines, picture, &rows, units, sets) {
             return;
         }
+        let layout = ChromaLayout::of(picture);
         let [luma_plane, u_plane, v_plane] = picture.planes_mut();
         let [luma_lines, u_lines, v_lines] = &lines.planes;
         let mut luma = luma_plane.view_mut();
@@ -466,13 +574,31 @@ impl Dsp {
             }
             if set.filters_chroma() {
                 let dir = if set.chroma_primary == 0 { 0 } else { dir };
-                filter_chroma_u16(
-                    fns,
-                    &chroma_args[index].with_dir(dir),
-                    [u_lines, v_lines],
-                    (unit.x / 2, unit.y / 2),
-                    &mut chroma,
-                );
+                if layout.is_420() {
+                    filter_chroma_u16(
+                        fns,
+                        &chroma_args[index].with_dir(dir),
+                        [u_lines, v_lines],
+                        (unit.x / 2, unit.y / 2),
+                        &mut chroma,
+                    );
+                } else {
+                    // `Cdef_Uv_Dir` maps the direction a primary strength uses.
+                    let dir = if set.chroma_primary == 0 {
+                        0
+                    } else {
+                        layout.direction(dir)
+                    };
+                    let args = chroma_args[index].with_dir(dir);
+                    filter_chroma_blocks_u16(
+                        fns,
+                        layout,
+                        &args,
+                        [u_lines, v_lines],
+                        (unit.x, unit.y),
+                        &mut chroma,
+                    );
+                }
             }
         }
     }
@@ -549,6 +675,28 @@ fn cdef_adjust_strength_wide(strength: u16, var: i32) -> u16 {
     match contrast_slot(var) {
         0 => 0,
         slot => adjusted_from_class(strength, (slot - 1) as u32),
+    }
+}
+
+/// [`Dsp::cdef_filter_chroma_blocks`] of `u16` samples.
+#[inline(never)]
+fn filter_chroma_blocks_u16(
+    fns: &super::HighCdefFns,
+    layout: ChromaLayout,
+    args: &CdefArgs,
+    lines: [&CdefSource<u16>; 2],
+    unit: (usize, usize),
+    planes: &mut [PlaneViewMut<'_, u16>; 2],
+) {
+    for block in 0..layout.blocks {
+        let origin = layout.block(unit, block);
+        if layout.side == CHROMA_SIZE {
+            filter_chroma_u16(fns, args, lines, origin, planes);
+        } else {
+            for (source, plane) in lines.into_iter().zip(planes.iter_mut()) {
+                filter_block_u16(fns, layout.side, source, origin, args, plane);
+            }
+        }
     }
 }
 

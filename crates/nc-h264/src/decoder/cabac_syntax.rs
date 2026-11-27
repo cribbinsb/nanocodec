@@ -1,10 +1,11 @@
 //! CABAC binarisations and context selection of the slice data and
-//! macroblock syntax elements (§9.3.2, §9.3.3.1) for frame-coded 4:2:0 and
-//! 4:0:0 I, P and B slices.
+//! macroblock syntax elements (§9.3.2, §9.3.3.1) for frame-coded I, P and B
+//! slices of every chroma format.
 
 use core::marker::PhantomData;
 
 use super::cabac::Cabac;
+use super::chroma::ChromaArray;
 use super::mbstate::{MbKind, MbState, Neighbours};
 use super::slice::SliceType;
 use super::syntax::{Block4x4, Coeffs, MbSyntax};
@@ -14,6 +15,7 @@ use crate::tables::{LAST_CTX_INC_8X8, SIGNIFICANT_CTX_INC_8X8, SIGNIFICANT_CTX_I
 // ctxIdxOffset of each syntax element (Table 9-34, frame coded).
 const MB_TYPE_I: usize = 3;
 const MB_SKIP_P: usize = 11;
+const MB_FIELD_DECODING: usize = 70;
 const MB_TYPE_P_PREFIX: usize = 14;
 const MB_TYPE_P_SUFFIX: usize = 17;
 const SUB_MB_TYPE_P: usize = 21;
@@ -29,19 +31,7 @@ const PREV_INTRA_PRED_MODE: usize = 68;
 const REM_INTRA_PRED_MODE: usize = 69;
 const CBP_LUMA: usize = 73;
 const CBP_CHROMA: usize = 77;
-const CODED_BLOCK_FLAG: usize = 85;
-const SIGNIFICANT: usize = 105;
-const LAST_SIGNIFICANT: usize = 166;
-/// The significance contexts of field macroblocks (Table 9-34).
-const SIGNIFICANT_FIELD: usize = 277;
-const LAST_SIGNIFICANT_FIELD: usize = 338;
-const ABS_LEVEL: usize = 227;
 const TRANSFORM_8X8: usize = 399;
-const SIGNIFICANT_8X8: usize = 402;
-const LAST_SIGNIFICANT_8X8: usize = 417;
-const SIGNIFICANT_8X8_FIELD: usize = 436;
-const LAST_SIGNIFICANT_8X8_FIELD: usize = 451;
-const ABS_LEVEL_8X8: usize = 426;
 
 /// `mb_type` values (Table 7-11) the binarisation produces directly.
 const MB_TYPE_I_NXN: u32 = 0;
@@ -69,8 +59,8 @@ const SUB_B_L1_4X4: u8 = 11;
 const REM_INTRA_PRED_MODE_BITS: u32 = 3;
 /// `intra_chroma_pred_mode` is truncated unary with `cMax` 3.
 const MAX_CHROMA_PRED_MODE: u8 = 3;
-/// Mapped `mb_qp_delta` limit: values −32..=31 (§7.4.5 at 10 bits).
-const MAX_MAPPED_QP_DELTA: u32 = 64;
+/// Mapped `mb_qp_delta` limit: values −44..=43 (§7.4.5 at 14 bits).
+const MAX_MAPPED_QP_DELTA: u32 = 88;
 /// `mvd` prefix length (UEG3, `uCoff` 9) and suffix order.
 const MVD_PREFIX_MAX: u32 = 9;
 const MVD_SUFFIX_ORDER: u32 = 3;
@@ -78,14 +68,15 @@ const MVD_SUFFIX_ORDER: u32 = 3;
 const LEVEL_PREFIX_MAX: u32 = 14;
 /// Largest `|mvd|` of a conforming stream (§7.4.5.1, level limits).
 const MAX_ABS_MVD: u32 = 1 << 15;
-/// Largest coefficient magnitude of 10-bit video (§7.4.5.3.3 bound,
+/// Largest coefficient magnitude of 14-bit video (§7.4.5.3.3 bound,
 /// 2^(7 + `bitDepth`)).
-const MAX_ABS_LEVEL: u32 = 1 << 17;
+const MAX_ABS_LEVEL: u32 = 1 << 21;
 /// `absMvdComp` sums below 3 select `ctxIdxInc` 0, above 32 `ctxIdxInc` 2.
 const MVD_SUM_LOW: u32 = 3;
 const MVD_SUM_HIGH: u32 = 32;
 
-/// `ctxBlockCat` (Table 9-42) and its context offsets (Table 9-40).
+/// `ctxBlockCat` (Table 9-42): luma, 4:2:0 / 4:2:2 chroma, and the Cb and
+/// Cr blocks of 4:4:4 coded like luma.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cat {
     LumaDc = 0,
@@ -93,23 +84,86 @@ enum Cat {
     Luma4x4 = 2,
     ChromaDc = 3,
     ChromaAc = 4,
+    Luma8x8 = 5,
+    CbDc = 6,
+    CbAc = 7,
+    Cb4x4 = 8,
+    Cb8x8 = 9,
+    CrDc = 10,
+    CrAc = 11,
+    Cr4x4 = 12,
+    Cr8x8 = 13,
 }
 
+/// First context (`ctxIdxOffset + ctxIdxBlockCatOffset`, Tables 9-34 and
+/// 9-40) of each `ctxBlockCat`: `coded_block_flag`, `significant_coeff_flag`
+/// and `last_significant_coeff_flag` of frame and of field macroblocks,
+/// and `coeff_abs_level_minus1`.
+const CODED_BLOCK_FLAG: [usize; 14] = [
+    85, 89, 93, 97, 101, 1012, 460, 464, 468, 1016, 472, 476, 480, 1020,
+];
+const SIGNIFICANT: [usize; 14] = [
+    105, 120, 134, 149, 152, 402, 484, 499, 513, 660, 528, 543, 557, 718,
+];
+const LAST_SIGNIFICANT: [usize; 14] = [
+    166, 181, 195, 210, 213, 417, 572, 587, 601, 690, 616, 631, 645, 748,
+];
+const SIGNIFICANT_FIELD: [usize; 14] = [
+    277, 292, 306, 321, 324, 436, 776, 791, 805, 675, 820, 835, 849, 733,
+];
+const LAST_SIGNIFICANT_FIELD: [usize; 14] = [
+    338, 353, 367, 382, 385, 451, 864, 879, 893, 699, 908, 923, 937, 757,
+];
+const ABS_LEVEL: [usize; 14] = [
+    227, 237, 247, 257, 266, 426, 952, 962, 972, 708, 982, 992, 1002, 766,
+];
+
 impl Cat {
-    fn coded_block_flag_offset(self) -> usize {
-        4 * self as usize
+    /// The categories of component `plane` (luma, or Cb and Cr in 4:4:4):
+    /// its DC, AC, 4x4 and 8x8 blocks.
+    const PLANES: [[Self; 4]; 3] = [
+        [Self::LumaDc, Self::LumaAc, Self::Luma4x4, Self::Luma8x8],
+        [Self::CbDc, Self::CbAc, Self::Cb4x4, Self::Cb8x8],
+        [Self::CrDc, Self::CrAc, Self::Cr4x4, Self::Cr8x8],
+    ];
+
+    fn dc(plane: usize) -> Self {
+        Self::PLANES[plane][0]
     }
-    fn significance_offset(self) -> usize {
-        [0, 15, 29, 44, 47][self as usize]
+    fn ac(plane: usize) -> Self {
+        Self::PLANES[plane][1]
     }
-    fn level_offset(self) -> usize {
-        [0, 10, 20, 30, 39][self as usize]
+    fn block_4x4(plane: usize) -> Self {
+        Self::PLANES[plane][2]
     }
-    fn coefficients(self) -> usize {
+    fn block_8x8(plane: usize) -> Self {
+        Self::PLANES[plane][3]
+    }
+    fn coded_block_flag(self) -> usize {
+        CODED_BLOCK_FLAG[self as usize]
+    }
+    /// The significance map's first contexts of a frame or `field`
+    /// macroblock: `significant_coeff_flag`, `last_significant_coeff_flag`.
+    fn significance(self, field: bool) -> (usize, usize) {
+        if field {
+            (
+                SIGNIFICANT_FIELD[self as usize],
+                LAST_SIGNIFICANT_FIELD[self as usize],
+            )
+        } else {
+            (SIGNIFICANT[self as usize], LAST_SIGNIFICANT[self as usize])
+        }
+    }
+    fn level(self) -> usize {
+        ABS_LEVEL[self as usize]
+    }
+    /// Coefficients of a 4x4-or-smaller block (`chroma_dc`: of a chroma DC
+    /// block, `4 * NumC8x8`).
+    fn coefficients(self, chroma_dc: usize) -> usize {
         match self {
-            Self::LumaDc | Self::Luma4x4 => 16,
-            Self::LumaAc | Self::ChromaAc => 15,
-            Self::ChromaDc => 4,
+            Self::LumaAc | Self::ChromaAc | Self::CbAc | Self::CrAc => 15,
+            Self::ChromaDc => chroma_dc,
+            _ => 16,
         }
     }
 }
@@ -124,6 +178,8 @@ pub(super) struct CabacSyntax<'a, T = u8> {
     /// Whether the previous macroblock in decoding order had a non-zero
     /// `mb_qp_delta` (§9.3.3.1.1.5).
     prev_qp_delta_nonzero: bool,
+    /// `ChromaArrayType` of the slice.
+    chroma: ChromaArray,
     sample: PhantomData<T>,
 }
 
@@ -133,10 +189,11 @@ fn cond(n: Option<&MbState>, flag: impl Fn(&MbState) -> bool) -> usize {
 }
 
 impl<'a, T> CabacSyntax<'a, T> {
-    pub fn new(engine: Cabac<'a>) -> Self {
+    pub fn new(engine: Cabac<'a>, chroma: ChromaArray) -> Self {
         Self {
             engine,
             prev_qp_delta_nonzero: false,
+            chroma,
             sample: PhantomData,
         }
     }
@@ -151,6 +208,14 @@ impl<'a, T> CabacSyntax<'a, T> {
         };
         self.engine
             .decision(offset + cond(nb.a, not_skip) + cond(nb.b, not_skip))
+    }
+
+    /// `mb_field_decoding_flag` of an MBAFF pair whose left and above
+    /// pairs are (or are not, or are unavailable) field pairs (`ctxIdxInc`
+    /// §9.3.3.1.1.2).
+    pub fn mb_field_decoding_flag(&mut self, left_field: bool, above_field: bool) -> bool {
+        self.engine
+            .decision(MB_FIELD_DECODING + usize::from(left_field) + usize::from(above_field))
     }
 
     /// `end_of_slice_flag`.
@@ -252,29 +317,23 @@ impl<'a, T> CabacSyntax<'a, T> {
         out: &mut Coeffs,
     ) -> Result<bool> {
         out.count = 0;
-        if !self
-            .engine
-            .decision(CODED_BLOCK_FLAG + cat.coded_block_flag_offset() + cbf_inc)
-        {
+        if !self.engine.decision(cat.coded_block_flag() + cbf_inc) {
             return Ok(false);
         }
-        let (sig, last) = if field {
-            (SIGNIFICANT_FIELD, LAST_SIGNIFICANT_FIELD)
-        } else {
-            (SIGNIFICANT, LAST_SIGNIFICANT)
-        };
-        let sig = sig + cat.significance_offset();
-        let last = last + cat.significance_offset();
+        let (sig, last) = cat.significance(field);
         let chroma_dc = cat == Cat::ChromaDc;
         // ctxIdxInc of chroma DC significance is Min(i / NumC8x8, 2) (eq. 9-23);
         // a separate instance keeps that choice out of the scan loop.
         if chroma_dc {
-            let inc = |i: usize| i.min(2);
-            self.significance_map(cat.coefficients(), out, |i| sig + inc(i), |i| last + inc(i));
+            let coefficients = self.chroma.chroma_blocks();
+            // `NumC8x8` is 1 (4:2:0) or 2 (4:2:2): a shift by 0 or 1.
+            let shift = usize::from(self.chroma == ChromaArray::Yuv422);
+            let inc = |i: usize| (i >> shift).min(2);
+            self.significance_map(coefficients, out, |i| sig + inc(i), |i| last + inc(i));
         } else {
-            self.significance_map(cat.coefficients(), out, |i| sig + i, |i| last + i);
+            self.significance_map(cat.coefficients(0), out, |i| sig + i, |i| last + i);
         }
-        self.levels(ABS_LEVEL + cat.level_offset(), chroma_dc, out)?;
+        self.levels(cat.level(), chroma_dc, out)?;
         Ok(true)
     }
 
@@ -327,6 +386,69 @@ impl<'a, T> CabacSyntax<'a, T> {
         }
         Ok(())
     }
+}
+
+/// `absMvdComp` of component `comp` of list `list` of a neighbouring
+/// block (§9.3.3.1.1.7): intra, skipped and direct blocks and those of the
+/// other list keep a zero record.
+#[inline]
+fn abs_mvd(n: Option<(&MbState, usize, usize)>, list: usize, comp: usize) -> u32 {
+    n.map_or(0, |(m, x, y)| {
+        if m.is_skip() {
+            0
+        } else {
+            u32::from(m.abs_mvd[list][y * 4 + x][comp])
+        }
+    })
+}
+
+/// The `absMvdComp` sums of an MBAFF macroblock's neighbours `left` and
+/// `above`: a vertical difference of a neighbour coded the other way is
+/// scaled to the current macroblock's rows (§9.3.3.1.1.7).
+#[inline(never)]
+fn pair_mvd_sums(
+    nb: &Neighbours<'_>,
+    neighbours: [Option<(&MbState, usize, usize)>; 2],
+    list: usize,
+) -> [u32; 2] {
+    [0, 1].map(|comp| {
+        neighbours
+            .iter()
+            .map(|&n| {
+                let value = abs_mvd(n, list, comp);
+                match (comp, n.and_then(|(m, _, _)| nb.coded_otherwise(m))) {
+                    (1, Some(true)) => value / 2,
+                    (1, Some(false)) => value * 2,
+                    _ => value,
+                }
+            })
+            .sum()
+    })
+}
+
+/// `ctxIdxInc` of the `coded_block_flag` of 8x8 block `b8` of component
+/// `plane` (`ctxBlockCat` 5, 9, 13; §9.3.3.1.1.9): a neighbouring 8x8 block
+/// counts only in a macroblock with the 8x8 transform and its bit of
+/// `CodedBlockPatternLuma` set (its flag is then in its four 4x4 entries);
+/// a neighbour inside the current macroblock is one of its own 8x8 blocks.
+fn coded_8x8_inc<const PLANE: usize>(nb: &Neighbours<'_>, cur: &MbState, b8: usize) -> usize {
+    let intra = cur.is_intra();
+    let flag = |m: &MbState, b8: usize| {
+        let first = (b8 / 2) * 8 + (b8 % 2) * 2;
+        m.transform_8x8 && (m.cbp_luma() >> b8) & 1 != 0 && m.plane_total_coeff(PLANE)[first] != 0
+    };
+    let (x8, y8) = (b8 % 2, b8 / 2);
+    let left = if x8 == 1 {
+        usize::from(flag(cur, b8 - 1))
+    } else {
+        cbf_cond(nb.a, intra, |m| flag(m, b8 + 1))
+    };
+    let above = if y8 == 1 {
+        usize::from(flag(cur, b8 - 2))
+    } else {
+        cbf_cond(nb.b, intra, |m| flag(m, b8 + 2))
+    };
+    left + 2 * above
 }
 
 /// `coded_block_flag` `condTermFlagN` of a neighbouring block (§9.3.3.1.1.9):
@@ -444,11 +566,14 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
         num_ref_idx_active: usize,
     ) -> Result<u8> {
         // condTermFlagN (§9.3.3.1.1.6): 0 for skipped, intra and
-        // direct-predicted partitions and those not using the list (-1).
+        // direct-predicted partitions and those not using the list (-1); a
+        // frame macroblock of an MBAFF frame counts a field neighbour's
+        // index halved (above 1).
         let positive = |n: Option<(&MbState, usize, usize)>| {
             usize::from(n.is_some_and(|(m, x, y)| {
                 let b8 = (y / 2) * 2 + x / 2;
-                !m.is_skip() && (m.direct >> b8) & 1 == 0 && m.ref_idx[list][b8] > 0
+                let least = i8::from(nb.coded_otherwise(m) == Some(false));
+                !m.is_skip() && (m.direct >> b8) & 1 == 0 && m.ref_idx[list][b8] > least
             }))
         };
         let inc = positive(nb.left(cur, x4, y4)) + 2 * positive(nb.above(cur, x4, y4));
@@ -472,21 +597,17 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
         x4: usize,
         y4: usize,
     ) -> Result<[i32; 2]> {
-        // Intra, skipped and direct blocks and those of the other list keep
-        // a zero record.
-        let abs = |n: Option<(&MbState, usize, usize)>, comp: usize| {
-            n.map_or(0, |(m, x, y)| {
-                if m.is_skip() {
-                    0
-                } else {
-                    u32::from(m.abs_mvd[list][y * 4 + x][comp])
-                }
-            })
-        };
         let (left, above) = (nb.left(cur, x4, y4), nb.above(cur, x4, y4));
+        let sums = match nb.pair {
+            None => [
+                abs_mvd(left, list, 0) + abs_mvd(above, list, 0),
+                abs_mvd(left, list, 1) + abs_mvd(above, list, 1),
+            ],
+            Some(_) => pair_mvd_sums(nb, [left, above], list),
+        };
         let mut mvd = [0i32; 2];
         for (comp, value) in mvd.iter_mut().enumerate() {
-            let sum = abs(left, comp) + abs(above, comp);
+            let sum = sums[comp];
             let first_inc = if sum < MVD_SUM_LOW {
                 0
             } else if sum > MVD_SUM_HIGH {
@@ -521,36 +642,34 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
         Ok(mvd)
     }
 
-    fn coded_block_pattern(
-        &mut self,
-        nb: &Neighbours<'_>,
-        _cur: &MbState,
-        monochrome: bool,
-    ) -> Result<u8> {
-        let mut luma = 0u8;
-        for b8 in 0..4 {
-            let (x8, y8) = (b8 % 2, b8 / 2);
-            // condTermFlagN is 1 when the neighbouring 8x8 block is
-            // uncoded (a skipped macroblock's are), 0 when it is coded or
-            // its macroblock is unavailable (§9.3.3.1.1.4).
-            let uncoded = |m: Option<&MbState>, bit: usize| {
-                usize::from(m.is_some_and(|m| m.is_skip() || (m.cbp_luma() >> bit) & 1 == 0))
-            };
-            let a = if x8 == 1 {
-                usize::from((luma >> (b8 - 1)) & 1 == 0)
-            } else {
-                uncoded(nb.a, b8 + 1)
-            };
-            let b = if y8 == 1 {
-                usize::from((luma >> (b8 - 2)) & 1 == 0)
-            } else {
-                uncoded(nb.b, b8 + 2)
-            };
-            if self.engine.decision(CBP_LUMA + a + 2 * b) {
-                luma |= 1 << b8;
-            }
-        }
-        if monochrome {
+    fn coded_block_pattern(&mut self, nb: &Neighbours<'_>, _cur: &MbState) -> Result<u8> {
+        // condTermFlagN is 1 when the neighbouring 8x8 block is uncoded (a
+        // skipped macroblock's are), 0 when it is coded or its macroblock
+        // is unavailable (§9.3.3.1.1.4).
+        let uncoded = |m: Option<&MbState>, bit: usize| {
+            usize::from(m.is_some_and(|m| m.is_skip() || (m.cbp_luma() >> bit) & 1 == 0))
+        };
+        // The left 8x8 blocks of the two rows (in MBAFF frames, Table 6-4's).
+        let left = match nb.pair {
+            None => [uncoded(nb.a, 1), uncoded(nb.a, 3)],
+            Some(_) => [0, 1].map(|y8| {
+                nb.left_row_8x8(y8)
+                    .map_or(0, |(m, row)| uncoded(Some(m), 2 * row + 1))
+            }),
+        };
+        let above = [uncoded(nb.b, 2), uncoded(nb.b, 3)];
+        // The four bins in order, each 8x8 block's left and upper neighbour
+        // inside the macroblock read from the bins before it (written out:
+        // as a loop the bins stayed rolled, 0.7 % of all instructions).
+        let own = |luma: u8, b8: usize| usize::from((luma >> b8) & 1 == 0);
+        let mut luma = u8::from(self.engine.decision(CBP_LUMA + left[0] + 2 * above[0]));
+        luma |= u8::from(self.engine.decision(CBP_LUMA + own(luma, 0) + 2 * above[1])) << 1;
+        luma |= u8::from(self.engine.decision(CBP_LUMA + left[1] + 2 * own(luma, 0))) << 2;
+        luma |= u8::from(
+            self.engine
+                .decision(CBP_LUMA + own(luma, 2) + 2 * own(luma, 1)),
+        ) << 3;
+        if !self.chroma.has_chroma_blocks() {
             return Ok(luma);
         }
         let chroma_cond = |m: Option<&MbState>, ac: bool| {
@@ -600,14 +719,21 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
         self.prev_qp_delta_nonzero = false;
     }
 
-    fn luma_dc(&mut self, nb: &Neighbours<'_>, cur: &mut MbState, out: &mut Coeffs) -> Result<()> {
-        let dc = |m: &MbState| m.dc_coded[0];
+    fn luma_dc<const PLANE: usize>(
+        &mut self,
+        nb: &Neighbours<'_>,
+        cur: &mut MbState,
+        out: &mut Coeffs,
+    ) -> Result<()> {
+        // The DC flags of Cb and Cr (4:4:4) share the slots of the 4:2:0 /
+        // 4:2:2 chroma DC flags: a sequence has one or the other.
+        let dc = |m: &MbState| m.dc_coded[PLANE];
         let inc = cbf_cond(nb.a, true, dc) + 2 * cbf_cond(nb.b, true, dc);
-        cur.dc_coded[0] = self.residual((Cat::LumaDc, cur.field), inc, out)?;
+        cur.dc_coded[PLANE] = self.residual((Cat::dc(PLANE), cur.field), inc, out)?;
         Ok(())
     }
 
-    fn block_4x4(
+    fn block_4x4<const PLANE: usize>(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &mut MbState,
@@ -619,30 +745,39 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
             Block4x4::LumaAc(x, y) | Block4x4::Luma(x, y) => {
                 let coded = |n: Option<(&MbState, usize, usize)>| match n {
                     None => usize::from(intra),
-                    Some((m, bx, by)) => {
-                        cbf_cond(Some(m), intra, |m| m.total_coeff[by * 4 + bx] != 0)
-                    }
+                    Some((m, bx, by)) => cbf_cond(Some(m), intra, |m| {
+                        m.plane_total_coeff(PLANE)[by * 4 + bx] != 0
+                    }),
                 };
                 let cat = if matches!(block, Block4x4::LumaAc(..)) {
-                    Cat::LumaAc
+                    Cat::ac(PLANE)
                 } else {
-                    Cat::Luma4x4
+                    Cat::block_4x4(PLANE)
                 };
                 (cat, coded(nb.left(cur, x, y)), coded(nb.above(cur, x, y)))
             }
             Block4x4::ChromaAc(comp, b) => {
+                // Two blocks per row, 2 (4:2:0) or 4 (4:2:2) rows (§6.4.11.5).
                 let (x, y) = (b % 2, b / 2);
+                let last_row = self.chroma.chroma_blocks() / 2 - 1;
                 let flag =
                     |m: &MbState, x: usize, y: usize| m.chroma_total_coeff[comp][y * 2 + x] != 0;
                 let left = if x > 0 {
                     usize::from(flag(cur, 0, y))
                 } else {
-                    cbf_cond(nb.a, intra, |m| flag(m, 1, y))
+                    // In MBAFF frames the left block row of Table 6-4.
+                    let (n, row) = match nb.pair {
+                        None => (nb.a, y),
+                        Some(_) => nb
+                            .left_row_chroma(y)
+                            .map_or((None, y), |(m, row)| (Some(m), row)),
+                    };
+                    cbf_cond(n, intra, |m| flag(m, 1, row))
                 };
                 let above = if y > 0 {
-                    usize::from(flag(cur, x, 0))
+                    usize::from(flag(cur, x, y - 1))
                 } else {
-                    cbf_cond(nb.b, intra, |m| flag(m, x, 1))
+                    cbf_cond(nb.b, intra, |m| flag(m, x, last_row))
                 };
                 (Cat::ChromaAc, left, above)
             }
@@ -650,42 +785,55 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
         let coded = self.residual((cat, cur.field), left + 2 * above, out)?;
         let flag = u8::from(coded);
         match block {
-            Block4x4::LumaAc(x, y) | Block4x4::Luma(x, y) => cur.total_coeff[y * 4 + x] = flag,
+            Block4x4::LumaAc(x, y) | Block4x4::Luma(x, y) => {
+                cur.plane_total_coeff_mut(PLANE)[y * 4 + x] = flag;
+            }
             Block4x4::ChromaAc(comp, b) => cur.chroma_total_coeff[comp][b] = flag,
         }
         Ok(())
     }
 
-    fn luma_8x8(
+    fn luma_8x8<const PLANE: usize>(
         &mut self,
-        _nb: &Neighbours<'_>,
+        nb: &Neighbours<'_>,
         cur: &mut MbState,
         b8: usize,
         out: &mut Coeffs,
     ) -> Result<()> {
-        // 4:2:0 8x8 blocks have no coded_block_flag: a coded 8x8 block has
-        // at least one coefficient (§7.3.5.3.3).
         out.count = 0;
-        let last = |i: usize| usize::from(LAST_CTX_INC_8X8[i]);
-        if cur.field {
-            self.significance_map(
-                64,
-                out,
-                |i| SIGNIFICANT_8X8_FIELD + usize::from(SIGNIFICANT_CTX_INC_8X8_FIELD[i]),
-                |i| LAST_SIGNIFICANT_8X8_FIELD + last(i),
-            );
-        } else {
-            self.significance_map(
-                64,
-                out,
-                |i| SIGNIFICANT_8X8 + usize::from(SIGNIFICANT_CTX_INC_8X8[i]),
-                |i| LAST_SIGNIFICANT_8X8 + last(i),
-            );
+        let cat = Cat::block_8x8(PLANE);
+        // Only 4:4:4 codes the coded_block_flag of 8x8 blocks; elsewhere a
+        // coded 8x8 block has at least one coefficient (§7.3.5.3.3).
+        let coded = !self.chroma.is_444() || {
+            let inc = coded_8x8_inc::<PLANE>(nb, cur, b8);
+            self.engine.decision(cat.coded_block_flag() + inc)
+        };
+        if coded {
+            let (sig, last) = cat.significance(cur.field);
+            let last = |i: usize| last + usize::from(LAST_CTX_INC_8X8[i]);
+            if cur.field {
+                self.significance_map(
+                    64,
+                    out,
+                    |i| sig + usize::from(SIGNIFICANT_CTX_INC_8X8_FIELD[i]),
+                    last,
+                );
+            } else {
+                self.significance_map(
+                    64,
+                    out,
+                    |i| sig + usize::from(SIGNIFICANT_CTX_INC_8X8[i]),
+                    last,
+                );
+            }
+            self.levels(cat.level(), false, out)?;
         }
-        self.levels(ABS_LEVEL_8X8, false, out)?;
+        // The four 4x4 blocks carry the 8x8 block's flag (what the
+        // neighbours' contexts read, §9.3.3.1.1.9).
         let (x8, y8) = (b8 % 2, b8 / 2);
+        let flags = cur.plane_total_coeff_mut(PLANE);
         for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-            cur.total_coeff[(2 * y8 + dy) * 4 + 2 * x8 + dx] = 1;
+            flags[(2 * y8 + dy) * 4 + 2 * x8 + dx] = u8::from(coded);
         }
         Ok(())
     }

@@ -16,12 +16,18 @@
 
 use nc_common::{Picture, PlaneIndex};
 
-use crate::ccso::{CcsoParams, CcsoSource, PlaneFilter, UNIT, UnitFlags};
+use crate::ccso::{CcsoParams, CcsoSource, PlaneFilter, UNIT, UnitFlags, neighbour_pair};
 
 /// The classifiers tried per plane: (`scale`, `quant`, `support`).
 /// Scale 0 keeps offsets small (±1, ±3, ±7, −10) for 8-bit video;
 /// thresholds 8 and 16 (`quant` 1 and 0); vertical and horizontal pairs.
-const CANDIDATES: [(u8, u8, u8); 4] = [(0, 1, 0), (0, 1, 1), (0, 0, 0), (0, 0, 1)];
+const SEARCH_QUANTS: [u8; 2] = [1, 0];
+const CANDIDATES: [(u8, u8, u8); 4] = [
+    (0, SEARCH_QUANTS[0], 0),
+    (0, SEARCH_QUANTS[0], 1),
+    (0, SEARCH_QUANTS[1], 0),
+    (0, SEARCH_QUANTS[1], 1),
+];
 /// Edge classes per sample: 3×3 (three levels per neighbour, one band).
 const CLASSES: usize = 9;
 /// Offset codes by value order, so the search tries each value once.
@@ -155,8 +161,9 @@ fn code_bits(code: u8) -> u32 {
     u32::from(code) + u32::from(code < CODES - 1)
 }
 
-/// The class sums of every candidate for `plane`, per unit of `flags`, in
-/// one pass over the plane.
+/// Accumulate all four classifiers while their shared luma neighbours
+/// and the reconstruction error are in registers.
+#[inline(never)]
 fn class_sums(
     source: &Picture,
     recon: &Picture,
@@ -164,32 +171,74 @@ fn class_sums(
     plane: PlaneIndex,
     flags: &UnitFlags,
 ) -> Vec<UnitSums> {
-    let units = flags.positions().len();
-    let columns = deblocked.width().div_ceil(UNIT);
-    let mut sums = vec![vec![[ClassSum::default(); CLASSES]; units]; CANDIDATES.len()];
-    let classifiers: Vec<_> = CANDIDATES
-        .iter()
-        .map(|&(scale, quant, support)| {
-            PlaneFilter::zero(false, scale, quant, support, false, 0).classifier()
-        })
-        .collect();
+    let positions = flags.positions();
+    let mut sums = vec![vec![[ClassSum::default(); CLASSES]; positions.len()]; CANDIDATES.len()];
+    let [small, large] = SEARCH_QUANTS
+        .map(|quant| PlaneFilter::zero(false, 0, quant, 0, false, 0).threshold() as i16);
+    // Put the two threshold classes in separate nibbles. A pair's class
+    // is 3 * first + second, so the two results never carry into each other.
+    let classes_by_difference: [u8; 512] = std::array::from_fn(|index| {
+        let difference = index as i16 - 256;
+        let class =
+            |threshold: i16| u8::from(difference >= -threshold) + u8::from(difference > threshold);
+        class(small) | class(large) << 4
+    });
     let shift = usize::from(plane != PlaneIndex::Y);
+    let unit_width = UNIT >> shift;
     let source = source.plane(plane).view();
     let recon = recon.plane(plane).view();
-    for y in 0..recon.height() {
-        let (source_row, recon_row) = (source.row(y), recon.row(y));
-        let ly = y << shift;
-        for (x, (&s, &r)) in source_row.iter().zip(recon_row).enumerate() {
-            let lx = x << shift;
-            let unit = ly / UNIT * columns + lx / UNIT;
-            let error = i64::from(s) - i64::from(r);
-            for (candidate, classifier) in classifiers.iter().enumerate() {
-                // One band: the look-up index is class0 << 2 | class1.
-                let index = deblocked.lut_index(classifier, lx, ly);
-                let class = (index >> 2) * 3 + (index & 3);
-                let sum = &mut sums[candidate][unit][class];
-                sum.count += 1;
-                sum.error += error;
+    let width = source.width().min(recon.width());
+    for (unit, &(luma_x, luma_y)) in positions.iter().enumerate() {
+        let x = luma_x >> shift;
+        let y = luma_y >> shift;
+        let right = (x + unit_width).min(width);
+        let bottom = (y + unit_width).min(recon.height());
+        if x >= right {
+            continue;
+        }
+        let mut unit_sums = [[0_u64; 16]; CANDIDATES.len()];
+        let luma_len = (right - x) << shift;
+        let lx = luma_x as isize;
+        for row in y..bottom {
+            let ly = (row << shift) as isize;
+            let span = |(dx, dy)| deblocked.span(lx + dx, ly + dy, luma_len);
+            let center = span((0, 0));
+            let [above, below] = neighbour_pair(0).map(span);
+            let [left, rightward] = neighbour_pair(1).map(span);
+            let original = &source.row(row)[x..right];
+            let rebuilt = &recon.row(row)[x..right];
+            for (sample, (&source, &recon)) in original.iter().zip(rebuilt).enumerate() {
+                let at = sample << shift;
+                let center = i16::from(center[at]);
+                let classes = |neighbour| {
+                    let difference = i16::from(neighbour) - center;
+                    classes_by_difference[((difference + 256) as usize) & 511]
+                };
+                let vertical = 3 * classes(above[at]) + classes(below[at]);
+                let horizontal = 3 * classes(left[at]) + classes(rightward[at]);
+                // A unit has at most 65,536 samples with biased errors
+                // in 0..=510. Their sum cannot carry into the count.
+                let biased_error = u16::from(source) + 255 - u16::from(recon);
+                let update = (1_u64 << 32) | u64::from(biased_error);
+                let classes = [
+                    vertical & 15,
+                    horizontal & 15,
+                    vertical >> 4,
+                    horizontal >> 4,
+                ]
+                .map(usize::from);
+                for (bins, class) in unit_sums.iter_mut().zip(classes) {
+                    bins[class] += update;
+                }
+            }
+        }
+        for (candidate, bins) in sums.iter_mut().zip(unit_sums) {
+            for (sum, packed) in candidate[unit].iter_mut().zip(bins) {
+                let count = (packed >> 32) as i64;
+                *sum = ClassSum {
+                    count,
+                    error: i64::from(packed as u32) - 255 * count,
+                };
             }
         }
     }

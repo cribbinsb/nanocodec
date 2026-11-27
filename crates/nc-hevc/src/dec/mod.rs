@@ -1,10 +1,20 @@
-//! HEVC Main / Main 10 / Main Still Picture profile decoder (H.265 Annex
-//! A.3.2, A.3.3, A.3.5): 4:2:0 streams of 8 to 10 bits (luma and chroma
-//! may differ) of any structure the profiles allow — I, P
-//! and B slices, multiple and dependent slice segments, tiles, WPP, AMP,
-//! PCM, lossless, transform skip, scaling lists, weighted prediction, long-
-//! term references, temporal sub-layers, CRA/BLA/RASL handling and output
-//! in output order through the bumping process of Annex C.5.2.
+//! HEVC decoder of the Main, Main 10, Main Still Picture (H.265 Annex A.3.2
+//! to A.3.4) and format range extensions profiles (A.3.5, A.3.6): 4:0:0,
+//! 4:2:0, 4:2:2 and 4:4:4 streams of 8 to 16 bits (luma and chroma may
+//! differ) of any structure the profiles allow — I, P and B slices,
+//! multiple and dependent slice segments, tiles, WPP, AMP, PCM, lossless,
+//! transform skip, scaling lists, weighted prediction, long-term
+//! references, temporal sub-layers, CRA/BLA/RASL handling and output in
+//! output order through the bumping process of Annex C.5.2 — with every
+//! range extension tool (RDPCM, cross-component prediction, chroma QP
+//! offset lists, extended precision, persistent Rice adaptation, bypass
+//! alignment). Refused: separate colour planes, inter prediction above 12
+//! bits (Monochrome 16 only), screen content coding.
+//!
+//! Chroma formats (`docs/handoff/chroma-formats.md`): pictures carry the
+//! SPS's format (4:0:0 as 4:2:0 with mid-grey chroma, which a raw output
+//! omits, [`Decoder::is_monochrome`]); the decoding process takes each
+//! plane's subsampling.
 //!
 //! Module map:
 //! - `params`, `slice`: parameter sets and slice segment headers;
@@ -44,6 +54,7 @@ mod slice;
 mod stats;
 #[cfg(test)]
 mod tests;
+mod vui;
 
 use std::collections::VecDeque;
 
@@ -73,7 +84,7 @@ macro_rules! with_core {
     };
 }
 
-/// HEVC Main / Main 10 profile decoder. Feed NAL units (or Annex-B data)
+/// HEVC decoder (Main, Main 10, range extensions). Feed NAL units (or Annex-B data)
 /// in decoding order; decoded pictures come out in output order, 8-bit
 /// streams as `u8` samples and deeper ones as `u16` ([`DecodedPicture`]).
 #[derive(Debug)]
@@ -135,6 +146,14 @@ impl Decoder {
         with_core!(&self.instance, core => core.colour())
     }
 
+    /// Whether the last activated SPS codes luma only (4:0:0): its
+    /// pictures carry mid-grey chroma planes, which a raw output omits (as
+    /// HM writes them).
+    #[must_use]
+    pub fn is_monochrome(&self) -> bool {
+        with_core!(&self.instance, core => core.is_monochrome())
+    }
+
     /// Bit depths of the last decoded picture (`None` before the first).
     #[must_use]
     pub fn depths(&self) -> Option<BitDepths> {
@@ -153,8 +172,8 @@ impl Decoder {
     /// reordering each packet outputs its own picture). Further pictures it
     /// outputs wait for [`Decoder::next_shown`] or [`Decoder::next_output`].
     /// # Errors
-    /// Rejects malformed or truncated data, syntax outside the Main and
-    /// Main 10 profiles, streams of more than 8 bits (8-bit output) and an
+    /// Rejects malformed or truncated data, syntax outside the
+    /// supported profiles, streams of more than 8 bits (8-bit output) and an
     /// access unit that outputs no picture.
     pub fn decode(&mut self, packet: &[u8]) -> Result<Picture, DecodeError> {
         self.decode_shown(packet)?;
@@ -239,8 +258,8 @@ impl Decoder {
 
     /// Decode one NAL unit (without start code).
     /// # Errors
-    /// Rejects malformed or truncated data and syntax outside the Main and
-    /// Main 10 profiles; the decoder should then be reset before further
+    /// Rejects malformed or truncated data and syntax outside the
+    /// supported profiles; the decoder should then be reset before further
     /// use.
     pub fn push_nal(&mut self, nal: &[u8]) -> Result<(), DecodeError> {
         if with_core!(&self.instance, core => core.needs_other_sample_type(nal)) {

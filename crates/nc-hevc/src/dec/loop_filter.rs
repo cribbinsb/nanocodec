@@ -17,6 +17,7 @@
 //! every CTB scan (tiles finish a CTB row only with their last tile
 //! column), and a picture's remaining bands are filtered when it ends.
 
+use nc_common::PlaneIndex;
 use nc_common::decode::DecodeError;
 use nc_dsp::{Dsp, Pixel};
 
@@ -109,8 +110,17 @@ impl<T: Pixel> LoopFilter<T> {
             }
             sao::apply_band(dsp, pic, tiles_cross, &mut self.sao, row);
             let lines = band(row);
-            for (c, plane) in pic.samples.planes_mut().iter_mut().enumerate() {
-                let shift = usize::from(c > 0);
+            let format = pic.samples.chroma_format();
+            // 4:0:0 pictures leave their chroma planes unused.
+            let planes = if pic.chroma.is_some() { 3 } else { 1 };
+            for (plane, index) in pic
+                .samples
+                .planes_mut()
+                .iter_mut()
+                .zip(PlaneIndex::ALL)
+                .take(planes)
+            {
+                let shift = format.plane_subsampling(index).1;
                 let end = (lines.end >> shift).min(plane.height());
                 plane.extend_border_rows((lines.start >> shift).min(end)..end);
             }

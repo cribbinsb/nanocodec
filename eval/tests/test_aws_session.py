@@ -1,4 +1,5 @@
 """tools/dev/aws_session.py: the instance-type fallback, on a fake EC2 (nothing is rented)."""
+import subprocess
 import time
 import sys
 from pathlib import Path
@@ -348,6 +349,145 @@ def test_a_spot_notice_pulls_at_once_and_once(monkeypatch, tmp_path):
         time.sleep(0.2)
     assert len(pulls) == 2  # the notice's pull and the last one, no periodic pull
 
+
+
+class LocalBox:
+    """A Session whose "box" is this machine: every ssh command runs under bash, and a
+    reclaim (`reclaim_after` commands) makes every later command fail like a lost link."""
+
+    def __init__(self, reclaim_after: int | None = None):
+        self.session = aws_session.Session.__new__(aws_session.Session)
+        self.session.egress_bytes = 0
+        self.session.ssh_base = self.ssh_base
+        self.reclaim_after, self.commands = reclaim_after, 0
+
+    def ssh_base(self) -> list[str]:
+        self.commands += 1
+        if self.reclaim_after is not None and self.commands > self.reclaim_after:
+            return ["false"]
+        return ["bash", "-c"]
+
+
+def box_out(root: Path, count: int, size: int) -> Path:
+    out = root / "out"
+    (out / "streams").mkdir(parents=True)
+    for i in range(count):
+        (out / "streams" / f"s{i:03}.bin").write_bytes(bytes([i % 251]) * size)
+    (out / "encodes.jsonl").write_text('{"id": 1}\n')
+    (out / ".partial.tmp").write_text("another job's temporary")
+    return out
+
+
+def test_a_parallel_pull_brings_every_new_file_once(monkeypatch, tmp_path):
+    """download_new over parallel links: all new files, in several batches, no dot
+    temporaries; the next call brings only what changed since."""
+    monkeypatch.setattr(aws_session, "PULL_MIN_BATCH_BYTES", 4096)
+    out, local = box_out(tmp_path, 40, 1000), tmp_path / "local"
+    box = LocalBox()
+    names: list[Path] = []
+    moved = box.session.download_new(str(out), local, ".cp", names)
+    assert sorted(p.relative_to(local).as_posix() for p in names) == sorted(
+        ["encodes.jsonl", *(f"streams/s{i:03}.bin" for i in range(40))])
+    assert moved == 40 * 1000 + len('{"id": 1}\n')
+    assert box.commands > 3  # one listing, several batches, one marker move
+    assert not (local / ".partial.tmp").exists()
+    time.sleep(1.1)  # find -newer compares whole mtimes on some file systems
+    (out / "encodes.jsonl").write_text('{"id": 1}\n{"id": 2}\n')
+    again: list[Path] = []
+    box.session.download_new(str(out), local, ".cp", again)
+    assert again == [local / "encodes.jsonl"]
+    assert (local / "encodes.jsonl").read_text().count("id") == 2
+
+
+def test_a_reclaim_mid_pull_loses_only_the_batches_in_flight(monkeypatch, tmp_path):
+    """Rule 4 of the reclaim rules (docs/aws-cost-guide.md): the link dies after the listing
+    and a few batches. The call fails without moving the checkpoint, keeps what landed, and
+    the retry fetches only the missing files."""
+    monkeypatch.setattr(aws_session, "PULL_MIN_BATCH_BYTES", 4096)
+    monkeypatch.setattr(aws_session, "PULL_STREAMS", 2)
+    out, local = box_out(tmp_path, 60, 1000), tmp_path / "local"
+    lost = LocalBox(reclaim_after=1 + 3)  # the listing, then three batches
+    first: list[Path] = []
+    with pytest.raises(RuntimeError, match="batches missing"):
+        lost.session.download_new(str(out), local, ".cp", first)
+    assert 0 < len(first) < 61
+    assert not (out / ".cp").exists()  # the checkpoint did not move on
+    retry = LocalBox()
+    second: list[Path] = []
+    retry.session.download_new(str(out), local, ".cp", second)
+    assert not set(first) & set(second)  # only the missing files came again
+    assert len(first) + len(second) == 61
+    for i in range(60):
+        assert (local / "streams" / f"s{i:03}.bin").read_bytes() == bytes([i % 251]) * 1000
+
+
+class CuttingBox(LocalBox):
+    """A LocalBox whose first `cuts` batch links pass their output through `damage` (a
+    shell filter): a link cut mid-file, or a byte flipped on the way."""
+
+    def __init__(self, damage: str, cuts: int):
+        super().__init__()
+        self.damage, self.cuts = damage, cuts
+
+    def ssh_base(self) -> list[str]:
+        self.commands += 1
+        if self.commands == 1 or self.commands > 1 + self.cuts:  # the listing, or a good link
+            return ["bash", "-c"]
+        return ["bash", "-c", f'bash -c "$1" | {self.damage}', "link"]
+
+
+FLIP_BYTE_700 = ("python3 -c 'import sys; d = bytearray(sys.stdin.buffer.read()); d[700] ^= 1; "
+                 "sys.stdout.buffer.write(d)'")
+
+
+@pytest.mark.parametrize("damage", ["head -c 2560", FLIP_BYTE_700])
+def test_a_damaged_copy_never_lands_and_is_fetched_again(tmp_path, damage):
+    """2026-11-27: streams came back cut at 512-byte multiples. The batch is hashed on the
+    box as it is sent; a cut or damaged copy is never renamed into place, and the link's
+    retry brings the file whole."""
+    out, local = box_out(tmp_path, 1, 5000), tmp_path / "local"
+    box = CuttingBox(damage, cuts=1)
+    names: list[Path] = []
+    box.session.download_new(str(out), local, ".cp", names)
+    assert (local / "streams" / "s000.bin").read_bytes() == bytes([0]) * 5000
+    assert len(names) == 2 and (out / ".cp").exists()
+    assert not list(local.rglob(".*.incoming"))  # no temporaries left behind
+
+
+def test_a_box_lost_mid_copy_leaves_no_truncated_file(tmp_path):
+    """Every link to the box is cut (it is gone): the stream is absent rather than short,
+    the checkpoint does not move, and the next call (or a new encode) fetches it."""
+    out, local = box_out(tmp_path, 1, 5000), tmp_path / "local"
+    gone = CuttingBox("head -c 2560", cuts=aws_session.PULL_ATTEMPTS)
+    with pytest.raises(RuntimeError, match="batches missing"):
+        gone.session.download_new(str(out), local, ".cp", [])
+    assert not (local / "streams" / "s000.bin").exists()
+    assert not (out / ".cp").exists()
+    assert not list(local.rglob(".*.incoming"))
+
+
+def test_a_growing_log_is_sent_as_listed_and_partials_never(tmp_path):
+    """An appended log is sent as the listing saw it (its hash then matches, the rest comes
+    next time); a writer's `.partial` temporary is never listed."""
+    out = box_out(tmp_path, 0, 0)
+    (out / "streams" / "s.h264.partial").write_bytes(b"half a stream")
+    listing = subprocess.run(["bash", "-c", aws_session.new_files_command(str(out), ".cp")],
+                             capture_output=True, text=True, check=True).stdout
+    files = aws_session.parse_new_files(listing)
+    assert [f.path for f in files] == ["encodes.jsonl"]
+    (out / "encodes.jsonl").write_text('{"id": 1}\n{"id": 2}\n')  # grew after the listing
+    local = tmp_path / "local"
+    assert LocalBox().session._fetch_batch(str(out), local, files) == {"encodes.jsonl": True}
+    assert (local / "encodes.jsonl").read_text() == '{"id": 1}\n'
+
+
+def test_pull_batches_spread_small_pulls_and_cap_large_ones():
+    small = [aws_session.RemoteFile(f"s{i}", 1 << 20, 0) for i in range(64)]
+    assert len(aws_session.pull_batches(small, streams=8)) == 8
+    large = [aws_session.RemoteFile(f"s{i}", 64 << 20, 0) for i in range(64)]
+    batches = aws_session.pull_batches(large, streams=8)
+    assert max(sum(f.size for f in b) for b in batches) <= aws_session.PULL_BATCH_BYTES
+    assert sum(len(b) for b in batches) == 64
 
 LEDGER_TEXT = """| logged | resources | type / region | purpose (event) | start | end | cost |
 | 2026-11-24T07:41:38Z | instance (not launched) | c8i.2xlarge / eu-north-1 | bench (started) | 2026-11-24T07:41:38Z | — | cap $0.06 |

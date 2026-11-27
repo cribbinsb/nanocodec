@@ -1,0 +1,191 @@
+{
+ "p1_444_10_good": {
+  "bytes": 8448000,
+  "error": "",
+  "md5": "a441506697c200ed50ad83f95a77575f",
+  "seconds": 0.06,
+  "status": "pass"
+ },
+ "p1_444_10_grain": {
+  "bytes": 8448000,
+  "error": "",
+  "md5": "115f10910490b336c501478160d21523",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "p1_444_10_identity": {
+  "bytes": 8448000,
+  "error": "",
+  "md5": "8fccf9c00eeb88b753f582fed4473730",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "p1_444_8_good": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "528cf5732ae7c838b975110f35f9769f",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "p1_444_8_lossless": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "fd1cddc19b7d1ab71506d956a56f3144",
+  "seconds": 0.11,
+  "status": "pass"
+ },
+ "p1_444_8_odd": {
+  "bytes": 4190940,
+  "error": "",
+  "md5": "20d67105819adb60f21d9ca61fe83f25",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "p1_444_8_qm_deltaq": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "18ab0779cb9519bb0fc2f056bcd31010",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "p1_444_8_rt": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "65b676159c4d9002eebf273301fb2445",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "p1_444_8_sb128_superres": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "ad0c01d2b7849d9f478567ac639b8b0d",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "p1_444_8_screen": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "71239da8cc4606da8108e236af809164",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "p1_444_8_srgb": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "3593747e64349c5a98780165e3352f85",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "p2_400_12_good": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "92cddd98bcb2d8cfa84bd4cf54609718",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "p2_420_12_good": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "23edb6abdf4e8c55145e7270d47519d9",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "p2_420_12_lossless": {
+  "bytes": 4224000,
+  "error": "",
+  "md5": "39a025505e65dd489ca6192cfd3ad0f2",
+  "seconds": 0.17,
+  "status": "pass"
+ },
+ "p2_420_12_rt_odd": {
+  "bytes": 4201960,
+  "error": "",
+  "md5": "c6d166ff483dca2b0060830fd973789c",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "p2_422_10_good": {
+  "bytes": 5632000,
+  "error": "",
+  "md5": "5f150a9d2fcbb0955e0958b618f052ae",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "p2_422_10_lossless": {
+  "bytes": 5632000,
+  "error": "",
+  "md5": "6f8df44b14977561ee4f1e943dad2e30",
+  "seconds": 0.15,
+  "status": "pass"
+ },
+ "p2_422_12_good": {
+  "bytes": 5632000,
+  "error": "",
+  "md5": "639e84b345a44b6be1ad480ef38c3371",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "p2_422_12_grain": {
+  "bytes": 5632000,
+  "error": "",
+  "md5": "d91cd51be24f2f016d6da698df9b07c3",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "p2_422_8_good": {
+  "bytes": 2816000,
+  "error": "",
+  "md5": "d7ea1410b6bb6babcdf55f0aa3570478",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "p2_422_8_grain": {
+  "bytes": 2816000,
+  "error": "",
+  "md5": "6ecf4306d0ea4e774e86f3ce2e571ad9",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "p2_422_8_odd": {
+  "bytes": 2797940,
+  "error": "",
+  "md5": "fde96d8fdd139199df294d955bbb32aa",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "p2_422_8_rt": {
+  "bytes": 2816000,
+  "error": "",
+  "md5": "5cc7b05be10f7d5399a8111f88ea89a3",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "p2_422_8_sb128_superres": {
+  "bytes": 2816000,
+  "error": "",
+  "md5": "a9edfa45be35a6a4cfb9f8d2d5882a71",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "p2_422_8_screen": {
+  "bytes": 2816000,
+  "error": "",
+  "md5": "edd433f8a226368e0828b0823037357b",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "p2_444_12_good": {
+  "bytes": 8448000,
+  "error": "",
+  "md5": "b561007db394f09ed9a564d196b6a7c9",
+  "seconds": 0.06,
+  "status": "pass"
+ },
+ "p2_444_12_grain": {
+  "bytes": 8448000,
+  "error": "",
+  "md5": "8d4608f0338eab53c05f495b49f1b224",
+  "seconds": 0.06,
+  "status": "pass"
+ }
+}

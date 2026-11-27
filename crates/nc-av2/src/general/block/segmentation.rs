@@ -18,6 +18,7 @@ use super::Tile;
 use super::context::left_index;
 use super::size::BlockSize;
 use crate::general::frame_header::{FrameHeader, Segmentation};
+use crate::general::sample::Av2Sample;
 use crate::general::sequence::MAX_SEGMENTS;
 use nc_common::decode::{DecodeError, Result};
 
@@ -159,7 +160,7 @@ fn neg_deinterleave(diff: i32, reference: i32, max: i32) -> i32 {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// The segment id of a block known before its skip flag: a chroma-tree
     /// block's, an id from the reference map, or one the frame reads here
     /// (`preskip`). Returns whether the id is read after the skip flag

@@ -212,7 +212,8 @@ pub(super) fn parse(parser: &mut Parser<'_, '_, '_, '_>, header: &mut FrameHeade
     if header.lossless.all || !sequence.filters.restoration {
         return Ok(());
     }
-    for plane in 0..3 {
+    let planes = sequence.planes();
+    for plane in 0..planes {
         plane_type(parser, header, plane)?;
     }
     let superblock = header.superblock_log2 - super::SMALLEST_SUPERBLOCK_LOG2;
@@ -230,7 +231,7 @@ pub(super) fn parse(parser: &mut Parser<'_, '_, '_, '_>, header: &mut FrameHeade
             return Err(DecodeError::Malformed("AV2 chroma restoration unit"));
         }
     }
-    for plane in 0..3 {
+    for plane in 0..planes {
         if header.restoration.planes[plane].wiener.frame_filters {
             filters(parser, header, plane)?;
         }

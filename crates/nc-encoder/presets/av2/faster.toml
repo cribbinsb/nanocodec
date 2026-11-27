@@ -151,3 +151,5 @@ quant.trellis_key = 0
 rate.cadence_period = 4
 rate.cadence_base_boost = 3
 rate.cadence_startup_period = 8
+# The split override (2026-11-27) is off here: final 600f +0.18 % J [+0.02, +0.36] (1/150).
+planner.split_override = 0

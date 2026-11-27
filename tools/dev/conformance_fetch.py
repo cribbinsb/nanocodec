@@ -14,7 +14,7 @@ Two kinds of suite:
 The bitstreams are untrusted data: nothing in them is executed. Files
 already fetched or extracted are kept.
 
-Usage: conformance_fetch.py --suite hevc-v1|h264|av1-libaom|vp9-libvpx [--data DIR]
+Usage: conformance_fetch.py --suite hevc-v1|hevc-rext|vvc-rext|h264|h264-chroma|av1-libaom|vp9-libvpx [--data DIR]
 """
 
 import argparse
@@ -36,18 +36,33 @@ VPX_TEST_DATA = "https://storage.googleapis.com/downloads.webmproject.org/test_d
 REWRAP = {".mkv": "AV01", ".webm": "VP90"}
 
 JVT = ITU + "/wftp3/av-arch/jvt-site/draft_conformance/"
+#: The H.264.1 zips of 4:2:2 and 4:4:4 streams.
+H264_CHROMA_ZIPS = r"^(Hi422|PPH422|PPH444|PPCV444)"
 
 # suite -> ("zips", index pages listing the zips, zip names to skip (regex or
-#           None), data directory) or
+#           None), zip names to keep (regex or None: all), data directory) or
 #          ("listed", mirror, list of "sha1 md5-sha1 name" lines, data directory).
 SUITES = {
     "hevc-v1": ("zips", (ITU + "/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/",),
                 None, DATA / "conformance/hevc"),
+    # JCT-VC range extensions (4:0:0, 4:2:2, 4:4:4, 12 and 16 bits, the RExt tools).
+    "hevc-rext": ("zips", (ITU + "/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/",),
+                  None, DATA / "conformance/hevc-rext"),
     # ITU-T H.264.1: AVCv1 (Baseline, Extended, Main), FRExt (High) and the
-    # High 10 streams of the professional profiles. 4:2:2 and 4:4:4 (High
-    # 4:2:2 / 4:4:4 profiles) are not fetched; nor are MVC and SVC.
+    # High 10 streams of the professional profiles; MVC and SVC are not
+    # fetched.
     "h264": ("zips", (JVT + "AVCv1/", JVT + "FRExt/", JVT + "Professional_profiles/"),
-             r"^(Hi422|PPH422|PPH444|PPCV444)", DATA / "conformance/h264"),
+             H264_CHROMA_ZIPS, None, DATA / "conformance/h264"),
+    # The 4:2:2 and 4:4:4 streams of the same sets (High 4:2:2, High 4:4:4
+    # Predictive, CAVLC 4:4:4 Intra), kept beside them as their own suite.
+    "h264-chroma": ("zips", (JVT + "FRExt/", JVT + "Professional_profiles/"),
+                    None, H264_CHROMA_ZIPS, DATA / "conformance/h264"),
+    # ITU-T H.266.1 (2nd edition): the operating range extension streams
+    # (12 and 16 bits: Main 12, Main 12 4:4:4, Main 16 4:4:4 and their
+    # Intra and Still Picture profiles). The first-edition streams are the
+    # vvc-v1 suite (tools/dev/vvc_conformance_fetch.py).
+    "vvc-rext": ("zips", (ITU + "/wftp3/av-arch/jvet-site/bitstream_exchange/VVC2ndEd/FDIS/",),
+                 r"^(?!1[26]b)", DATA / "conformance/vvc-rext"),
     "av1-libaom": ("listed", AOM_TEST_DATA, ROOT / "tools/conformance/av1_manifest.txt",
                    DATA / "conformance/av1"),
     # libvpx's VP9 vectors of every profile (4:2:0, 4:2:2, 4:4:0, 4:4:4).
@@ -56,7 +71,8 @@ SUITES = {
 }
 
 
-def download(index_urls: tuple[str, ...], skip: str | None, data: Path) -> list[Path]:
+def download(index_urls: tuple[str, ...], skip: str | None, only: str | None,
+             data: Path) -> list[Path]:
     zips = data / "zips"
     zips.mkdir(parents=True, exist_ok=True)
     hrefs = []
@@ -66,7 +82,8 @@ def download(index_urls: tuple[str, ...], skip: str | None, data: Path) -> list[
         hrefs += re.findall(r'HREF="([^"]+\.zip)"', index, re.IGNORECASE)
     paths = []
     for href in hrefs:
-        if skip and re.search(skip, Path(href).name):
+        name = Path(href).name
+        if (skip and re.search(skip, name)) or (only and not re.search(only, name)):
             continue
         target = zips / Path(href).name
         if not target.exists():

@@ -110,6 +110,7 @@ impl Candidates {
     /// The candidates around `nearest`, the magnitude rounded to the nearest
     /// level: `nearest`, `nearest − 1`, and zero while `nearest` is at most
     /// [`ZERO_CANDIDATE_MAX_LEVEL`]. `distortion(level)` prices each one.
+    #[inline]
     pub fn around(nearest: u32, mut distortion: impl FnMut(u32) -> f32) -> Self {
         // Branch-free: all three slots are always filled and `count` says
         // which are candidates. With `nearest` 1 the level below is zero
@@ -118,6 +119,8 @@ impl Candidates {
         // branching form mispredicted on most positions.
         let below = nearest.saturating_sub(1);
         let levels = [nearest, below, 0];
+        let d_nearest = distortion(nearest);
+        let d_below = if nearest == 0 { 0.0 } else { distortion(below) };
         // Zero as a third slot is rare; pricing it only then is cheaper
         // than always (AV1's distortion is the costlier to evaluate).
         let zero = if nearest == ZERO_CANDIDATE_MAX_LEVEL {
@@ -127,16 +130,26 @@ impl Candidates {
         };
         Self {
             levels,
-            distortion: [distortion(nearest), distortion(below), zero],
+            distortion: [d_nearest, d_below, zero],
             count: 1 + usize::from(nearest >= 1) + usize::from(nearest == ZERO_CANDIDATE_MAX_LEVEL),
         }
     }
 
-    /// Whether zero is a candidate, and its distortion.
+    /// Whether zero is a candidate, and its distortion. [`Self::around`]
+    /// puts zero, when it is one, in the last slot in use (nearest 0, 1 or
+    /// 2 gives one, two or three slots); reading that slot replaced a
+    /// search that LLVM kept out of line in some codecs (HEVC and AV2
+    /// Default: 16 instructions a call, ~350k calls on 60 frames of 360p).
+    #[inline]
     fn zero(&self) -> Option<f32> {
-        self.iter().find(|&(level, _)| level == 0).map(|(_, d)| d)
+        let last = self.count.checked_sub(1)?;
+        match (self.levels.get(last), self.distortion.get(last)) {
+            (Some(0), Some(&distortion)) => Some(distortion),
+            _ => None,
+        }
     }
 
+    #[cfg(test)]
     fn iter(&self) -> impl Iterator<Item = (u32, f32)> + '_ {
         self.levels[..self.count]
             .iter()
@@ -386,6 +399,10 @@ impl<S: Clone + PartialEq> Trellis<S> {
     }
 
     /// [`Self::quantize`] with a beam of `max_states` survivors.
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "Keep candidate and rate iteration indexed in this measured hot path"
+    )]
     fn quantize_beam<M: CoeffRateModel<State = S>>(
         &mut self,
         model: &mut M,
@@ -407,13 +424,15 @@ impl<S: Clone + PartialEq> Trellis<S> {
             }
             self.extensions.clear();
             let mut rates = [0.0; MAX_CANDIDATES];
+            let count = cands.count.min(MAX_CANDIDATES);
             for (from, node) in self.nodes.iter().enumerate() {
-                model.beam_level_rates(&node.state, pos, &cands.levels[..cands.count], &mut rates);
-                for ((level, distortion), &rate) in cands.iter().zip(&rates) {
-                    let cost = node.cost + f64::from(distortion) + lambda * f64::from(rate);
+                model.beam_level_rates(&node.state, pos, &cands.levels[..count], &mut rates);
+                for i in 0..count {
+                    let cost =
+                        node.cost + f64::from(cands.distortion[i]) + lambda * f64::from(rates[i]);
                     self.extensions.push(Extension {
                         from: from as u32,
-                        level,
+                        level: cands.levels[i],
                         cost,
                     });
                 }
@@ -421,19 +440,23 @@ impl<S: Clone + PartialEq> Trellis<S> {
             if let Some(tail_cost) = tail {
                 let initial = model.initial_state();
                 // Candidates are ordered nearest first, so zero is last.
-                let nonzero = cands.levels[..cands.count].partition_point(|&l| l > 0);
+                let nonzero = cands.levels[..count].partition_point(|&l| l > 0);
                 if nonzero > 0 {
                     let eob = model.eob_rate(pos);
                     model.last_level_rates(&initial, pos, &cands.levels[..nonzero], &mut rates);
-                    rates[..nonzero].iter_mut().for_each(|r| *r += eob);
-                }
-                for ((level, distortion), &rate) in cands.iter().zip(&rates).take(nonzero) {
-                    let cost = tail_cost + f64::from(distortion) + lambda * f64::from(rate);
-                    self.extensions.push(Extension {
-                        from: NO_PARENT,
-                        level,
-                        cost,
-                    });
+                    for r in &mut rates[..nonzero] {
+                        *r += eob;
+                    }
+                    for i in 0..nonzero {
+                        let cost = tail_cost
+                            + f64::from(cands.distortion[i])
+                            + lambda * f64::from(rates[i]);
+                        self.extensions.push(Extension {
+                            from: NO_PARENT,
+                            level: cands.levels[i],
+                            cost,
+                        });
+                    }
                 }
             }
             tail = tail.zip(cands.zero()).map(|(t, d)| t + f64::from(d));
@@ -476,6 +499,10 @@ impl<S: Clone + PartialEq> Trellis<S> {
     /// ranks them) without the beam's ranking, state copies or decision
     /// arena. The survivor's path is kept as one level per position, from
     /// its start (the last coded position) down.
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "Keep candidate and rate iteration indexed in this measured hot path"
+    )]
     fn quantize_single<M: CoeffRateModel<State = S>>(
         model: &mut M,
         candidates: &[Candidates],
@@ -501,21 +528,25 @@ impl<S: Clone + PartialEq> Trellis<S> {
             // The survivor's extensions are compared first, then the
             // tail's, as in the beam's order (which breaks ties alike).
             // (cost, level, from the tail)
+            let count = cands.count.min(MAX_CANDIDATES);
             let mut best: Option<(f64, u32, bool)> = None;
             if let Some((state, cost, _)) = survivor.as_ref() {
-                model.level_rates(state, pos, &cands.levels[..cands.count], &mut rates);
-                for ((level, distortion), &rate) in cands.iter().zip(&rates) {
-                    let extended = cost + f64::from(distortion) + lambda * f64::from(rate);
-                    consider(&mut best, (extended, level, false));
+                model.level_rates(state, pos, &cands.levels[..count], &mut rates);
+                for i in 0..count {
+                    let extended =
+                        cost + f64::from(cands.distortion[i]) + lambda * f64::from(rates[i]);
+                    consider(&mut best, (extended, cands.levels[i], false));
                 }
             }
-            let nonzero = cands.levels[..cands.count].partition_point(|&l| l > 0);
+            let nonzero = cands.levels[..count].partition_point(|&l| l > 0);
             let initial = tail.filter(|_| nonzero > 0).and_then(|tail_cost| {
                 let (state, tail_rates) =
                     Self::price_tail(model, cands, nonzero, pos, (tail_cost, lambda), best)?;
-                for ((level, distortion), &rate) in cands.iter().zip(&tail_rates).take(nonzero) {
-                    let extended = tail_cost + f64::from(distortion) + lambda * f64::from(rate);
-                    consider(&mut best, (extended, level, true));
+                for i in 0..nonzero {
+                    let extended = tail_cost
+                        + f64::from(cands.distortion[i])
+                        + lambda * f64::from(tail_rates[i]);
+                    consider(&mut best, (extended, cands.levels[i], true));
                 }
                 Some(state)
             });
@@ -679,6 +710,15 @@ pub trait ForwardCoeffRateModel {
 
     /// Move `state` past `level` coded at `scan_pos`.
     fn advance(&self, state: &mut Self::State, scan_pos: usize, level: u32);
+
+    /// Bits of coding a zero at `scan_pos` in `state`, moving `state` past
+    /// it: [`Self::level_rates`] of the zero then [`Self::advance`].
+    fn zero_step(&mut self, state: &mut Self::State, scan_pos: usize) -> f32 {
+        let mut rate = [0.0];
+        self.level_rates(state, scan_pos, &[0], &mut rate);
+        self.advance(state, scan_pos, 0);
+        rate[0]
+    }
 }
 
 /// The trellis of [`ForwardCoeffRateModel`] codecs: the same dynamic
@@ -729,16 +769,24 @@ impl<S: Clone + PartialEq> ForwardTrellis<S> {
     fn prepare_zero_suffix(&mut self, candidates: &[Candidates]) {
         let n = candidates.len();
         self.zero_suffix.clear();
-        self.zero_suffix.resize(n + 1, Some(0.0));
+        self.zero_suffix.resize(n + 1, None);
+        self.zero_suffix[n] = Some(0.0);
+        let mut acc = 0.0_f64;
         for (i, cands) in candidates.iter().enumerate().rev() {
-            self.zero_suffix[i] = self.zero_suffix[i + 1]
-                .zip(cands.zero())
-                .map(|(rest, d)| rest + f64::from(d));
+            let Some(d) = cands.zero() else {
+                break;
+            };
+            acc += f64::from(d);
+            self.zero_suffix[i] = Some(acc);
         }
     }
 
     /// [`Self::quantize`] with a beam of `max_states` survivors, after
     /// `zero_suffix` is set.
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "Keep candidate and rate iteration indexed in this measured hot path"
+    )]
     fn quantize_beam<M: ForwardCoeffRateModel<State = S>>(
         &mut self,
         model: &mut M,
@@ -761,14 +809,29 @@ impl<S: Clone + PartialEq> ForwardTrellis<S> {
         let mut rates = [0.0; MAX_CANDIDATES];
         for (pos, cands) in candidates.iter().enumerate() {
             search.end_paths(model, pos, self.zero_suffix[pos], lambda, &mut best);
+            if cands.count == 1 && cands.levels[0] == 0 {
+                let d = f64::from(cands.distortion[0]);
+                for node in &mut search.nodes {
+                    let rate = model.zero_step(&mut node.state, pos);
+                    node.cost = node.cost + d + lambda * f64::from(rate);
+                    search.steps.push(Step {
+                        parent: node.step,
+                        level: 0,
+                    });
+                    node.step = search.steps.len() as u32 - 1;
+                }
+                continue;
+            }
             search.extensions.clear();
+            let count = cands.count.min(MAX_CANDIDATES);
             for (from, node) in search.nodes.iter().enumerate() {
-                model.level_rates(&node.state, pos, &cands.levels[..cands.count], &mut rates);
-                for ((level, distortion), &rate) in cands.iter().zip(&rates) {
-                    let cost = node.cost + f64::from(distortion) + lambda * f64::from(rate);
+                model.level_rates(&node.state, pos, &cands.levels[..count], &mut rates);
+                for i in 0..count {
+                    let cost =
+                        node.cost + f64::from(cands.distortion[i]) + lambda * f64::from(rates[i]);
                     search.extensions.push(Extension {
                         from: from as u32,
-                        level,
+                        level: cands.levels[i],
                         cost,
                     });
                 }
@@ -807,6 +870,10 @@ impl<S: Clone + PartialEq> ForwardTrellis<S> {
     /// decision arena. A single forward path never branches back, so its
     /// levels are written as they are decided and an ending remembers only
     /// its position.
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "Keep candidate and rate iteration indexed in this measured hot path"
+    )]
     fn quantize_single<M: ForwardCoeffRateModel<State = S>>(
         &mut self,
         model: &mut M,
@@ -832,13 +899,20 @@ impl<S: Clone + PartialEq> ForwardTrellis<S> {
         let mut rates = [0.0; MAX_CANDIDATES];
         for (pos, cands) in candidates.iter().enumerate() {
             end_here(model, &state, cost, pos, self.zero_suffix[pos]);
-            model.level_rates(&state, pos, &cands.levels[..cands.count], &mut rates);
+            if cands.count == 1 && cands.levels[0] == 0 {
+                let rate = model.zero_step(&mut state, pos);
+                cost = cost + f64::from(cands.distortion[0]) + lambda * f64::from(rate);
+                levels[pos] = 0;
+                continue;
+            }
+            let count = cands.count.min(MAX_CANDIDATES);
+            model.level_rates(&state, pos, &cands.levels[..count], &mut rates);
             // The first of the cheapest, as the beam's stable ranking.
             let mut chosen: Option<(f64, u32)> = None;
-            for ((level, distortion), &rate) in cands.iter().zip(&rates) {
-                let extended = cost + f64::from(distortion) + lambda * f64::from(rate);
+            for i in 0..count {
+                let extended = cost + f64::from(cands.distortion[i]) + lambda * f64::from(rates[i]);
                 if chosen.is_none_or(|(c, _)| extended < c) {
-                    chosen = Some((extended, level));
+                    chosen = Some((extended, cands.levels[i]));
                 }
             }
             let (extended, level) = chosen.expect("every position has a candidate");

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use nc_common::{Picture, Sample};
 
 use super::mbstate::MbState;
-use super::structure::{Parity, Structure};
+use super::structure::{Parity, Structure, frame_of};
 use super::{DecodeError, Result};
 
 /// `LongTermFrameIdx` of an IDR picture with `long_term_reference_flag`.
@@ -32,6 +32,8 @@ const IDR_LONG_TERM_FRAME_IDX: u32 = 0;
 pub(super) enum FrameMotion {
     /// Coded as one frame: its macroblocks in raster order.
     Frame(Arc<Vec<MbState>>),
+    /// Coded as an MBAFF frame: its macroblocks by pair address.
+    Mbaff(Arc<Vec<MbState>>),
     /// Coded as two field pictures: each field's macroblocks in raster
     /// order (`None`: that field was not decoded).
     Fields([Option<Arc<Vec<MbState>>>; 2]),
@@ -72,6 +74,8 @@ pub(super) struct NewReference<T: Sample = u8> {
     pub poc: [i64; 2],
     /// The picture's macroblock states.
     pub motion: Arc<Vec<MbState>>,
+    /// An MBAFF frame (its states by pair address).
+    pub mbaff: bool,
 }
 
 /// The reference marking of one field.
@@ -755,7 +759,7 @@ impl<T: Sample> Dpb<T> {
             store.decoded[p] = true;
             match &mut store.motion {
                 FrameMotion::Fields(fields) => fields[p] = Some(current.motion),
-                FrameMotion::Frame(_) => {
+                FrameMotion::Frame(_) | FrameMotion::Mbaff(_) => {
                     return Err(DecodeError::Malformed("field of a frame picture"));
                 }
             }
@@ -769,7 +773,14 @@ impl<T: Sample> Dpb<T> {
             }
         }
         let (marks, decoded, motion) = match current.structure {
-            Structure::Frame => ([mark; 2], [true; 2], FrameMotion::Frame(current.motion)),
+            Structure::Frame => {
+                let motion = if current.mbaff {
+                    FrameMotion::Mbaff(current.motion)
+                } else {
+                    FrameMotion::Frame(current.motion)
+                };
+                ([mark; 2], [true; 2], motion)
+            }
             Structure::Field(parity) => {
                 let mut marks = [Mark::Unused; 2];
                 let mut decoded = [false; 2];
@@ -913,6 +924,28 @@ impl<T: Sample> Dpb<T> {
 /// A store index with the order count a B list sorts it by.
 type Ranked = (usize, i64);
 
+/// The reference list of the field macroblocks of parity `parity` of an
+/// MBAFF frame from its frame list (§8.4.2.1): each frame's field of the
+/// same parity (index `2 · i`), then its other field (`2 · i + 1`).
+pub(super) fn field_list<T: Sample>(
+    frames: &[Option<RefPicture<T>>],
+    parity: Parity,
+) -> Vec<Option<RefPicture<T>>> {
+    frames
+        .iter()
+        .flat_map(|frame| {
+            [parity, parity.opposite()].map(|field| {
+                frame.as_ref().map(|f| RefPicture {
+                    id: Structure::Field(field).reference_id(frame_of(f.id)),
+                    structure: Structure::Field(field),
+                    poc: f.field_poc[field.index()],
+                    ..f.clone()
+                })
+            })
+        })
+        .collect()
+}
+
 /// Frame entries of `stores`.
 fn frames(stores: impl IntoIterator<Item = usize>) -> Vec<Entry> {
     stores
@@ -935,6 +968,7 @@ mod tests {
             picture: Arc::new(Picture::new(16, 16, 0).unwrap()),
             poc: [poc; 2],
             motion: Arc::new(Vec::new()),
+            mbaff: false,
         }
     }
 

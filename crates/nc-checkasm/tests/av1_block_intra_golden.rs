@@ -20,7 +20,7 @@
 
 use nc_checkasm::rng::Rng;
 use nc_common::{BitDepth, FNV1A_OFFSET, Plane, PlaneView, PlaneViewMut, fnv1a_step};
-use nc_dsp::intra_prediction::av1_block::cfl::CflAc;
+use nc_dsp::intra_prediction::av1_block::cfl::{CFL_420, CflAc};
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
 use nc_dsp::intra_prediction::filter::FilterIntraMode;
 use nc_dsp::{Dsp, Isa};
@@ -192,7 +192,7 @@ fn chroma_from_luma_matches_libaom() {
             let alpha = draw(&mut rng, 2 * CFL_ALPHA_MAX as usize + 1) as i32 - CFL_ALPHA_MAX;
             let mut prediction: Vec<u8> = (0..w * h).map(|_| rng.next_u64() as u8).collect();
             let view = PlaneView::new(&luma, LUMA_BUFFER, LUMA_BUFFER, LUMA_BUFFER).expect("luma");
-            let ac = CflAc::from_luma(&view, 2 * stored_w, 2 * stored_h, w, h);
+            let ac = CflAc::from_luma(&view, (2 * stored_w, 2 * stored_h), CFL_420, w, h);
             let mut dst = PlaneViewMut::new(&mut prediction, w, w, h).expect("block");
             ac.predict(alpha, &mut dst, BitDepth::EIGHT);
             for p in prediction {

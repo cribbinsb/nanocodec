@@ -99,10 +99,10 @@ impl VvcFilterFns {
         deblock_luma_edge: vvc_deblock::luma_edge_at::<u16>,
         deblock_luma: vvc_deblock::luma_at::<u16>,
         deblock_chroma_edge: vvc_deblock::chroma_edge_at::<u16>,
-        deblock_chroma: vvc_deblock::chroma_at::<u16>,
+        deblock_chroma: vvc_deblock::chroma_at::<u16, 2>,
         alf_filter_block_row: vvc_alf::filter_block_row_at::<u16>,
-        alf_laplacians: vvc_alf::laplacians_at::<u16>,
-        alf_classify: vvc_alf::classify_at,
+        alf_laplacians: vvc_alf::laplacians_at::<u16, u16>,
+        alf_classify: vvc_alf::classify_at::<u16>,
         alf_clipped_block_row: vvc_alf::clipped_block_row_at::<u16>,
         alf_clipped_row: vvc_alf::clipped_row_at::<u16>,
         alf_chroma_row: vvc_alf::chroma_row_at::<u16>,
@@ -162,6 +162,17 @@ impl VvcFilterFns {
             _ => {}
         }
         fns
+    }
+}
+
+/// The ALF filter kernels for `kernels`' depth: the ISA's up to
+/// [`crate::VVC_ALF_MAX_BIT_DEPTH`], whose 16-bit lanes hold the tap
+/// differences, the scalar references (32-bit sums) deeper.
+fn alf_fns(kernels: DepthKernels<'_>) -> &VvcFilterFns {
+    if kernels.depth.bits() > crate::VVC_ALF_MAX_BIT_DEPTH {
+        &VvcFilterFns::SCALAR
+    } else {
+        &kernels.dsp.high.vvc_filter
     }
 }
 
@@ -531,18 +542,12 @@ impl VvcFilterPixel for u16 {
         // SAFETY: the lengths are checked above; the table matches a
         // supported ISA.
         unsafe {
-            (kernels.dsp.high.vvc_filter.alf_filter_block_row)(
-                rows,
-                coefficients,
-                shifts,
-                out,
-                kernels.depth,
-            );
+            (alf_fns(kernels).alf_filter_block_row)(rows, coefficients, shifts, out, kernels.depth);
         }
     }
 
     fn vvc_alf_laplacians(kernels: DepthKernels<'_>, rows: &[&[u16]; 4], out: &mut [[u16; 4]]) {
-        vvc_alf::check_depth(kernels.depth);
+        vvc_alf::check_sum_depth(kernels.depth);
         vvc_alf::check_laplacians(rows, out);
         // SAFETY: as for `vvc_alf_filter_block_row`.
         unsafe { (kernels.dsp.high.vvc_filter.alf_laplacians)(rows, out) }
@@ -554,7 +559,7 @@ impl VvcFilterPixel for u16 {
         boundary: bool,
         out: &mut [[u8; 2]],
     ) {
-        vvc_alf::check_depth(kernels.depth);
+        vvc_alf::check_sum_depth(kernels.depth);
         vvc_alf::check_classify(groups, out, kernels.depth);
         // SAFETY: as for `vvc_alf_filter_block_row`.
         unsafe { (kernels.dsp.high.vvc_filter.alf_classify)(groups, boundary, out, kernels.depth) }
@@ -572,7 +577,7 @@ impl VvcFilterPixel for u16 {
         vvc_alf::check_clipped_block_row(rows, coefficients, limits, shifts, out, kernels.depth);
         // SAFETY: as for `vvc_alf_filter_block_row`.
         unsafe {
-            (kernels.dsp.high.vvc_filter.alf_clipped_block_row)(
+            (alf_fns(kernels).alf_clipped_block_row)(
                 rows,
                 coefficients,
                 limits,
@@ -595,7 +600,7 @@ impl VvcFilterPixel for u16 {
         vvc_alf::check_clipped_row(rows, coefficients, limits, shift, out, kernels.depth);
         // SAFETY: as for `vvc_alf_filter_block_row`.
         unsafe {
-            (kernels.dsp.high.vvc_filter.alf_clipped_row)(
+            (alf_fns(kernels).alf_clipped_row)(
                 rows,
                 coefficients,
                 limits,
@@ -618,7 +623,7 @@ impl VvcFilterPixel for u16 {
         vvc_alf::check_chroma_row(rows, coefficients, limits, shift, out, kernels.depth);
         // SAFETY: as for `vvc_alf_filter_block_row`.
         unsafe {
-            (kernels.dsp.high.vvc_filter.alf_chroma_row)(
+            (alf_fns(kernels).alf_chroma_row)(
                 rows,
                 coefficients,
                 limits,
@@ -639,7 +644,7 @@ impl VvcFilterPixel for u16 {
         vvc_alf::check_cross_row(rows, coefficients, out);
         // SAFETY: as for `vvc_alf_filter_block_row`.
         unsafe {
-            (kernels.dsp.high.vvc_filter.alf_cross_row)(rows, coefficients, out, kernels.depth);
+            (alf_fns(kernels).alf_cross_row)(rows, coefficients, out, kernels.depth);
         }
     }
 }
@@ -713,6 +718,49 @@ impl DepthKernels<'_> {
         boundary: bool,
     ) {
         T::vvc_deblock_chroma_edge(self, dst, at, vertical, lines, beta, tc, large, boundary);
+    }
+
+    /// [`Self::vvc_deblock_chroma_edge`] of `lines` filtered in segments of
+    /// `segment` lines, each decided on its first and last line: 2 where
+    /// chroma is subsampled along the edge (the SIMD tiers), 4 where it is
+    /// not (4:2:2 vertical and 4:4:4 edges; scalar, VTM
+    /// `xEdgeFilterChroma`).
+    ///
+    /// # Panics
+    /// As [`Self::vvc_deblock_chroma_edge`], or for a segment other than 2
+    /// or 4 lines or `lines` not a whole number of segments.
+    #[inline]
+    pub fn vvc_deblock_chroma_edge_segments<T: super::Pixel>(
+        self,
+        dst: &mut PlaneViewMut<'_, T>,
+        (at, vertical): ((usize, usize), bool),
+        (lines, segment): (usize, usize),
+        (beta, tc): (i32, i32),
+        (large, boundary): (bool, bool),
+    ) {
+        if segment == vvc_deblock::CHROMA_PAIR {
+            T::vvc_deblock_chroma_edge(self, dst, at, vertical, lines, beta, tc, large, boundary);
+            return;
+        }
+        assert!(segment == vvc_deblock::CHROMA_QUAD && lines.is_multiple_of(segment));
+        check_thresholds(beta, tc, self.depth);
+        let edge = vvc_chroma_edge_at(dst, at, vertical, lines, beta, tc, (large, boundary));
+        vvc_deblock::chroma_edge_quads_at(dst.data_mut(), &edge, self.depth);
+    }
+
+    /// [`Self::vvc_deblock_chroma`] of four rows decided on rows 0 and 3
+    /// (scalar; see [`Self::vvc_deblock_chroma_edge_segments`]).
+    ///
+    /// # Panics
+    /// As [`Self::vvc_deblock_chroma`].
+    pub fn vvc_deblock_chroma_quad<T: super::Pixel>(
+        self,
+        edge: &mut [[T; 8]; 4],
+        (beta, tc): (i32, i32),
+        (large, boundary): (bool, bool),
+    ) {
+        check_thresholds(beta, tc, self.depth);
+        vvc_deblock::chroma_at(edge, beta, tc, large, boundary, self.depth);
     }
 
     /// [`crate::Dsp::vvc_deblock_chroma`] at this depth (`beta`, `tc` as
@@ -835,6 +883,44 @@ impl DepthKernels<'_> {
         out: &mut [T],
     ) {
         T::vvc_alf_cross_row(self, rows, coefficients, out);
+    }
+
+    /// [`Self::vvc_alf_laplacians`] of samples deeper than
+    /// [`crate::VVC_ALF_MAX_BIT_DEPTH`], whose group sums need 32 bits
+    /// (scalar).
+    ///
+    /// # Panics
+    /// If a row is shorter than `4 · out.len() + 2` samples.
+    pub fn vvc_alf_laplacians_wide<T: super::Pixel>(self, rows: &[&[T]; 4], out: &mut [[u32; 4]]) {
+        vvc_alf::check_laplacians(rows, out);
+        vvc_alf::laplacians_at(rows, out);
+    }
+
+    /// [`Self::vvc_alf_classify`] of 32-bit group sums
+    /// ([`Self::vvc_alf_laplacians_wide`]; scalar).
+    ///
+    /// # Panics
+    /// If `groups` does not hold one group more than `out` has blocks.
+    pub fn vvc_alf_classify_wide(self, groups: &[[u32; 4]], boundary: bool, out: &mut [[u8; 2]]) {
+        assert_eq!(groups.len(), out.len() + 1);
+        vvc_alf::classify_at(groups, boundary, out, self.depth);
+    }
+
+    /// [`Self::vvc_alf_cross_row`] of chroma that is not horizontally
+    /// subsampled (4:4:4): each chroma sample's luma is the sample under it.
+    /// Scalar (the profiles that need it are not speed-critical here).
+    ///
+    /// # Panics
+    /// As [`Self::vvc_alf_cross_row`], with rows of `out.len() + 2` samples.
+    pub fn vvc_alf_cross_row_unsubsampled<T: super::Pixel>(
+        self,
+        rows: &[&[T]; 4],
+        coefficients: [i16; 7],
+        out: &mut [T],
+    ) {
+        vvc_alf::check_depth(self.depth);
+        vvc_alf::check_cross_row_step(rows, coefficients, out, 1);
+        vvc_alf::cross_row_step_at(rows, coefficients, (out, 1), self.depth);
     }
 }
 

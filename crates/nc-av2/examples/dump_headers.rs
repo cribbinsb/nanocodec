@@ -14,7 +14,8 @@
 use std::rc::Rc;
 
 use nc_av2::general::frame_header::{self, Context, MAX_SLOTS, Parsed, SlotHeader, obu_type};
-use nc_av2::general::output::{OutputOrder, Release};
+use nc_av2::general::multi_frame_header::{self, MultiFrameHeaders};
+use nc_av2::general::output::{OutputOrder, Position, Release};
 use nc_av2::general::sequence::{self, SequenceHeader};
 use nc_av2::obu;
 use nc_common::decode::BitReader;
@@ -24,6 +25,10 @@ const IVF_FILE_HEADER: usize = 32;
 const IVF_FRAME_HEADER: usize = 12;
 /// OBU type of the sequence header.
 const SEQUENCE_HEADER: u8 = 1;
+/// `OBU_TEMPORAL_DELIMITER`.
+const TEMPORAL_DELIMITER: u8 = 2;
+/// `OBU_MULTI_FRAME_HEADER`.
+const MULTI_FRAME_HEADER: u8 = 3;
 
 /// The OBU bytes of `file`: an IVF file's packets joined, or the file.
 fn obu_bytes(file: &[u8]) -> Vec<u8> {
@@ -49,17 +54,20 @@ fn obu_bytes(file: &[u8]) -> Vec<u8> {
 struct Walk {
     sequence: Option<SequenceHeader>,
     slots: Vec<Option<SlotHeader>>,
+    multi_frame_headers: MultiFrameHeaders,
+    /// A frame came since the last temporal delimiter.
+    frame_in_unit: bool,
     frames: u32,
     order: OutputOrder,
     shown: Vec<u32>,
 }
 
 impl Walk {
-    /// Output the frame of display order `order` (with what it releases).
-    fn show(&mut self, order: u32) {
-        for release in self.order.show(&self.slots, order).unwrap_or_default() {
+    /// Output the frame at `position` (with what it releases).
+    fn show(&mut self, position: Position) {
+        for release in self.order.show(&self.slots, position).unwrap_or_default() {
             self.shown.push(match release {
-                Release::Current => order,
+                Release::Current => position.order,
                 Release::Slot(slot) => {
                     self.slots[slot]
                         .as_ref()
@@ -92,6 +100,7 @@ impl Walk {
             obu_type: kind,
             temporal_layer: unit.header.temporal_id,
             embedded_layer: unit.header.embedded_id,
+            multi_frame_headers: &self.multi_frame_headers,
         };
         let mut trace = |name: &'static str, offset: usize| println!("HDR: {name}: off={offset}");
         match frame_header::parse(&context, &mut bits, &mut trace)? {
@@ -99,7 +108,7 @@ impl Walk {
                 let held = self.slots[usize::from(shown.slot)]
                     .clone()
                     .ok_or("empty slot")?;
-                self.show(held.header.order);
+                self.show(Position::of(&held.header));
                 if held.header.frame_type == frame_header::FrameType::Key {
                     for slot in &mut self.slots {
                         *slot = Some(held.clone());
@@ -107,12 +116,22 @@ impl Walk {
                 }
             }
             Parsed::Frame(header) => {
+                // A closed-loop key frame starting a temporal unit empties
+                // the slots it does not refresh (as the decoder does).
+                if kind == obu_type::CLOSED_LOOP_KEY && !self.frame_in_unit {
+                    self.order.restart();
+                    for (index, slot) in self.slots.iter_mut().enumerate() {
+                        if header.refresh & (1 << index) == 0 {
+                            *slot = None;
+                        }
+                    }
+                }
                 if !header.is_intra() {
                     let slots: Vec<String> = header.references.iter().map(u8::to_string).collect();
                     println!("REFS: {}", slots.join(","));
                 }
                 if header.show_immediate {
-                    self.show(header.order);
+                    self.show(Position::of(&header));
                 }
                 let refresh = header.refresh;
                 let held = SlotHeader {
@@ -142,6 +161,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut walk = Walk {
         sequence: None,
         slots: vec![None; MAX_SLOTS],
+        multi_frame_headers: MultiFrameHeaders::default(),
+        frame_in_unit: false,
         frames: 0,
         order: OutputOrder::default(),
         shown: Vec::new(),
@@ -156,11 +177,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if header.obu_type == SEQUENCE_HEADER {
                 let parsed = sequence::parse(unit.payload)?;
                 if walk.sequence.as_ref() != Some(&parsed) {
-                    walk.order = OutputOrder::new(parsed.inter.order_hint_bits);
+                    walk.order =
+                        OutputOrder::new(parsed.inter.order_hint_bits, parsed.max_embedded_layer);
                 }
                 walk.sequence = Some(parsed);
+            } else if header.obu_type == TEMPORAL_DELIMITER {
+                walk.frame_in_unit = false;
+            } else if header.obu_type == MULTI_FRAME_HEADER {
+                multi_frame_header::parse(unit.payload, &mut walk.multi_frame_headers)?;
             } else if obu_type::is_frame(header.obu_type) {
                 walk.frame(&unit)?;
+                walk.frame_in_unit = true;
             }
             continue;
         }

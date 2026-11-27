@@ -286,8 +286,9 @@ fn geometry(r: &mut Reader<'_>, s: &Sequence) -> Result<Geometry> {
             *value = r.ue(4096, "VVC PPS crop")?;
         }
     }
-    let scale = if s.chroma { 2 } else { 1 };
-    if scale * (crop[0] + crop[1]) >= dimensions[0] || scale * (crop[2] + crop[3]) >= dimensions[1]
+    let units = s.crop_units();
+    if units[0] * (crop[0] + crop[1]) >= dimensions[0]
+        || units[1] * (crop[2] + crop[3]) >= dimensions[1]
     {
         return Err(DecodeError::Malformed("VVC PPS crop exceeds picture"));
     }
@@ -300,14 +301,11 @@ fn geometry(r: &mut Reader<'_>, s: &Sequence) -> Result<Geometry> {
         }
         for (index, value) in scaling_window.iter_mut().enumerate() {
             let size = dimensions[index / 2] as i32;
-            *value = r.se(
-                -15 * size / scale as i32,
-                (size - 1) / scale as i32,
-                "VVC scaling window",
-            )?;
+            let unit = units[index / 2] as i32;
+            *value = r.se(-15 * size / unit, (size - 1) / unit, "VVC scaling window")?;
         }
         for axis in 0..2 {
-            let sum = i64::from(scale)
+            let sum = i64::from(units[axis])
                 * i64::from(scaling_window[axis * 2] + scaling_window[axis * 2 + 1]);
             if sum < -15 * i64::from(dimensions[axis]) || sum >= i64::from(dimensions[axis]) {
                 return Err(DecodeError::Malformed("VVC scaling window sum"));

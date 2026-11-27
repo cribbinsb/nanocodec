@@ -10,7 +10,7 @@ use crate::{
     decoder_metadata::FieldParity,
 };
 use nc_common::{
-    OutputPicture, Picture, PictureRecycler, PlaneIndex, Sample, ShownPicture,
+    ChromaFormat, OutputPicture, Picture, PictureRecycler, PlaneIndex, Sample, ShownPicture,
     decode::{DecodeError, Result},
 };
 
@@ -67,9 +67,15 @@ impl<T: Sample> References<T> {
         }
     }
 
-    /// Obtain a `width` x `height` picture with [`REFERENCE_BORDER`] luma
-    /// border from the DPB recycler, allocating only on DPB growth.
-    pub fn take_picture(&mut self, width: usize, height: usize) -> Result<Picture<T>> {
+    /// Obtain a `width` x `height` picture of `format` with
+    /// [`REFERENCE_BORDER`] luma border from the DPB recycler, allocating only
+    /// on DPB growth.
+    pub fn take_picture(
+        &mut self,
+        width: usize,
+        height: usize,
+        format: ChromaFormat,
+    ) -> Result<Picture<T>> {
         let mut i = 0;
         while i < self.in_flight.len() {
             if Arc::strong_count(&self.in_flight[i]) == 1 {
@@ -82,7 +88,7 @@ impl<T: Sample> References<T> {
             }
         }
         self.recycler
-            .take(width, height, REFERENCE_BORDER)
+            .take_with_format(width, height, format, REFERENCE_BORDER)
             .map_err(|_| DecodeError::Malformed("VVC picture dimensions"))
     }
 
@@ -402,7 +408,7 @@ fn interleave_fields<T: Sample>(
     let full_h = h.checked_mul(2)?;
     let top_view = ShownPicture::window(&top.picture, top.origin, top.size)?;
     let bot_view = ShownPicture::window(&bottom.picture, bottom.origin, bottom.size)?;
-    let mut frame = Picture::new(w, full_h, 0).ok()?;
+    let mut frame = Picture::with_format(w, full_h, top.picture.chroma_format(), 0).ok()?;
     for plane in PlaneIndex::ALL {
         let t_plane = top_view.plane(plane);
         let b_plane = bot_view.plane(plane);

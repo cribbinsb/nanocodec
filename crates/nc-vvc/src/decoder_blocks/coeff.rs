@@ -18,13 +18,65 @@ const MIN_REGULAR_BUDGET: usize = 4;
 const MAX_GROUP_SIZE: usize = 16;
 const MAX_CG_COUNT: usize = 64;
 const FIRST_RICE_BASE: u32 = 4;
-const COEFF_MIN: i32 = -32_768;
-const COEFF_MAX: i32 = 32_767;
 const MTS_REGION_LIMIT: usize = 16;
 const ZERO_OUT_GROUP_LIMIT: usize = 4;
-const ESCAPE_SUFFIX_MAX: u32 = 15;
+/// `log2TransformRange` without extended precision (H.266 §7.4.3.22): 15.
+pub(super) const BASE_LOG2_RANGE: u32 = 15;
+/// Bits of the prefix-limited escape code's whole span (§9.3.3.11:
+/// `maxPrefixExtLen = 32 − log2TransformRange` prefix bins).
+const ESCAPE_SPAN: u32 = 32;
+/// Template sum thresholds and shifts of the extended Rice derivation
+/// (§9.3.3.2 with `sps_rrc_rice_extension_flag`, VTM `g_riceThreshold`).
+const RICE_SHIFT_THRESHOLDS: [u32; 4] = [32, 128, 512, 2048];
+/// The shift of each threshold interval (2 per interval).
+const RICE_SHIFT_STEP: u32 = 2;
+/// The largest clipped template sum (§9.3.3.2: `Clip3(0, 31, ...)`).
+const MAX_TEMPLATE_SUM: u32 = 31;
 
 pub(super) const PADDED_AREA: usize = (MAX_CODED_SIDE + PAD) * (MAX_CODED_SIDE + PAD);
+
+/// What a slice's regular residual coding takes from the range extension
+/// (H.266 §7.3.11.11, §9.3.3.2, §9.3.3.11), with the persistent Rice
+/// statistics (`StatCoeff`) it carries from block to block.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RiceContext {
+    /// `log2TransformRange` (15, or `Max(15, BitDepth + 6)` with extended
+    /// precision): the escape code's length and the coefficient range.
+    pub log2_range: u32,
+    /// `baseLevel` of the remainders after the context-coded flags: 4, or
+    /// by depth and slice type with the extended Rice derivation.
+    pub base_level: u32,
+    /// `sps_rrc_rice_extension_flag`.
+    pub extension: bool,
+    /// `StatCoeff` per component with persistent Rice adaptation.
+    pub statistics: Option<[u32; 3]>,
+    /// `sh_reverse_last_sig_coeff_flag`.
+    pub reverse_last: bool,
+}
+
+impl RiceContext {
+    /// Version 1 residual coding: none of the extension's tools.
+    pub(super) const PLAIN: Self = Self {
+        log2_range: BASE_LOG2_RANGE,
+        base_level: FIRST_RICE_BASE,
+        extension: false,
+        statistics: None,
+        reverse_last: false,
+    };
+
+    /// `StatCoeff` at a slice, tile or entropy-synchronised CTU row start
+    /// (§9.3.2.2: `2 · Floor(Log2(BitDepth − 10))`).
+    pub(super) fn reset_statistics(&mut self, bits: u32) {
+        if let Some(statistics) = &mut self.statistics {
+            *statistics = [2 * (bits.saturating_sub(10)).max(1).ilog2(); 3];
+        }
+    }
+
+    /// The smallest and largest coefficient (`CoeffMinY`... §7.4.11.11).
+    fn coefficient_range(&self) -> std::ops::RangeInclusive<i32> {
+        -(1 << self.log2_range)..=(1 << self.log2_range) - 1
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct CoeffStats {
@@ -243,7 +295,7 @@ fn last_position(
     height: usize,
     channel: usize,
     scan: &Scan,
-    zero_out: bool,
+    (zero_out, reverse): (bool, bool),
 ) -> Result<usize> {
     let limit_w = zero_out_side(width, zero_out);
     let limit_h = zero_out_side(height, zero_out);
@@ -261,10 +313,14 @@ fn last_position(
         channel,
         limit_h,
     )?;
-    let x = last_suffix(r, gx)?;
-    let y = last_suffix(r, gy)?;
+    let mut x = last_suffix(r, gx)?;
+    let mut y = last_suffix(r, gy)?;
     if x >= limit_w || y >= limit_h {
         return Err(DecodeError::Malformed("VVC last coefficient position"));
+    }
+    if reverse {
+        // Coded from the far corner of the zero-out region (§7.4.11.11).
+        (x, y) = (limit_w - 1 - x, limit_h - 1 - y);
     }
     Ok(usize::from(scan.inverse[y * scan.coded_width + x]))
 }
@@ -289,16 +345,34 @@ fn grid_context(pass1: &[u8], pad_stride: usize, entry: ScanEntry, ch: usize) ->
 #[inline(always)]
 #[allow(clippy::inline_always, reason = "per-coefficient Golomb-Rice lookup")]
 fn grid_rice(grid: &[u32], pad_stride: usize, pad_pos: u16, base: u32) -> u32 {
-    let p = usize::from(pad_pos);
-    let win = &grid[p..=p + 2 * pad_stride];
-    let sum = win[1] + win[2] + win[pad_stride] + win[pad_stride + 1] + win[2 * pad_stride];
-    crate::coeff::rice_parameter(sum, base)
+    crate::coeff::rice_parameter(grid_sum(grid, pad_stride, pad_pos), base)
 }
 
-pub(super) fn remainder(r: &mut Reader<'_>, rice: u32) -> Result<u32> {
+/// The template sum `locSumAbs` of the padded grid at `pad_pos` (§9.3.3.2).
+#[inline(always)]
+#[allow(clippy::inline_always, reason = "per-coefficient Golomb-Rice lookup")]
+fn grid_sum(grid: &[u32], pad_stride: usize, pad_pos: u16) -> u32 {
+    let p = usize::from(pad_pos);
+    let win = &grid[p..=p + 2 * pad_stride];
+    win[1] + win[2] + win[pad_stride] + win[pad_stride + 1] + win[2 * pad_stride]
+}
+
+/// One `abs_remainder` / `dec_abs_level` (§9.3.3.11): a Rice code of
+/// parameter `rice`, escaping to Exp-Golomb after 5 prefix bins, the
+/// prefix limited to `32 − log2_range` bins, after which `log2_range`
+/// bits follow.
+#[inline]
+/// `EXT` with extended precision; without it `log2_range` is 15 and the
+/// escape's bounds are constants.
+pub(super) fn remainder<const EXT: bool>(
+    r: &mut Reader<'_>,
+    rice: u32,
+    log2_range: u32,
+) -> Result<u32> {
     const CUTOFF: u32 = 5;
-    const MAX_ESCAPE: u32 = 12;
-    let prefix = r.bypass_unary(CUTOFF + MAX_ESCAPE);
+    let log2_range = if EXT { log2_range } else { BASE_LOG2_RANGE };
+    let max_prefix = ESCAPE_SPAN - log2_range;
+    let prefix = r.bypass_unary(max_prefix);
     if prefix < CUTOFF {
         return Ok(if rice == 0 {
             prefix
@@ -309,81 +383,149 @@ pub(super) fn remainder(r: &mut Reader<'_>, rice: u32) -> Result<u32> {
     let escape = prefix - CUTOFF;
     let base = (CUTOFF + (1 << escape) - 1) << rice;
     Ok(base
-        + r.bypass_bits(if escape == MAX_ESCAPE {
-            ESCAPE_SUFFIX_MAX
+        + r.bypass_bits(if prefix == max_prefix {
+            log2_range
         } else {
             escape + rice
         })?)
 }
 
+/// Parse one transform block's regular residual coding (§7.3.11.11) of
+/// `plane` into `arena`; `rice` carries the range extension's state.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(super) fn read_into(
     r: &mut Reader<'_>,
     models: &mut Models,
     arena: &mut super::CoeffArena,
     width: usize,
     height: usize,
-    channel: usize,
+    (plane, rice): (usize, &mut RiceContext),
     dependent: bool,
     hiding: bool,
     zero_out: bool,
 ) -> Result<((u32, u16), CoeffStats)> {
+    let channel = usize::from(plane != 0);
     if ![1, 2, 4, 8, 16, 32, 64].contains(&width)
         || ![1, 2, 4, 8, 16, 32, 64].contains(&height)
         || channel > 1
     {
         return Err(DecodeError::Unsupported("VVC residual geometry"));
     }
-    let start = u32::try_from(arena.entries.len())
-        .map_err(|_| DecodeError::Malformed("VVC coeff arena"))?;
+    // Levels beyond 16 bits only with extended precision.
+    let start = arena.span_start(rice.log2_range > BASE_LOG2_RANGE)?;
     let scan = Scan::of(width, height);
-    let last = last_position(r, models, width, height, channel, scan, zero_out)?;
-    let stats = {
-        let mut walk = Walk {
-            arena: &mut arena.entries,
-            grid: &mut arena.grid[..],
-            pass1: &mut arena.pass1[..],
-            max_pad: 0,
-            pad_stride: scan.coded_width + PAD,
-            state: 0,
-            // Context-coded bins: 7/4 per coefficient of the area left after
-            // the zero-out (H.266 §7.3.11.11 `remCcbs` from `log2ZoTbWidth`,
-            // `log2ZoTbHeight`; SBT and MTS keep 16 of 32).
-            budget: zero_out_side(width, zero_out) * zero_out_side(height, zero_out) * BUDGET_NUM
-                / BUDGET_DEN,
-            channel,
-            dependent,
-            hiding,
-            stats: CoeffStats::default(),
-        };
-        let _ = MAX_CG_COUNT;
-        let mut significant = 0u64;
-        let last_group = last / scan.group_size;
-        for group in (0..=last_group).rev() {
-            let raster = scan.groups[group];
-            let (gx, gy) = (raster % scan.columns, raster / scan.columns);
-            if zero_out
-                && ((width == MAX_CODED_SIDE && gx >= ZERO_OUT_GROUP_LIMIT)
-                    || (height == MAX_CODED_SIDE && gy >= ZERO_OUT_GROUP_LIMIT))
-            {
-                continue;
-            }
-            let adjacent = (gx + 1 < scan.columns && (significant >> (raster + 1)) & 1 != 0)
-                || (gy + 1 < scan.rows && (significant >> (raster + scan.columns)) & 1 != 0);
-            if group != 0
-                && group != last_group
-                && !r.bin(&mut models.common.group[channel][usize::from(adjacent)])?
-            {
-                continue;
-            }
-            significant |= 1u64 << raster;
-            walk.group(r, models, scan, group, last)?;
-        }
-        walk.stats
+    let last = last_position(
+        r,
+        models,
+        width,
+        height,
+        channel,
+        scan,
+        (zero_out, rice.reverse_last),
+    )?;
+    let statistic = rice.statistics.map(|statistics| statistics[plane]);
+    let extended = rice.extension
+        || statistic.is_some()
+        || rice.log2_range != BASE_LOG2_RANGE
+        || rice.base_level != FIRST_RICE_BASE;
+    let block = Block {
+        size: (width, height),
+        plane,
+        scan,
+        last,
+        flags: (dependent, hiding, zero_out),
     };
-    let count = u16::try_from(arena.entries.len() - start as usize)
-        .map_err(|_| DecodeError::Malformed("VVC coeff count"))?;
-    Ok(((start, count), stats))
+    let stats = if extended {
+        walk_groups::<true>(r, models, arena, block, rice)?
+    } else {
+        walk_groups::<false>(r, models, arena, block, rice)?
+    };
+    Ok((arena.span_from(start)?, stats))
+}
+
+/// The transform block a residual walk covers.
+#[derive(Clone, Copy)]
+struct Block<'s> {
+    size: (usize, usize),
+    plane: usize,
+    scan: &'s Scan,
+    last: usize,
+    /// Dependent quantisation, sign hiding and the MTS/SBT zero-out.
+    flags: (bool, bool, bool),
+}
+
+/// The coefficient groups of `block` from its last one back (§7.3.11.11).
+#[inline]
+fn walk_groups<const EXT: bool>(
+    r: &mut Reader<'_>,
+    models: &mut Models,
+    arena: &mut super::CoeffArena,
+    block: Block<'_>,
+    rice: &mut RiceContext,
+) -> Result<CoeffStats> {
+    let Block {
+        size: (width, height),
+        plane,
+        scan,
+        last,
+        flags: (dependent, hiding, zero_out),
+    } = block;
+    let channel = usize::from(plane != 0);
+    let statistic = rice.statistics.map(|statistics| statistics[plane]);
+    let mut walk = Walk::<EXT> {
+        narrow: &mut arena.entries,
+        wide: (rice.log2_range > BASE_LOG2_RANGE).then_some(&mut arena.wide),
+        grid: &mut arena.grid[..],
+        pass1: &mut arena.pass1[..],
+        max_pad: 0,
+        pad_stride: scan.coded_width + PAD,
+        state: 0,
+        // Context-coded bins: 7/4 per coefficient of the area left after
+        // the zero-out (H.266 §7.3.11.11 `remCcbs` from `log2ZoTbWidth`,
+        // `log2ZoTbHeight`; SBT and MTS keep 16 of 32).
+        budget: zero_out_side(width, zero_out) * zero_out_side(height, zero_out) * BUDGET_NUM
+            / BUDGET_DEN,
+        channel,
+        dependent,
+        hiding,
+        stats: CoeffStats::default(),
+        rice: Rice {
+            context: *rice,
+            size: (width, height),
+            history: statistic.map_or(0, |stat| 1 << stat),
+            statistic,
+            pending: statistic.is_some(),
+            general: rice.extension || statistic.is_some(),
+        },
+    };
+    let _ = MAX_CG_COUNT;
+    let mut significant = 0u64;
+    let last_group = last / scan.group_size;
+    for group in (0..=last_group).rev() {
+        let raster = scan.groups[group];
+        let (gx, gy) = (raster % scan.columns, raster / scan.columns);
+        if zero_out
+            && ((width == MAX_CODED_SIDE && gx >= ZERO_OUT_GROUP_LIMIT)
+                || (height == MAX_CODED_SIDE && gy >= ZERO_OUT_GROUP_LIMIT))
+        {
+            continue;
+        }
+        let adjacent = (gx + 1 < scan.columns && (significant >> (raster + 1)) & 1 != 0)
+            || (gy + 1 < scan.rows && (significant >> (raster + scan.columns)) & 1 != 0);
+        if group != 0
+            && group != last_group
+            && !r.bin(&mut models.common.group[channel][usize::from(adjacent)])?
+        {
+            continue;
+        }
+        significant |= 1u64 << raster;
+        walk.group(r, models, scan, group, last)?;
+    }
+    if let (Some(statistics), Some(statistic)) = (&mut rice.statistics, walk.rice.statistic) {
+        statistics[plane] = statistic;
+    }
+    Ok(walk.stats)
 }
 
 #[cfg(test)]
@@ -399,13 +541,22 @@ fn read_general(
     zero_out: bool,
 ) -> Result<(Vec<i32>, CoeffStats)> {
     let mut arena = super::CoeffArena::default();
+    let mut rice = RiceContext::PLAIN;
     let (_, stats) = read_into(
-        r, models, &mut arena, width, height, channel, dependent, hiding, zero_out,
+        r,
+        models,
+        &mut arena,
+        width,
+        height,
+        (channel, &mut rice),
+        dependent,
+        hiding,
+        zero_out,
     )?;
     let mut out = vec![0i32; width * height];
-    for &(pos, val) in &arena.entries {
-        out[usize::from(pos)] = i32::from(val);
-    }
+    arena
+        .slice((0, arena.entries.len() as u16))
+        .scatter(&mut out);
     Ok((out, stats))
 }
 
@@ -418,8 +569,13 @@ struct ActiveCoeff {
     outside_16: bool,
 }
 
-struct Walk<'a> {
-    arena: &'a mut Vec<(u16, i16)>,
+/// One block's regular residual walk; `EXT` when a range-extension tool
+/// (extended precision, Rice extension, persistent Rice) is on, so version
+/// 1 streams run the version 1 derivations with constant bounds.
+struct Walk<'a, const EXT: bool> {
+    /// Where 16-bit levels go, and 32-bit ones with extended precision.
+    narrow: &'a mut Vec<(u16, i16)>,
+    wide: Option<&'a mut Vec<(u16, i32)>>,
     grid: &'a mut [u32],
     pass1: &'a mut [u8],
     max_pad: usize,
@@ -430,15 +586,82 @@ struct Walk<'a> {
     dependent: bool,
     hiding: bool,
     stats: CoeffStats,
+    rice: Rice,
 }
 
-impl Drop for Walk<'_> {
+/// The Rice parameter derivation of one transform block (§9.3.3.2).
+struct Rice {
+    context: RiceContext,
+    /// The block's width and height (template positions beyond them take
+    /// `history`).
+    size: (usize, usize),
+    /// `HistValue`: `1 << StatCoeff` at the block's start, or 0.
+    history: u32,
+    /// The component's `StatCoeff` (with persistent Rice adaptation).
+    statistic: Option<u32>,
+    /// Whether `statistic` still awaits the block's first nonzero
+    /// remainder, which alone updates it.
+    pending: bool,
+    /// Whether the extension's derivation applies (else version 1's).
+    general: bool,
+}
+
+impl Rice {
+    /// The Rice parameter of the coefficient at raster `pos` whose padded
+    /// grid template sums to `sum`, above `base` (`baseLevel`).
+    fn parameter(&self, sum: u32, pos: u16, base: u32) -> u32 {
+        let (width, height) = self.size;
+        let (x, y) = (usize::from(pos) % width, usize::from(pos) / width);
+        // Template positions beyond the block count `HistValue` (VTM
+        // `templateAbsSum`: a last column counts two).
+        let outside = if x + 1 < width {
+            u32::from(x + 2 >= width) + u32::from(y + 1 >= height)
+        } else {
+            2
+        } + if y + 1 < height {
+            u32::from(y + 2 >= height)
+        } else {
+            1
+        };
+        let sum = sum + outside * self.history;
+        if !self.context.extension {
+            return crate::coeff::rice_parameter(sum, base);
+        }
+        let shift = RICE_SHIFT_STEP
+            * RICE_SHIFT_THRESHOLDS
+                .iter()
+                .take_while(|&&threshold| sum >= threshold)
+                .count() as u32;
+        let sum = sum >> shift;
+        let clipped = if base == 0 {
+            sum.min(MAX_TEMPLATE_SUM)
+        } else {
+            sum.saturating_sub(base).min(MAX_TEMPLATE_SUM)
+        };
+        // `clipped` is below 5 · 7, the version 1 table's first step.
+        crate::coeff::rice_parameter(clipped, 0) + shift
+    }
+
+    /// `StatCoeff` after the block's first nonzero remainder `rem`
+    /// (§9.3.3.11: with `abs_remainder`, `regular`, two more).
+    fn update(&mut self, rem: u32, regular: bool) {
+        if rem == 0 || !self.pending {
+            return;
+        }
+        if let Some(stat) = &mut self.statistic {
+            *stat = (*stat + rem.ilog2() + if regular { 2 } else { 0 }) >> 1;
+            self.pending = false;
+        }
+    }
+}
+
+impl<const EXT: bool> Drop for Walk<'_, EXT> {
     fn drop(&mut self) {
         self.grid[..self.max_pad].fill(0);
         self.pass1[..self.max_pad].fill(0);
     }
 }
-impl Walk<'_> {
+impl<const EXT: bool> Walk<'_, EXT> {
     #[inline(always)]
     #[allow(clippy::inline_always, reason = "per-coefficient state transition")]
     fn advance(&mut self, parity: u32) {
@@ -447,6 +670,19 @@ impl Walk<'_> {
         } else {
             0
         };
+    }
+
+    /// The Rice parameter at padded position `pad_pos` (raster `pos`) above
+    /// `base`: version 1's from the padded grid alone, else the extension's.
+    #[inline(always)]
+    #[allow(clippy::inline_always, reason = "per-coefficient Golomb-Rice lookup")]
+    fn rice_parameter(&self, pad_pos: u16, pos: u16, base: u32) -> u32 {
+        if EXT && self.rice.general {
+            self.rice
+                .parameter(grid_sum(self.grid, self.pad_stride, pad_pos), pos, base)
+        } else {
+            grid_rice(self.grid, self.pad_stride, pad_pos, base)
+        }
     }
 
     fn group(
@@ -461,7 +697,7 @@ impl Walk<'_> {
         let end = (first + scan.group_size - 1).min(last);
         let mut nonzero = [ActiveCoeff::default(); MAX_GROUP_SIZE];
         let mut nonzero_len = 0usize;
-        let mut regular = [0u16; MAX_GROUP_SIZE];
+        let mut regular = [(0u16, 0u16); MAX_GROUP_SIZE];
         let mut regular_len = 0usize;
         let mut bypass = [0u16; MAX_GROUP_SIZE];
         let mut bypass_len = 0usize;
@@ -500,7 +736,7 @@ impl Walk<'_> {
                 self.pass1[p] = (val.min(4 + (val & 1)) as u8) | 0x20;
                 self.max_pad = self.max_pad.max(p + 1);
                 if val >= FIRST_RICE_BASE {
-                    regular[regular_len] = entry.pad_pos;
+                    regular[regular_len] = (entry.pad_pos, entry.pos);
                     regular_len += 1;
                 }
                 nonzero[nonzero_len] = ActiveCoeff {
@@ -514,15 +750,27 @@ impl Walk<'_> {
             }
             self.advance(val & 1);
         }
-        for &pad_pos in &regular[..regular_len] {
-            let parameter = grid_rice(self.grid, self.pad_stride, pad_pos, FIRST_RICE_BASE);
-            self.grid[usize::from(pad_pos)] += 2 * remainder(r, parameter)?;
+        let (log2_range, base_level) = if EXT {
+            (self.rice.context.log2_range, self.rice.context.base_level)
+        } else {
+            (BASE_LOG2_RANGE, FIRST_RICE_BASE)
+        };
+        for &(pad_pos, pos) in &regular[..regular_len] {
+            let parameter = self.rice_parameter(pad_pos, pos, base_level);
+            let rem = remainder::<EXT>(r, parameter, log2_range)?;
+            if EXT {
+                self.rice.update(rem, true);
+            }
+            self.grid[usize::from(pad_pos)] += 2 * rem;
         }
         for &scan_idx in &bypass[..bypass_len] {
             let entry = scan.entries[usize::from(scan_idx)];
-            let parameter = grid_rice(self.grid, self.pad_stride, entry.pad_pos, 0);
+            let parameter = self.rice_parameter(entry.pad_pos, entry.pos, 0);
             let zero = (if self.state < 2 { 1 } else { 2 }) << parameter;
-            let rem = remainder(r, parameter)?;
+            let rem = remainder::<EXT>(r, parameter, log2_range)?;
+            if EXT {
+                self.rice.update(rem, false);
+            }
             let val = match rem.cmp(&zero) {
                 std::cmp::Ordering::Equal => 0,
                 std::cmp::Ordering::Less => rem + 1,
@@ -578,10 +826,19 @@ impl Walk<'_> {
             if neg {
                 out = -out;
             }
-            if !(COEFF_MIN..=COEFF_MAX).contains(&out) {
+            let range = if EXT {
+                self.rice.context.coefficient_range()
+            } else {
+                RiceContext::PLAIN.coefficient_range()
+            };
+            if !range.contains(&out) {
                 return Err(DecodeError::Malformed("VVC coefficient dynamic range"));
             }
-            self.arena.push((item.pos, out as i16));
+            match (EXT, self.wide.as_deref_mut()) {
+                (true, Some(wide)) => wide.push((item.pos, out)),
+                // The range check above kept `out` within 16 bits.
+                _ => self.narrow.push((item.pos, out as i16)),
+            }
             self.stats.outside_16 |= item.outside_16;
             self.stats.last_scan = Some(match self.stats.last_scan {
                 Some(prev) => prev.max(item.scan_idx),

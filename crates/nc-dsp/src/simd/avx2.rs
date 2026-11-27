@@ -123,6 +123,30 @@ impl WordPairLanes for I32x8 {
     }
 
     #[inline(always)]
+    fn checked_word_pairs<const N: usize>(values: &[Self; N]) -> Option<[WordPairs8; N]> {
+        // SAFETY: lane methods run only in the AVX2 kernel's ISA context.
+        unsafe {
+            let zero = _mm256_setzero_si256();
+            let bias = _mm256_set1_epi32(32768);
+            let mut combined = zero;
+            let mut pairs = [WordPairs8(zero); N];
+            for (out, [lo, hi]) in pairs.iter_mut().zip(values.as_chunks::<2>().0) {
+                let lo_biased = _mm256_add_epi32(lo.0, bias);
+                let hi_biased = _mm256_add_epi32(hi.0, bias);
+                combined = _mm256_or_si256(combined, _mm256_or_si256(lo_biased, hi_biased));
+                *out = lo.word_pairs(*hi);
+            }
+            // The high word clears exactly for -32768..=32767 after adding
+            // the bias modulo 2^32.
+            if _mm256_testz_si256(combined, _mm256_set1_epi32(-65536)) != 0 {
+                Some(pairs)
+            } else {
+                None
+            }
+        }
+    }
+
+    #[inline(always)]
     fn pair_dot(pairs: WordPairs8, weights: i32) -> Self {
         pairs.dot(weights)
     }

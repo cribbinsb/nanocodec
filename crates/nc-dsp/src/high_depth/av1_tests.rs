@@ -616,7 +616,7 @@ fn film_grain<T: Av1Pixel>(
     let views = PlaneIndex::ALL.map(|plane| input.plane(plane).view());
     let [y, u, v] = output.planes_mut();
     k.av1_add_film_grain(
-        params,
+        (params, input.chroma_format()),
         [&views[0], &views[1], &views[2]],
         size,
         [&mut y.view_mut(), &mut u.view_mut(), &mut v.view_mut()],

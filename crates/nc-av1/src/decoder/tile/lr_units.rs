@@ -8,8 +8,8 @@ use super::super::frame_header::{FrameSize, LrType, Restoration, SUPERRES_NUM};
 use super::super::restoration::RestorationUnits;
 use super::MI_SIZE;
 use crate::decoder_range::SymbolReader;
-use nc_common::PlaneIndex;
 use nc_common::decode::DecodeError;
+use nc_common::{ChromaFormat, PlaneIndex};
 use nc_dsp::av1_restoration::{Av1LrFilter, Av1SgrProj, Av1Wiener};
 
 /// Wiener taps coded per pass (the outer three; §5.11.58).
@@ -42,19 +42,21 @@ const RESTORE_SGRPROJ: usize = 2;
 pub(crate) struct LrUnitReader {
     lr: Restoration,
     size: FrameSize,
+    format: ChromaFormat,
     units: RestorationUnits,
     wiener: [[[i32; WIENER_COEFFS]; 2]; 3],
     xqd: [[i32; 2]; 3],
 }
 
 impl LrUnitReader {
-    /// The reader of a frame of `size` with `lr` (one with at least one
-    /// restored plane), its references as a tile starts them.
-    pub(crate) fn new(lr: Restoration, size: FrameSize) -> Self {
+    /// The reader of a frame of `size` in `format` with `lr` (one with at
+    /// least one restored plane), its references as a tile starts them.
+    pub(crate) fn new(lr: Restoration, size: FrameSize, format: ChromaFormat) -> Self {
         Self {
-            units: RestorationUnits::new(&lr, &size),
+            units: RestorationUnits::new(&lr, &size, format),
             lr,
             size,
+            format,
             wiener: [[WIENER_TAPS_MID; 2]; 3],
             xqd: [SGRPROJ_XQD_MID; 3],
         }
@@ -87,12 +89,13 @@ impl LrUnitReader {
                 continue;
             }
             let unit_size = self.lr.unit_size[plane as usize];
-            let sample = MI_SIZE >> usize::from(plane != PlaneIndex::Y);
+            let (ss_x, ss_y) = self.format.plane_subsampling(plane);
             // Columns count in upscaled samples: a coded 4x4 column spans
             // `SuperresDenom / SUPERRES_NUM` of them.
-            let first_row = |mi: usize| (mi * sample).div_ceil(unit_size);
+            let first_row = |mi: usize| ((mi * MI_SIZE) >> ss_y).div_ceil(unit_size);
             let denom = self.size.superres_denom;
-            let first_column = |mi: usize| (mi * sample * denom).div_ceil(unit_size * SUPERRES_NUM);
+            let first_column =
+                |mi: usize| (((mi * MI_SIZE) >> ss_x) * denom).div_ceil(unit_size * SUPERRES_NUM);
             let (columns, rows) = self.units.grid(plane);
             let row_range = first_row(mi_row)..first_row(mi_row + sb_mi).min(rows);
             let column_range = first_column(mi_col)..first_column(mi_col + sb_mi).min(columns);

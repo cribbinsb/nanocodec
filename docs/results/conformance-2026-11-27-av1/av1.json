@@ -1,0 +1,1696 @@
+{
+ "av1-1-b10-00-quantizer-00": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "8b834b72fe9c5dbd24c0869370f38157",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-01": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "57897599b284e73ad15bab304ba60c49",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-02": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "628c9237205c34327cb964fea1df2f39",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-03": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "fdcef1fbc21ce9ddc83c6b362d155801",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-04": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "ad1b12a6a0cbad1454655f529eb01ee7",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-05": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "dc91c70dbff3e4b29b61bbc72984f662",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-06": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "92cf05c5e9f765131632b3c23fef9d03",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-07": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "7477fc4e6b8594c99882ff39fc890c17",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-08": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "dd28c75562a3a66754a4e9c2333257ae",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-09": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "ebc0eeaab20e4760ac2ed0735aaba9d6",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-10": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "2387e415ebed841a1a6a3c3c070ebdcb",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-11": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "a5b8e3891e1fdb046018878cc3220c6f",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-12": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "2f6738252f8050d5fdcfd1c96e12b3df",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-13": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "3fc9986d441720eebbd83037fec89b62",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-14": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "eb08b8cc797306afa84c884ac53e5948",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-15": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "0df1d0fd054ee0efa091add7cd9f6963",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-16": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "e12361887c1fbcbcbd9267d68e9afb1e",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-17": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "7458a9278a04b2dfe1e69737dee05faf",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-18": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "9acd975ffa0a24c45c7f8ed28ed7713f",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-19": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "bcaef8ca235d140afd3803dd0cdded9f",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-20": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "2e7b859b62088c09c753828949b9ef1b",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-21": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "683ec2cb82937b8688cb9611238c59ad",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-22": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "397acee1e5aa84492256a49f27789dbb",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-23": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "119acc22d7f20a2cd43a0ab7474d4089",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-24": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "6ca1933add258b0236d9cbbdd9bcd8e4",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-25": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "2e43ab094e6c6e93655f11f68d2990d0",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-26": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "80ab8de4b5c151a848eaada9b4a348db",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-27": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "39202ccd503ede4544125b3051c1913f",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-28": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "718eca98a39315c735107898c2e0ceb3",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-29": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "a406b418d474b31f02a8807e8ca2b4a4",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-30": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "aa68b016e1c4151b49a6e7ec8865ec92",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-31": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "18da23bedef08352928852ae183bbf71",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-32": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "1de5e5c5b904ebcda24b03a186b39792",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-33": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "b37f6c6d4165c7a63ec12e134eabff5b",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-34": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "c90f00a0e1e72f834095d2c60b9c4b80",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-35": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "e3b8468fa7395ff12da67a0f07179c58",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-36": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "526d21a06b007c9e735640e6470e7888",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-37": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "ea4c6aa2e6437f9beffca95b395b5299",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-38": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "00d04f3f06ae3b6ee759566e0024741b",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-39": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "cbba192759fe0915ea56ed6732ba21cb",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-40": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "6854e82b96b1e16ee4b072fa5669b0e1",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-41": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "4b09c49eb1f9732584a22facf6a02a34",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-42": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "d22aa42a80f48e63d82080b26c48e3f3",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-43": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "da46c8cad4caf9c91bde58447c2651e8",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-44": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "ad1e1d026e0126373f64bbba2d85429f",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-45": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "04d10320af7d99b8ecbb40ca5c63681f",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-46": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "9c4a60481b7797059d7f6c166929e8d4",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-47": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "98a1821861dcae3ec77ab10a2dd0c4bb",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-48": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "3b87ce150d6746eb868b27a19fb86e7f",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-49": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "f5cbe85a504c93913c2d58d4b9c0a0c9",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-50": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "77258f68bb746a04bebf57fd23582b49",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-51": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "c0b2dbfeaba5f4f3b4501b1d118bc3d1",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-52": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "fdcdb83a737333ac30f13c4acd976fe1",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-53": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "d505ed81e470319d4acf7dce262323c2",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-54": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "8a6fd37547462a6e9ffd629eb4a9563e",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-55": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "bb08af0080f809b02fb34ccb38c6d20d",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-56": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "0aeb3a869af91f4ca58a6f67b488b6ae",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-57": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "34234be86e8522694f906ea8ccf2ca39",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-58": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "c9fbfffdc05090be19ce94e244002f6d",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-59": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "1908cfabb49b6b2c53d3d5b575e54b1e",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-60": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "30b16f739a40fea2b0f035acd27ea16f",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-61": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "33c469d4efc580705517f432f0b1ede9",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-62": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "d959b0257d18892af3c7524e65609d05",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-00-quantizer-63": {
+  "bytes": 1382400,
+  "error": "",
+  "md5": "cd215b30e02ffe016f4fccb8feb5e375",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b10-23-film_grain-50": {
+  "bytes": 3041280,
+  "error": "",
+  "md5": "be596f5921854b9a9a5be81c302a5327",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "av1-1-b10-24-monochrome": {
+  "bytes": 1728000,
+  "error": "",
+  "md5": "751da6e72be60746f86c315584d121f6",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-00": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "5306e7f80a3b0d57d751c842e4299f48",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-01": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "0e62f195d2e28bce4e5956428fd0d0bf",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-02": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "8f554aec9f48fe59ec2e9dfeaf2eab86",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-03": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "0dbedc47c56b6f681fede767cfe5e0a6",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-04": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "fea157bf1451c9db59c17f823113a340",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-05": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "d7a40cb9e12900a492ffe7ce2a164931",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-06": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "12153ecdf74ab1cf7a6354a16d8f472d",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-07": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "fae32ead04160e1c6cf7ead61aa24bf2",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-08": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "c4e3f6472b12d64e3c4593bd28f16eba",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-09": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "c1c385b89e79b372b2b335fc8cbabd12",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-10": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "3807656c87ffd14ff797015c141bdee8",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-11": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "d5047ba5a149a8673352291f38270385",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-12": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "d962782613dbed89bf261eab45222400",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-13": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "d5a9c2b1ef5860bc78f5baa4aca594a2",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-14": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "32546915ddf79f21c7ec97fe4019bb15",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-15": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "9f1820803e8913cdb38129c527fa8ddb",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-16": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "39621a3edebc59514af83da5eb0f47e1",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-17": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "689f5841061cd3ce7fa507a4125a6e94",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-18": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "4b7d32f43443a88af5fef7b767ccb85b",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-19": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "d544e8884f447043fc3d0267269db036",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-20": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "0de0adfd3b6ebe2fa98eeedba9ff2e20",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-21": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "f44561202aa0e2152371ab12cf9f05be",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-22": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "162714f0b301a18000947aa8e7e428fb",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-23": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "7dec374ab0aa0c9a828eba119f8ac877",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-24": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "361869eb168919facc445f099d39a3a1",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-25": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "ecc4242bdd2a8c42b8dfd89c40fb798d",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-26": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "8aafc63a2493b4ecc5c7bda2f1f74486",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-27": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "9815386f30ac2141d22f08e27bb36429",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-28": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "09389e12564fc4e0c365b11269d80c18",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-29": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "35757efa0df087c3b026f63941f636ab",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-30": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "47520d21726c5580bdf19bfdb9f349f5",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-31": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "853cc6f04758d2448cf13f581237c483",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-32": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "5d7b65619f24c25c5f6e480b99357891",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-33": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "8c8c0f061746c9bf4f7b0dac73b3c894",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-34": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "e2f44febbd5f97ae39fdb6f2628179ca",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-35": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "e5b24445ecf53b3d1b45f3f3c4be23d3",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-36": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "f544a0c76d97055714f9bf5bd027b305",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-37": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "2235cb6e2691a303692a1987dbee66e9",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-38": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "1b0b9eb7a6205fd7993c57c522a4907b",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-39": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "e2b088ea535390fc253afe48aa87f96c",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-40": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "74752aaa8e561e5b2dd1ffb92ee453df",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-41": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "c02a137af44771f9e2f5c61adc535deb",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-42": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "aadea3262b1f5e8e255208d413f02264",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-43": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "67b29dc956ca9cbdf1e5da63917a6f01",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-44": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "900bd18b2c74ec8942da2659074999e1",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-45": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "840c070446c54ab9ab2c40a4a97d7a89",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-46": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "6f1d905bbeff9d71500bfee3463cc619",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-47": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "2dceaabc74c8a2a8b62a10734f80831d",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-48": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "f3abdad30cf8fc019a5d9699f676e275",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-49": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "3b3de8bb56589c5b244c844f9f176bed",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-50": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "548107963e1dda19ebbe984a9750d60a",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-51": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "fe42d9aaadae496ea3ad592b8b9a9c4d",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-52": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "0c2bdd07dfc4c52cd73a09d7a1c8bcfd",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-53": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "31b66cf4e32e87c036cce8d6a570c98c",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-54": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "a04da7fb248fc013c24661de0aceabb7",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-55": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "fecb142875ec89df3ca2695366dfb77a",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-56": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "3619ce78f6e8975766e639a1d29eb70b",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-57": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "9cd00611b5bb6bf43a1e97503c7806c5",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-58": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "bc9c57d1794c3339872299d7677998ad",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-59": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "e10186b8f16a0eb71555eb4b0f694f6e",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-60": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "f725e361a56fb31389d5dc2fcd74e7b9",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-61": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "25775c888515c20cbdfda551a0171d3b",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-62": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "978f9a5c7c42cc6633ecfd1ca77cfff4",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-00-quantizer-63": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "4f26fa331cd661e833d3d94e6b0e0e4e",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-16x16": {
+  "bytes": 768,
+  "error": "",
+  "md5": "0d627c5089fa1595c6e7c0626b882bb4",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-16x18": {
+  "bytes": 864,
+  "error": "",
+  "md5": "28bbb9b7cde14301a99c5c40c2512df2",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-16x32": {
+  "bytes": 1536,
+  "error": "",
+  "md5": "0c5a983e19c801819de51c6218e8a910",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-16x34": {
+  "bytes": 1632,
+  "error": "",
+  "md5": "4a634513d463f6a2be476e51beb43e60",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-16x64": {
+  "bytes": 3072,
+  "error": "",
+  "md5": "3559bb12a2e42f648305dbdbfd85842e",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-16x66": {
+  "bytes": 3168,
+  "error": "",
+  "md5": "fe256b9612705a73b9242ae164a75066",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-18x16": {
+  "bytes": 864,
+  "error": "",
+  "md5": "43e2e0d89c2077890c9bf297f069bede",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-18x18": {
+  "bytes": 972,
+  "error": "",
+  "md5": "cf2231c8bdbf11519b1f93772ad663eb",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-18x32": {
+  "bytes": 1728,
+  "error": "",
+  "md5": "5cda44fbd480a6ed2ab7473d201dd69c",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-18x34": {
+  "bytes": 1836,
+  "error": "",
+  "md5": "29c5953f66f4bb9f3b6a260a3cb2e9d3",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-18x64": {
+  "bytes": 3456,
+  "error": "",
+  "md5": "57dc0496e47a42d414a8dfe3110779ea",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-18x66": {
+  "bytes": 3564,
+  "error": "",
+  "md5": "97116b88ce33a55d515774510492cc92",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x196": {
+  "bytes": 115248,
+  "error": "",
+  "md5": "e88e97f333e4c9fa38e18c0b9a63a90d",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x198": {
+  "bytes": 116424,
+  "error": "",
+  "md5": "4dbddfa86964c77c2cf2ad94334936fc",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x200": {
+  "bytes": 117600,
+  "error": "",
+  "md5": "05332a9ee03e8653f81b1ca2cbf65d9c",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x202": {
+  "bytes": 118776,
+  "error": "",
+  "md5": "9f7a99dd456ee072481310c16c7d5146",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x208": {
+  "bytes": 122304,
+  "error": "",
+  "md5": "d4ddede6ce632c67c9f09086b94c9651",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x210": {
+  "bytes": 123480,
+  "error": "",
+  "md5": "a1542967f9f89e275a3b90a6d7b871dd",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x224": {
+  "bytes": 131712,
+  "error": "",
+  "md5": "5599969f786caca97ae2d8bd9d7a4d2a",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-196x226": {
+  "bytes": 132888,
+  "error": "",
+  "md5": "ac99ea48ccea2e62e818e36a3d242140",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x196": {
+  "bytes": 116424,
+  "error": "",
+  "md5": "fd1eb775c7cdd03cbd784cdb096f70a2",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x198": {
+  "bytes": 117612,
+  "error": "",
+  "md5": "e13947b78afb7aefaf9e3e632a0fc17f",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x200": {
+  "bytes": 118800,
+  "error": "",
+  "md5": "f5e642b002699e638c8d018eee62637b",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x202": {
+  "bytes": 119988,
+  "error": "",
+  "md5": "924befff196c3b56b9f69272867e97a7",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x208": {
+  "bytes": 123552,
+  "error": "",
+  "md5": "c5f29a90d5261aa9fc5c74c6df124489",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x210": {
+  "bytes": 124740,
+  "error": "",
+  "md5": "d54e893722f0c9a6491d7456a89416ea",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x224": {
+  "bytes": 133056,
+  "error": "",
+  "md5": "480f158807998882252455e97107aa2b",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-198x226": {
+  "bytes": 134244,
+  "error": "",
+  "md5": "369526b5365a1dd014a982833414aefb",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x196": {
+  "bytes": 117600,
+  "error": "",
+  "md5": "417b459c1641bcb977ffcfe5c8379532",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x198": {
+  "bytes": 118800,
+  "error": "",
+  "md5": "ce143205e863c1a1adfda23d192a8eaa",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x200": {
+  "bytes": 120000,
+  "error": "",
+  "md5": "89f4260d13c3bf4b37c25f429dc53398",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x202": {
+  "bytes": 121200,
+  "error": "",
+  "md5": "a02ebee25913f06d13ecb7805225092b",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x208": {
+  "bytes": 124800,
+  "error": "",
+  "md5": "44c0729d9a5501c02953ebcda934e0b6",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x210": {
+  "bytes": 126000,
+  "error": "",
+  "md5": "598bea10eb28dcf11d615306bf5e2d6c",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x224": {
+  "bytes": 134400,
+  "error": "",
+  "md5": "33e100596771d91641f9941df8a6f341",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-200x226": {
+  "bytes": 135600,
+  "error": "",
+  "md5": "dd58cb951625357094575a2b591781ee",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x196": {
+  "bytes": 118776,
+  "error": "",
+  "md5": "44c699faf8b5946c7b52618d79c7ed72",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x198": {
+  "bytes": 119988,
+  "error": "",
+  "md5": "b2f90b3bb62fe8f6f37b38f93b1b07de",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x200": {
+  "bytes": 121200,
+  "error": "",
+  "md5": "5f0a277791a1fc1b1e9f64cde008ce50",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x202": {
+  "bytes": 122412,
+  "error": "",
+  "md5": "fad85869164b4eee67755002d38f2d89",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x208": {
+  "bytes": 126048,
+  "error": "",
+  "md5": "b7b3bfca04e8145e64a9265095266205",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x210": {
+  "bytes": 127260,
+  "error": "",
+  "md5": "c5196a544ee1beb082426a5d9aff6cda",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x224": {
+  "bytes": 135744,
+  "error": "",
+  "md5": "d3098938ac8ecf7e6d1d4bec449e0ffb",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-202x226": {
+  "bytes": 136956,
+  "error": "",
+  "md5": "585f48b79d0578fe4d9af7717dc05c72",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x196": {
+  "bytes": 122304,
+  "error": "",
+  "md5": "015c4cf1963d0d9926cc6db321f5296a",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x198": {
+  "bytes": 123552,
+  "error": "",
+  "md5": "a9cad50b4f46192ec533f4ec33d3a85e",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x200": {
+  "bytes": 124800,
+  "error": "",
+  "md5": "94f13e99351e96673d798be708ba9b31",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x202": {
+  "bytes": 126048,
+  "error": "",
+  "md5": "a9721471ca8a6665c37dc28f5d0ab042",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x208": {
+  "bytes": 129792,
+  "error": "",
+  "md5": "12a694b3e43f473c69536ad8d8675b80",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x210": {
+  "bytes": 131040,
+  "error": "",
+  "md5": "96ddb03bb5d0bcbb04b44792f848d726",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x224": {
+  "bytes": 139776,
+  "error": "",
+  "md5": "c41edb6fbbc881ab1c50735b80eb3ce5",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-208x226": {
+  "bytes": 141024,
+  "error": "",
+  "md5": "92ccba250e5384ea4a1fab6cdb07a77b",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x196": {
+  "bytes": 123480,
+  "error": "",
+  "md5": "f971cd738538456e2e24667e0b50b89f",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x198": {
+  "bytes": 124740,
+  "error": "",
+  "md5": "62cc082bcb3f8ebcc3c76312a7b62089",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x200": {
+  "bytes": 126000,
+  "error": "",
+  "md5": "dd6af81186cceef5475be6594b99557d",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x202": {
+  "bytes": 127260,
+  "error": "",
+  "md5": "f6c04e5873aa8ff5e5192f6979f5a5c3",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x208": {
+  "bytes": 131040,
+  "error": "",
+  "md5": "389a67a8fad510c5b0b4b19eba07d929",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x210": {
+  "bytes": 132300,
+  "error": "",
+  "md5": "f6ebddc2da88d4aca04dbfd12f1a6f7a",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x224": {
+  "bytes": 141120,
+  "error": "",
+  "md5": "49e8858ab9b64e9f6940082068d21458",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-210x226": {
+  "bytes": 142380,
+  "error": "",
+  "md5": "1ce9ed5387ef7639ab8b5974bec827c6",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x196": {
+  "bytes": 131712,
+  "error": "",
+  "md5": "fb854be951508990ef314e27e6908c5a",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x198": {
+  "bytes": 133056,
+  "error": "",
+  "md5": "f83c66d8833dd8fd68a50257ed0bb117",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x200": {
+  "bytes": 134400,
+  "error": "",
+  "md5": "a1bdf0a2165ceff4b3ef3d1a12b98932",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x202": {
+  "bytes": 135744,
+  "error": "",
+  "md5": "fca4a7fd64fd02d15631fe2a249d44e3",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x208": {
+  "bytes": 139776,
+  "error": "",
+  "md5": "df3cdc09040d9074d3e5530d5614e62b",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x210": {
+  "bytes": 141120,
+  "error": "",
+  "md5": "046a9e266879cd5670de3d184fffe6aa",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x224": {
+  "bytes": 150528,
+  "error": "",
+  "md5": "f8a4132afaeda1eb75db9c5d95c3c188",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-224x226": {
+  "bytes": 151872,
+  "error": "",
+  "md5": "6990279ce3aa834125aba16d05539072",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x196": {
+  "bytes": 132888,
+  "error": "",
+  "md5": "43407c1801909e369b8e68954cd7ff4d",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x198": {
+  "bytes": 134244,
+  "error": "",
+  "md5": "e0621a9d50c2659c2c76f043193245f6",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x200": {
+  "bytes": 135600,
+  "error": "",
+  "md5": "9adefb79fd3947b1387a2c30d4e98c0c",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x202": {
+  "bytes": 136956,
+  "error": "",
+  "md5": "97363a26044d1f06ac88bc0f24a45d21",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x208": {
+  "bytes": 141024,
+  "error": "",
+  "md5": "cfeb0eacef3a653e769ef33240de9fc5",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x210": {
+  "bytes": 142380,
+  "error": "",
+  "md5": "5d566729e90f748893437799c598de58",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x224": {
+  "bytes": 151872,
+  "error": "",
+  "md5": "db8dfd86a80c80e20b9274464f986f35",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-226x226": {
+  "bytes": 153228,
+  "error": "",
+  "md5": "8717076838a34fced3d230c0827e1319",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-32x16": {
+  "bytes": 1536,
+  "error": "",
+  "md5": "aa35af31b2ca478373b147cd18046be4",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-32x18": {
+  "bytes": 1728,
+  "error": "",
+  "md5": "aea9bc43370c566d37b2414ab0c3fe69",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-32x32": {
+  "bytes": 3072,
+  "error": "",
+  "md5": "11271c70b348b6e4ffaa928860493d3f",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-32x34": {
+  "bytes": 3264,
+  "error": "",
+  "md5": "11628409d5a5f54c81068e86f8800e23",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-32x64": {
+  "bytes": 6144,
+  "error": "",
+  "md5": "7c3ec687b9426d5baf9f5baa3787c5e4",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-32x66": {
+  "bytes": 6336,
+  "error": "",
+  "md5": "787538449737fa57c1f2224eed03f6c6",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-34x16": {
+  "bytes": 1632,
+  "error": "",
+  "md5": "8caa8a97e09a93d318a95013eddfef20",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-34x18": {
+  "bytes": 1836,
+  "error": "",
+  "md5": "6fd808b0a745782891cfe7d32d616a2c",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-34x32": {
+  "bytes": 3264,
+  "error": "",
+  "md5": "a72f99969f5a81f84a145c3c9e64a978",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-34x34": {
+  "bytes": 3468,
+  "error": "",
+  "md5": "f50fe1ebb08ad9391be91999c747e3b8",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-34x64": {
+  "bytes": 6528,
+  "error": "",
+  "md5": "e61a5ccd939286c8489a48d12f4e3968",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-34x66": {
+  "bytes": 6732,
+  "error": "",
+  "md5": "1d1101b9e19f2f66b3cafdabf9c43c04",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-64x16": {
+  "bytes": 3072,
+  "error": "",
+  "md5": "60ffe5db769683d4500971122ba63218",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-64x18": {
+  "bytes": 3456,
+  "error": "",
+  "md5": "052dddd7525dd90c7b4fa2565b7c42d3",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-64x32": {
+  "bytes": 6144,
+  "error": "",
+  "md5": "4d7271203d3d685fcf4f9f1db4cac100",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-64x34": {
+  "bytes": 6528,
+  "error": "",
+  "md5": "74f6149022bd4836b2e6dd926fc32804",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-64x64": {
+  "bytes": 12288,
+  "error": "",
+  "md5": "c2796fb02c50ba3914bf3177a987dfae",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-64x66": {
+  "bytes": 12672,
+  "error": "",
+  "md5": "3c3cee113a8809cb587e2a2c2dd27469",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-66x16": {
+  "bytes": 3168,
+  "error": "",
+  "md5": "dd59500c154ea03953e86ecac01ba3b7",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-66x18": {
+  "bytes": 3564,
+  "error": "",
+  "md5": "d4d412f3ea0c74e42bc0e7e931c5307f",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-66x32": {
+  "bytes": 6336,
+  "error": "",
+  "md5": "8867483a77206485df04c4c9c2070c06",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-66x34": {
+  "bytes": 6732,
+  "error": "",
+  "md5": "c3d08f08bb824718c28e08be5cab19f2",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-66x64": {
+  "bytes": 12672,
+  "error": "",
+  "md5": "76897ad7e13d9acc0d0737dd28b80f29",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-01-size-66x66": {
+  "bytes": 13068,
+  "error": "",
+  "md5": "616dd3789d5a82a822ceba96ec972143",
+  "seconds": 0.0,
+  "status": "pass"
+ },
+ "av1-1-b8-02-allintra": {
+  "bytes": 5930496,
+  "error": "",
+  "md5": "4f00f5a1a173a99c1bf0406dea809182",
+  "seconds": 0.19,
+  "status": "pass"
+ },
+ "av1-1-b8-03-sizedown": {
+  "bytes": 15344640,
+  "error": "",
+  "md5": "075252f55c207f437c412e0f45eb7b84",
+  "seconds": 0.08,
+  "status": "pass"
+ },
+ "av1-1-b8-03-sizeup": {
+  "bytes": 15344640,
+  "error": "",
+  "md5": "9fc474a2842a5632757e4e0cb7492ad4",
+  "seconds": 0.08,
+  "status": "pass"
+ },
+ "av1-1-b8-04-cdfupdate": {
+  "bytes": 304128,
+  "error": "",
+  "md5": "4e8baa992bc9af05f78c38a54dbab132",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-05-mv": {
+  "bytes": 608256,
+  "error": "",
+  "md5": "c2d7f9d19297ce835c9023a6533330b4",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-06-mfmv": {
+  "bytes": 608256,
+  "error": "",
+  "md5": "a61843f9d9d5ed0bd8100044b34d6169",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "av1-1-b8-16-intra_only-intrabc-extreme-dv": {
+  "bytes": 6220800,
+  "error": "",
+  "md5": "730fe59ae8eece49220654b7b9f1a5c4",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "av1-1-b8-22-svc-L1T2": {
+  "bytes": 2764800,
+  "error": "",
+  "md5": "3987b4852874d3fba06999ee9b4d117c",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b8-22-svc-L2T1-2": {
+  "bytes": 11059200,
+  "error": "",
+  "md5": "f8305c4b796b620388fee614df3ebac6",
+  "seconds": 0.11,
+  "status": "pass"
+ },
+ "av1-1-b8-22-svc-L2T2-2": {
+  "bytes": 11059200,
+  "error": "",
+  "md5": "4d86bc8f55bae0ac0e688fb7fa2fe741",
+  "seconds": 0.1,
+  "status": "pass"
+ },
+ "av1-1-b8-23-film_grain-50": {
+  "bytes": 1520640,
+  "error": "",
+  "md5": "392a4adc567fa05b210eebe15bcbb491",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "av1-1-b8-24-monochrome": {
+  "bytes": 864000,
+  "error": "",
+  "md5": "907020626f523b5ae53b8a3130d0ab11",
+  "seconds": 0.01,
+  "status": "pass"
+ }
+}

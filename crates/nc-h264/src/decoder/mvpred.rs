@@ -18,13 +18,19 @@
 
 use nc_encoder::Mv;
 
-use super::mbstate::{MbState, Neighbours, Partition, partition_blocks};
+use super::mbstate::{MbState, Neighbours, PairNeighbours, Partition, partition_blocks};
 
 /// Entries per cache row: A's column, four blocks, the never-available
 /// column right of the macroblock.
 const CACHE_STRIDE: usize = 6;
 /// The neighbour row and four block rows.
 const CACHE_LEN: usize = 5 * CACHE_STRIDE;
+/// Beyond the grid: the up-left neighbours of the left column's blocks
+/// 1..=3 where they are not the A entry of the row above (MBAFF frames,
+/// [`PairNeighbours::corner`]).
+const CORNERS: usize = CACHE_LEN;
+/// Entries with the corner slots.
+const CACHE_SLOTS: usize = CACHE_LEN + 3;
 /// Cache index of 4x4 block (0, 0).
 const CACHE_ORIGIN: usize = CACHE_STRIDE + 1;
 /// Reference index of an entry without a partition.
@@ -52,17 +58,23 @@ fn cache_index(x4: usize, y4: usize) -> usize {
 /// Vectors and reference indices of one list around and inside the
 /// current macroblock.
 pub(super) struct MotionCache {
-    mvs: [Mv; CACHE_LEN],
-    refs: [i8; CACHE_LEN],
+    mvs: [Mv; CACHE_SLOTS],
+    refs: [i8; CACHE_SLOTS],
+    /// The left column's up-left neighbours are the corner slots.
+    split_corners: bool,
 }
 
 impl MotionCache {
     /// The list `list` cache of a macroblock with neighbours `nb`, before
     /// any of its own partitions is decoded.
     pub fn new(nb: &Neighbours<'_>, list: usize) -> Self {
+        if nb.pair.is_some() {
+            return Self::new_in_pair(nb, list);
+        }
         let mut cache = Self {
-            mvs: [Mv::ZERO; CACHE_LEN],
-            refs: [REF_UNAVAILABLE; CACHE_LEN],
+            mvs: [Mv::ZERO; CACHE_SLOTS],
+            refs: [REF_UNAVAILABLE; CACHE_SLOTS],
+            split_corners: false,
         };
         let (a, b) = (or_unavailable(nb.a), or_unavailable(nb.b));
         let (c, d) = (or_unavailable(nb.c), or_unavailable(nb.d));
@@ -73,6 +85,42 @@ impl MotionCache {
         cache.put(CACHE_STRIDE - 1, c.motion(list, 0, 3));
         for y4 in 0..4 {
             cache.put(cache_index(0, y4) - 1, a.motion(list, 3, y4));
+        }
+        cache
+    }
+
+    /// [`Self::new`] in an MBAFF frame: A's blocks from the macroblock
+    /// and row of each block row, D's corner row, every neighbour scaled to
+    /// the current macroblock's frame or field coding.
+    #[inline(never)]
+    fn new_in_pair(nb: &Neighbours<'_>, list: usize) -> Self {
+        let mut cache = Self {
+            mvs: [Mv::ZERO; CACHE_SLOTS],
+            refs: [REF_UNAVAILABLE; CACHE_SLOTS],
+            split_corners: false,
+        };
+        let d_row = nb.pair.map_or(3, |p| p.d_row());
+        let read = |n: Option<&MbState>, x4: usize, y4: usize| match n {
+            Some(n) => scaled_motion(nb, n, list, x4, y4),
+            None => UNAVAILABLE.motion(list, x4, y4),
+        };
+        cache.put(0, read(nb.d, 3, d_row));
+        for x4 in 0..4 {
+            cache.put(1 + x4, read(nb.b, x4, 3));
+        }
+        cache.put(CACHE_STRIDE - 1, read(nb.c, 0, 3));
+        for y4 in 0..4 {
+            let (n, row) = nb
+                .left_row(y4)
+                .map_or((None, y4), |(m, row)| (Some(m), row));
+            cache.put(cache_index(0, y4) - 1, read(n, 3, row));
+        }
+        if let Some(pair) = nb.pair.filter(PairNeighbours::split_left) {
+            cache.split_corners = true;
+            for y4 in 1..4 {
+                let (n, row) = pair.corner(y4).map_or((None, 3), |(m, row)| (Some(m), row));
+                cache.put(CORNERS + y4 - 1, read(n, 3, row));
+            }
         }
         cache
     }
@@ -98,6 +146,7 @@ impl MotionCache {
     /// The predictor of the partition (`x4`, `y4`, `w4`, `h4`) with
     /// reference index `ref_idx` of a macroblock with `partition`, `part`
     /// its `mbPartIdx`.
+    #[inline]
     pub fn predict(
         &self,
         (x4, y4, w4, _h4): (usize, usize, usize, usize),
@@ -105,7 +154,13 @@ impl MotionCache {
         part: usize,
         ref_idx: i8,
     ) -> Mv {
-        let [a, b, c] = self.neighbours(cache_index(x4, y4), w4);
+        let at = cache_index(x4, y4);
+        let [a, b, mut c] = self.neighbours(at, w4);
+        // A left-column block below the first row in an MBAFF frame whose
+        // left pair is coded the other way: its D is a corner slot.
+        if self.split_corners && x4 == 0 && y4 > 0 && c == b - 1 {
+            c = CORNERS + y4 - 1;
+        }
         // Directional prediction of 16x8 and 8x16 partitions (eqs.
         // 8-200..8-203).
         let directional = match (partition, part) {
@@ -127,9 +182,13 @@ impl MotionCache {
     /// (3, 0), B's (0, 3), C's (0, 3), D's (3, 3)). Filling the whole
     /// cache for it was a third of the cost of a skipped macroblock.
     pub fn skip_mv_of(nb: &Neighbours<'_>) -> Mv {
+        if nb.pair.is_some() {
+            return Self::new_in_pair(nb, 0).skip_mv();
+        }
         let mut cache = Self {
-            mvs: [Mv::ZERO; CACHE_LEN],
-            refs: [REF_UNAVAILABLE; CACHE_LEN],
+            mvs: [Mv::ZERO; CACHE_SLOTS],
+            refs: [REF_UNAVAILABLE; CACHE_SLOTS],
+            split_corners: false,
         };
         cache.put(0, or_unavailable(nb.d).motion(0, 3, 3));
         cache.put(1, or_unavailable(nb.b).motion(0, 0, 3));
@@ -202,6 +261,38 @@ impl MotionCache {
     }
 }
 
+/// `n`'s motion of list `list` at (`x4`, `y4`) as the current macroblock
+/// reads it: in an MBAFF frame a neighbour coded the other way has its
+/// vertical vector and reference index scaled (§8.4.1.3.1: a field
+/// macroblock halves a frame neighbour's vector, `/` truncating, and doubles
+/// its index; a frame macroblock the reverse).
+pub(super) fn scaled_motion(
+    nb: &Neighbours<'_>,
+    n: &MbState,
+    list: usize,
+    x4: usize,
+    y4: usize,
+) -> (Mv, i8) {
+    let (mv, ref_idx) = n.motion(list, x4, y4);
+    match nb.coded_otherwise(n) {
+        None => (mv, ref_idx),
+        Some(true) => (
+            Mv {
+                x: mv.x,
+                y: mv.y / 2,
+            },
+            if ref_idx >= 0 { ref_idx * 2 } else { ref_idx },
+        ),
+        Some(false) => (
+            Mv {
+                x: mv.x,
+                y: mv.y.saturating_mul(2),
+            },
+            if ref_idx >= 0 { ref_idx >> 1 } else { ref_idx },
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +302,7 @@ mod tests {
         b: None,
         c: None,
         d: None,
+        pair: None,
     };
 
     fn mv(x: i16) -> Mv {
@@ -255,6 +347,7 @@ mod tests {
                 b: pick(bi),
                 c: pick(ci),
                 d: pick(di),
+                pair: None,
             };
             assert_eq!(
                 MotionCache::skip_mv_of(&nb),

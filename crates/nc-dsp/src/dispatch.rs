@@ -10,7 +10,7 @@
 
 #![allow(unsafe_code)]
 
-use nc_common::{BitDepth, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 use crate::av1_inverse::{Av1TxSize, Av1TxType};
 use crate::av1_mc::filter::Av1Filters;
@@ -2013,9 +2013,12 @@ impl Dsp {
             "{filter:?} is not an H.264 filter"
         );
         let shape = (size.width(), size.height());
+        // By reference: by value, the `Option` copied the whole 760-byte
+        // phase table on every call (H.264 Default: 0.65 % of instructions).
         let kernels = self
             .mc
             .h264_phases
+            .as_ref()
             .and_then(|phases| phases.slots(filter, shape))
             .unwrap_or([self.mc.table(filter)[size.width_class()]; mc::H264_PHASE_SLOTS]);
         H264Predictor {
@@ -3112,6 +3115,36 @@ impl Dsp {
                 }
             }
             deblock::av2::apply_ramps(plane, &ramps);
+        }
+    }
+
+    /// [`Dsp::av2_deblock_edge_keeping`] for samples of `depth` (the
+    /// general AV2 decoder's 10- and 12-bit pictures): the scalar reference,
+    /// clipping to the depth.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dsp::av2_deblock_edge`].
+    pub fn av2_deblock_edge_at<T: Sample>(
+        dst: &mut PlaneViewMut<'_, T>,
+        (x, y): (usize, usize),
+        vertical: bool,
+        (filter, keep): (Av2EdgeFilter, (bool, bool)),
+        depth: BitDepth,
+    ) {
+        let (q0, across, along) = av2_edge_steps(dst, (x, y), vertical, filter);
+        let plane = dst.data_mut();
+        if let Some(mut ramps) = deblock::av2::segment_ramps(plane, q0, across, along, filter) {
+            // A zero scaled step moves no sample of its side.
+            for (neg, pos) in &mut ramps.scaled {
+                if keep.0 {
+                    *neg = 0;
+                }
+                if keep.1 {
+                    *pos = 0;
+                }
+            }
+            deblock::av2::apply_ramps_at(plane, &ramps, depth);
         }
     }
 
@@ -5022,6 +5055,33 @@ impl Dsp {
         unsafe { (self.codec_txfm.quantize)(coeffs, &mf[..period], offset, qbits, H264_MAX_LEVEL) }
     }
 
+    /// Eliminate sparse H.264 inter luma levels in 4×4 transform blocks.
+    /// Limits apply per 8×8 quadrant and then to the whole macroblock.
+    /// Returns the coded quadrant pattern of the retained levels.
+    #[must_use]
+    pub fn h264_eliminate_luma_4x4(&self, levels: &mut [[i16; 16]; 16], limits: (u32, u32)) -> u8 {
+        // SAFETY: the fixed array covers the macroblock and this instance
+        // only installs kernels for instructions its CPU supports.
+        unsafe { (self.codec_txfm.h264_eliminate_luma_4x4)(levels, limits) }
+    }
+
+    /// Eliminate sparse H.264 inter luma levels in 8×8 transform blocks.
+    /// Positive counts must match the quantized nonzero levels. A zero count
+    /// skips the quadrant even if its storage still holds old levels.
+    /// Limits apply per quadrant and then to the whole macroblock.
+    /// Returns the coded quadrant pattern of the retained levels.
+    #[must_use]
+    pub fn h264_eliminate_luma_8x8(
+        &self,
+        levels: &mut [[i16; 64]; 4],
+        counts: [u32; 4],
+        limits: (u32, u32),
+    ) -> u8 {
+        // SAFETY: the fixed array covers the macroblock and this instance
+        // only installs kernels for instructions its CPU supports.
+        unsafe { (self.codec_txfm.h264_eliminate_luma_8x8)(levels, counts, limits) }
+    }
+
     /// Bit `i` set where `levels[i]` is non-zero.
     ///
     /// # Panics
@@ -5824,8 +5884,8 @@ pub(crate) fn sao_offsets(class: u8, stride: usize) -> (isize, isize) {
 ///
 /// If a sample `filter` reads ([`Av2EdgeFilter::reach`]) lies outside the
 /// plane.
-fn av2_edge_steps(
-    dst: &PlaneViewMut<'_>,
+fn av2_edge_steps<T: Sample>(
+    dst: &PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     vertical: bool,
     filter: Av2EdgeFilter,

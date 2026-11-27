@@ -38,6 +38,19 @@ NATIVE = {
     "av1": ("av1_conformance_libaom.json", "aomdec --i420 (libaom v3.15.3)",
             "libaom v3.15.3 Main-profile test vectors: the 176 av1-1-b8-* and 66 av1-1-b10-* "
             "(tools/conformance/av1_manifest.txt), film grain applied"),
+    "av1-supplementary": ("av1_conformance_supplementary.json",
+                          "aomdec --i420 (libaom v3.15.3); each stream kept only where aomdec and dav1d "
+                          "1.5.4 agree on every frame",
+                          "28 short streams of libaom v3.15.3 (aomenc; svc_encoder_rtc with its ROI map) "
+                          "and SVT-AV1 v4.3.0 for Main-profile tools the libaom vectors lack: quantizer "
+                          "matrices, superblock quantizer and loop filter deltas, segmentation (AQ modes, "
+                          "ROI loop filter / reference / skip features), lossless, odd frame sizes, switch "
+                          "frames (tools/dev/av1_conformance_supplement.sh); not an official suite"),
+    "av1-profiles": ("av1_conformance_profiles.json",
+                     "aomdec (libaom v3.15.3): --i420 for 4:2:0 and monochrome, --rawvideo for 4:2:2 "
+                     "and 4:4:4; dav1d 1.5.4 as a cross-check",
+                     "27 High and Professional profile streams of aomenc and ffmpeg's libaom "
+                     "(tools/dev/av1_profile_streams.sh); not an official suite"),
     "vp9": ("vp9_conformance_libvpx.json", "vpxdec-hbd --i420 (libvpx v1.16.0); FFmpeg cross-check "
             "(disagrees on the 64 resize vectors, which FFmpeg scales to the first size: those are checked "
             "against vpxdec alone)",
@@ -88,6 +101,33 @@ def native_suite(results_dir, stem, manifest, reference, denominator):
     return row
 
 
+def argon_suite(path):
+    """The AOM Argon streams run by tools/dev/av1_argon.py: per set, the
+    streams whose output equals aomdec's (in the `*_error` sets of invalid
+    streams, those our decoder ends without a panic, signal or timeout)."""
+    results = json.loads(path.read_text())
+    streams = results["streams"]
+    passed = ("pass", "robust", "unframed")
+    by_set = {}
+    for name, r in streams.items():
+        counts = by_set.setdefault(name.split("/")[0], [0, 0])
+        counts[0] += r["status"] in passed
+        counts[1] += 1
+    sets = sorted(by_set)
+    return {"passed": sum(r["status"] in passed for r in streams.values()), "run": len(streams),
+            "by_set": by_set,
+            "reference": "aomdec --rawvideo (libaom v3.15.3) on the same IVF rewrite of each stream, "
+                         "against our decoder's --unbounded 1 --monochrome-chroma 0 output; the "
+                         "*_error sets (invalid streams) check only that our decoder ends without a "
+                         "panic, signal or timeout; the Argon reference MD5s (aomdec --rawvideo "
+                         "--all-layers) are not compared",
+            "denominator": "AOM Argon v2.1.1 (argon_coveragetool_av1_base_and_extended_profiles_v2.1.1"
+                           f".zip): every stream of the sets {', '.join(sets)}; the large scale tile "
+                           "sets (tile list OBUs, an exception) are not run",
+            "failing": {n: r["status"] + (f": {r['error']}" if r.get("error") else "")
+                        for n, r in sorted(streams.items()) if r["status"] not in passed}}
+
+
 def wasm_suites(results_dir):
     out = {}
     for codec, manifest in WASM.items():
@@ -129,6 +169,8 @@ def main():
             "manifest": len(json.loads((CI / manifest).read_text())), "reference": reference,
             "denominator": denominator,
             "failing": {n: r["status"] for n, r in results.items() if r["status"] != "pass"}}
+    if (args.results_dir / "argon.json").exists():
+        summary["native"]["av1-argon"] = argon_suite(args.results_dir / "argon.json")
     summary["wasm"] = wasm_suites(args.results_dir)
     (args.results_dir / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     for group in ("native", "wasm"):

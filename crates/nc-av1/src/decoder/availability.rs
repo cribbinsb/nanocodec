@@ -9,8 +9,9 @@
 //! superblock, set when a whole block is decoded; inside the block being
 //! decoded, decoding order (64x64 chunks in raster order, transform blocks
 //! in raster order within each) decides. A chroma unit is decoded with the
-//! block covering the bottom-right luma unit of its 8x8 area, the block that
-//! carries the chroma of sub-8x8 blocks. Outside the superblock, the row
+//! block covering the bottom-right luma unit of its luma area (8x8 in 4:2:0,
+//! 8x4 in 4:2:2, 4x4 in 4:4:4), the block that carries the chroma of sub-8x8
+//! blocks. Outside the superblock, the row
 //! above is decoded inside the tile, the superblock to the left down to its
 //! bottom edge, and nothing to the right or below (`clear_block_decoded_flags`).
 //! libaom's `has_top_right` / `has_bottom_left` tables encode the same
@@ -72,14 +73,14 @@ pub(super) struct DecodedUnits {
 
 /// A transform block of one plane of a block, in that plane's 4x4 units:
 /// the block's top-left unit and size there, the transform's offset in the
-/// block and size, and the plane's subsampling.
+/// block and size, and the plane's subsampling (`(x, y)`, log2).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PlaneTransform {
     pub block_origin: (usize, usize),
     pub block_size: (usize, usize),
     pub offset: (usize, usize),
     pub size: (usize, usize),
-    pub subsampled: bool,
+    pub subsampling: (usize, usize),
 }
 
 impl DecodedUnits {
@@ -138,23 +139,23 @@ impl DecodedUnits {
     /// is decoded when `tx` is predicted.
     fn decoded(&self, tx: &PlaneTransform, row: isize, col: isize) -> bool {
         let (bw, bh) = (tx.block_size.0 as isize, tx.block_size.1 as isize);
+        let (ss_x, ss_y) = tx.subsampling;
         if (0..bh).contains(&row) && (0..bw).contains(&col) {
             // Inside the block: 64x64 chunks in raster order, transform
             // rows in order within one.
-            let chunk_log2 = CHUNK_MI_LOG2 - usize::from(tx.subsampled);
-            let chunk = |r: isize, c: isize| (r >> chunk_log2, c >> chunk_log2);
+            let chunk =
+                |r: isize, c: isize| (r >> (CHUNK_MI_LOG2 - ss_y), c >> (CHUNK_MI_LOG2 - ss_x));
             let current = chunk(tx.offset.1 as isize, tx.offset.0 as isize);
             let other = chunk(row, col);
             return other < current || (other == current && row < tx.offset.1 as isize);
         }
-        let ss = usize::from(tx.subsampled);
         let plane_row = tx.block_origin.1 as isize + row;
         let plane_col = tx.block_origin.0 as isize + col;
         // A chroma unit belongs to the block holding its bottom-right luma
         // unit.
         self.luma_decoded(
-            (plane_row << ss) + ss as isize,
-            (plane_col << ss) + ss as isize,
+            (plane_row << ss_y) + ss_y as isize,
+            (plane_col << ss_x) + ss_x as isize,
         )
     }
     /// `haveAboveRt` and `haveBelowLft` of `tx`, given `haveAbove` and
@@ -188,7 +189,7 @@ mod tests {
             block_size,
             offset,
             size,
-            subsampled: false,
+            subsampling: (0, 0),
         }
     }
 
@@ -252,7 +253,7 @@ mod tests {
             block_size: (1, 1),
             offset: (0, 0),
             size: (1, 1),
-            subsampled: true,
+            subsampling: (1, 1),
         };
         assert_eq!(units.corners(&chroma, true, true), (false, false));
         units.mark((6, 2), (2, 2));

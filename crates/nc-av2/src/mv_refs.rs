@@ -928,17 +928,21 @@ impl ReferenceGrid {
         let stride = self.width / CELL;
         // The cells inside the picture (a block may cross its edge).
         let (right, bottom) = ((x + size).min(self.width), (y + size).min(self.height));
-        let cells = (y / CELL..bottom / CELL)
-            .flat_map(|row| (x / CELL..right / CELL).map(move |col| row * stride + col));
-        if cells
-            .clone()
-            .any(|index| self.cells[index] != Cell::Uncoded)
-        {
+        // Row slices, not a flat index iterator: one bounds check a row
+        // instead of one a cell (the iterator chain cost 0.4% of decoding
+        // our 1080p stream).
+        let rows = y / CELL..bottom / CELL;
+        let row_cells = |row: usize| row * stride + x / CELL..row * stride + right / CELL;
+        if rows.clone().any(|row| {
+            self.cells[row_cells(row)]
+                .iter()
+                .any(|&cell| cell != Cell::Uncoded)
+        }) {
             return Err(DecodeError::Malformed("AV2 MV grid entry"));
         }
         let column = u16::try_from(x).expect("checked against the picture width");
-        for index in cells {
-            self.cells[index] = Cell::Coded { column, motion };
+        for row in rows {
+            self.cells[row_cells(row)].fill(Cell::Coded { column, motion });
         }
         Ok(())
     }

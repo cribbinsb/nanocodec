@@ -3,11 +3,10 @@
 //!
 //! The encoder codes 8-bit 4:2:0 I/P pictures: every intra mode except
 //! chroma-from-luma, lossless/lossy residuals, skip and quarter-pel motion.
-//! The decoder ([`general`]) decodes other encoders' single-tile 8-bit
-//! 4:2:0 AV2 streams as AVM v1.0.0 writes them (30 of 30 foreign streams;
-//! no AV2 conformance suite exists); 10-bit, monochrome, several tiles and
-//! reference scaling are not decoded yet (docs/handoff/av2.md,
-//! docs/FAQ.md#conformance).
+//! The decoder ([`general`]) decodes other encoders' 8-, 10- and 12-bit
+//! 4:2:0 and monochrome AV2 streams as AVM v1.0.0 writes them, of any tile
+//! layout and with references of another size (no AV2 conformance suite
+//! exists; docs/handoff/av2.md, docs/FAQ.md#conformance).
 #![forbid(unsafe_code)]
 
 pub mod obu;
@@ -38,6 +37,7 @@ mod backend;
 mod block_coder;
 mod block_state;
 mod chroma_weight;
+mod level;
 mod packet;
 mod physical_slots;
 mod pre_tx_skip;
@@ -46,7 +46,8 @@ mod pre_tx_skip;
 mod tile_analysis;
 mod tile_decoder;
 pub use backend::Av2Backend;
-pub use general::decoder::{Decoder, temporal_unit_layer};
+pub use general::decoder::temporal_unit_layer;
+pub use general::instance::Decoder;
 mod intra_edges;
 pub mod intra_modes;
 pub mod motion;

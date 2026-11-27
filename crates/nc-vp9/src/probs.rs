@@ -10,7 +10,9 @@
 //! starts from the result. Key frames reset to the defaults (and code their
 //! modes and partitions with the fixed key-frame tables).
 
+use crate::recorder::{PIVOT_NODES, PivotCounts, coef_model};
 use crate::tables::{self, BandProbs};
+use crate::transform::TxSize;
 use crate::tree::{self, Tree};
 
 /// Saturating count and largest update factor of coefficient adaptation
@@ -565,27 +567,48 @@ impl CoefUpdates {
     /// counts (libvpx `vp9_prob_diff_update_savings_search`: from the
     /// frame's own probability towards the old one, keep the best saving);
     /// a size is sent when its savings exceed the cost of its "no update"
-    /// flags. The pivot node keeps its probability (it also shapes the
-    /// Pareto tail).
-    pub(crate) fn choose(context: &FrameContext, counts: &Counts, sizes: usize) -> Self {
+    /// flags. With `pivots` (the branch counts of every model's pivot and
+    /// tail nodes) the pivot node is updated too, priced with the Pareto
+    /// tail it selects (libvpx `vp9_prob_diff_update_savings_search_model`);
+    /// without, it keeps its probability.
+    pub(crate) fn choose(
+        context: &FrameContext,
+        counts: &Counts,
+        sizes: usize,
+        pivots: Option<&PivotCounts>,
+    ) -> Self {
         let mut updates = Self::none(context);
         let flag_cost = crate::tree::bit_cost(false, crate::subexp::DIFF_UPDATE_PROB);
         let tables = context.coef.iter().zip(counts.coef.iter()).enumerate();
         for (t, (table, table_counts)) in tables.take(sizes) {
             let mut candidate = *table;
             let (mut savings, mut nodes) = (0.0, 0u32);
-            for (planes, plane_counts) in candidate.iter_mut().zip(table_counts.iter()) {
-                for (references, reference_counts) in planes.iter_mut().zip(plane_counts) {
+            for (p, (planes, plane_counts)) in
+                candidate.iter_mut().zip(table_counts.iter()).enumerate()
+            {
+                for (r, (references, reference_counts)) in
+                    planes.iter_mut().zip(plane_counts).enumerate()
+                {
                     for (b, (bands, band_counts)) in
                         references.iter_mut().zip(reference_counts).enumerate()
                     {
                         let contexts = if b == 0 { 3 } else { 6 };
-                        for (probs, count) in bands.iter_mut().zip(band_counts).take(contexts) {
+                        for (c, (probs, count)) in
+                            bands.iter_mut().zip(band_counts).take(contexts).enumerate()
+                        {
                             let [n0, n1, n2, neob] = count.tokens;
                             let branches = [[neob, count.eob_branch - neob], [n0, n1 + n2]];
                             for (prob, branch) in probs.iter_mut().zip(branches) {
                                 let (new, saving) = best_update(branch, *prob);
                                 *prob = new;
+                                savings += saving;
+                            }
+                            if let Some(pivots) = pivots {
+                                let tx = TxSize::from_log2(t as u8 + 2);
+                                let model = coef_model(tx, p, r, b, c);
+                                let pivot = &mut probs[crate::coeff::PIVOT_NODE];
+                                let (new, saving) = best_pivot_update(&pivots[model], *pivot);
+                                *pivot = new;
                                 savings += saving;
                             }
                             nodes += 3;
@@ -663,6 +686,41 @@ fn best_update(branch: [u32; 2], old: u8) -> (u8, f32) {
         let candidate = prob as u8;
         let saving =
             before - branch_bits(branch, candidate) - crate::subexp::update_cost(old, candidate);
+        if saving > best.1 {
+            best = (candidate, saving);
+        }
+        prob -= step;
+    }
+    best
+}
+
+/// The update of pivot `old` that saves most on its own branch and the
+/// Pareto tail branches it selects (`counts`: `[0]` the pivot, `[1 + k]`
+/// tail node k), after its own cost; or `old` with no saving. Every
+/// candidate from the pivot branch's own probability towards `old` (libvpx
+/// `vp9_prob_diff_update_savings_search_model`).
+fn best_pivot_update(counts: &[[u32; 2]; PIVOT_NODES], old: u8) -> (u8, f32) {
+    let total = counts[0][0] + counts[0][1];
+    if total == 0 {
+        return (old, 0.0);
+    }
+    let bits = |pivot: u8| {
+        let tail = &tables::PARETO[usize::from(pivot) - 1];
+        branch_bits(counts[0], pivot)
+            + counts[1..]
+                .iter()
+                .zip(tail)
+                .map(|(&branch, &prob)| branch_bits(branch, prob))
+                .sum::<f32>()
+    };
+    let target = probability(counts[0][0], total) as u8;
+    let before = bits(old);
+    let mut best = (old, 0.0);
+    let step = (i32::from(target) - i32::from(old)).signum();
+    let mut prob = i32::from(target);
+    while prob != i32::from(old) {
+        let candidate = prob as u8;
+        let saving = before - bits(candidate) - crate::subexp::update_cost(old, candidate);
         if saving > best.1 {
             best = (candidate, saving);
         }

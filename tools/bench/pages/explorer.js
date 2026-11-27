@@ -5,8 +5,8 @@ import { paretoFront, frontierLine } from './frontier.js';
 import { drawScatter, pinSwatch, swatch } from './chart.js';
 import { CODEC_NAMES, control, el, fail, loadData, pct, segmented, table } from './common.js';
 import {
-  NAMES, SHORT, SPEED_NAME, SPEED_UNIT, banner, chosenMachine, clipsNote, interval, machinePicker, mean, speed, statement,
-  viewOf, viewTitle, viewsOn, zeroFamily, zeroName,
+  NAMES, SHORT, SPEED_UNIT, allChoices, banner, chosenMachine, clipsNote, datasetChoices, interval, machineFor, machinePicker, mean, speed,
+  speedName, statement, viewOf, viewTitle, viewsOn, zeroFamily, zeroName,
 } from './bp3.js';
 
 const SHAPES = {
@@ -113,7 +113,7 @@ function detail(data, view, family) {
     long ? [`BD-J on the 600-frame windows only (${long.clips} clips)`, `${pct(mean(long.bd.j), 2)} (95 % interval ${interval(long.bd.j)}); 150-frame windows ${pct(mean(v.bd_by_window['150'].j), 2)}`] : null,
     ['Clips lost to a malformed curve', String(v.lost)],
     lost.length ? ['Lost clips and why', el('ul', {}, lost.map(([clip, why]) => el('li', {}, `${clip}: ${why}`)))] : null,
-    ['Encode speed', `${speed(v.speed)} ${SPEED_UNIT} (${SPEED_NAME}) over ${v.speed_clips} clips, normalised to the timing references (raw ${speed(v.speed_raw)})`],
+    ['Encode speed', `${speed(v.speed)} ${SPEED_UNIT} (${speedName(data, view.machine)}) over ${v.speed_clips} clips, normalised to the timing references (raw ${speed(v.speed_raw)})`],
     ['On the report’s front (common set, BD-J and speed, all families)', view.front.includes(family) ? 'yes' : 'no'],
     c ? ['Rate compliance (one 1 s bucket for every encoder)', `at its own rate: ${share(c.own_rate.share_points_over_1)} of ${c.points} points over one buffer; peak median ${c.own_rate.median_peak_buffers.toFixed(2)}, 95th percentile ${c.own_rate.p95_peak_buffers.toFixed(2)}, worst ${c.own_rate.worst_peak_buffers.toFixed(2)} buffers. At the target rate: ${share(c.target_rate.share_points_over_1)} of points over one buffer, worst ${c.target_rate.worst_peak_buffers.toFixed(2)}. Rate ${c.mean_rate_over_target.toFixed(3)} of target (mean)${p.ours ? '. Ours holds the buffer by re-coding a frame that would overflow it (--strict-buffer): compliant by re-coding; the runs do not record the re-coded share' : ''}`] : null,
     c ? ['First key frame', `${c.first_key_seconds.median.toFixed(2)} s of the channel at its own rate (median; 95th percentile ${c.first_key_seconds.p95.toFixed(2)}, worst ${c.first_key_seconds.worst.toFixed(2)})`] : null,
@@ -129,7 +129,7 @@ function render(data, root) {
   const views = viewsOn(data, state.machine);
   if (!views.length) {
     root.querySelector('.controls').replaceChildren();
-    machinePicker(data.machines, state.machine, (machine) => pickMachine(data, root, machine));
+    machinePicker(data.machines, state.machine, (machine) => pickMachine(data, root, machine), allChoices(data));
     root.querySelector('.view-note').textContent = `No report found on ${data.machines[state.machine].name} yet.`;
     for (const slot of ['.chart', '.detail-slot', '.table-slot']) root.querySelector(slot).replaceChildren();
     root.querySelector('.chart-title').textContent = '';
@@ -139,8 +139,8 @@ function render(data, root) {
   const view = viewOf(data, state.dataset, state.machine) || views[0];
   state.dataset = view.dataset;
   controls(data, root);
-  machinePicker(data.machines, state.machine, (machine) => pickMachine(data, root, machine));
-  root.querySelector('.view-note').replaceChildren(statement(data, view));
+  machinePicker(data.machines, state.machine, (machine) => pickMachine(data, root, machine), datasetChoices(data, state.dataset));
+  root.querySelector('.view-note').replaceChildren(...statement(data, view));
 
   const entries = visible(data, view);
   const zero = zeroFamily(view, state.metric);
@@ -173,7 +173,7 @@ function render(data, root) {
     });
     pinned = drawScatter(chart, points, {
       frontiers,
-      xLabel: `${SPEED_NAME}, ${SPEED_UNIT}, ${data.machines[view.machine].name} (log scale)`,
+      xLabel: `${speedName(data, view.machine)}, ${SPEED_UNIT}, ${data.machines[view.machine].name} (log scale)`,
       yLabel: `${SHORT[state.metric]} BD-rate (lower is better)`,
       ariaLabel: title.textContent,
       selected: state.selected,
@@ -262,10 +262,17 @@ function controls(data, root) {
     node.value = state[key];
     return node;
   };
-  const datasets = Object.keys(data.datasets).filter((d) => viewOf(data, d, state.machine));
+  // Every dataset with a report; picking one the machine lacks moves to a machine that has it.
+  const datasets = Object.keys(data.datasets).filter((d) => datasetChoices(data, d).ready.length);
+  const pickDataset = (dataset) => {
+    state.dataset = dataset;
+    const machine = machineFor(data, dataset, state.machine);
+    if (machine !== state.machine) { state.machine = machine; banner(data, machine); }
+    open();
+  };
   root.querySelector('.controls').replaceChildren(
     control('Dataset', segmented('Dataset', datasets.map((d) => ({ value: d, label: data.datasets[d].name })),
-      state.dataset, (v) => { state.dataset = v; open(); })),
+      state.dataset, pickDataset)),
     control('Metric', segmented('Metric', data.metrics.map((m) => ({ value: m, label: SHORT[m] })),
       state.metric, (v) => { state.metric = v; rerender(); })),
     control('Pareto frontier', segmented('Pareto frontier', [{ value: 'on', label: 'On' }, { value: 'off', label: 'Off' }],
@@ -279,7 +286,7 @@ async function main() {
   const root = document.getElementById('explorer');
   try {
     const data = await loadData('bp3');
-    state.machine = chosenMachine(data.machines);
+    state.machine = chosenMachine(data.machines, data.views);
     banner(data, state.machine);
     legend(data, root);
     render(data, root);

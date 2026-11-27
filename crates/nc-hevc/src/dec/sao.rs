@@ -3,8 +3,10 @@
 //! tile and picture boundary rules and the PCM / lossless exemptions.
 //!
 //! At high bit depth offsets reach `(1 << (Min(BitDepth, 10) − 5)) − 1`
-//! and scale by `2^(BitDepth − Min(BitDepth, 10))` (§7.4.9.3.2); bands
-//! are `2^(BitDepth − 5)` values wide (the kernels').
+//! and scale by `2^log2OffsetScale` (`log2_sao_offset_scale_luma` /
+//! `_chroma` of the range extension, 0 without it; §7.4.9.3.2); bands are
+//! `2^(BitDepth − 5)` values wide (the kernels'). Chroma CTBs and lines
+//! follow the picture's chroma format.
 
 use nc_common::{BitDepth, BitDepths, Picture, PlaneIndex};
 use nc_dsp::{DepthKernels, Dsp, Pixel, SAO_EO_NEIGHBOURS, SaoCtb, SaoLimits, sao_edge_restricted};
@@ -20,10 +22,10 @@ const OFFSET_DEPTH_LIMIT: u32 = 10;
 /// 5)) − 1`).
 const OFFSET_RANGE_BITS: u32 = 5;
 
-/// `cMax` of `sao_offset_abs` and the `SaoOffsetVal` scale at `depth`.
-fn offset_limits(depth: BitDepth) -> (u32, u32) {
+/// `cMax` of `sao_offset_abs` at `depth`.
+fn offset_limit(depth: BitDepth) -> u32 {
     let coded = depth.bits().min(OFFSET_DEPTH_LIMIT);
-    ((1 << (coded - OFFSET_RANGE_BITS)) - 1, depth.bits() - coded)
+    (1 << (coded - OFFSET_RANGE_BITS)) - 1
 }
 /// `sao_band_position` bits.
 const BAND_POSITION_BITS: u32 = 5;
@@ -60,6 +62,8 @@ pub(super) struct Neighbours {
     pub up: Option<usize>,
     /// `slice_sao_luma_flag`, `slice_sao_chroma_flag`.
     pub enabled: [bool; 2],
+    /// `log2_sao_offset_scale_luma`, `log2_sao_offset_scale_chroma`.
+    pub log2_offset_scale: [u8; 2],
 }
 
 /// How a CTB's SAO parameters were signalled (analysis records).
@@ -143,7 +147,8 @@ pub(super) fn parse<T: Pixel>(
         if kind == Kind::Off {
             continue;
         }
-        let (max_offset, scale) = offset_limits(depths.plane(c));
+        let max_offset = offset_limit(depths.plane(c));
+        let scale = n.log2_offset_scale[usize::from(c > 0)];
         let mut magnitudes = [0i16; 4];
         for m in &mut magnitudes {
             let mut v = 0;
@@ -243,30 +248,31 @@ pub(super) fn apply_band<T: Pixel>(
     } else {
         [false; 3]
     };
+    let filter_exempt = pic.filter_exempt;
     let (samples, blocks) = pic.split();
+    let format = samples.chroma_format();
     let ctb = 1usize << layout.log2_ctb;
-    // The band's lines (luma), with one above and one below; chroma has
-    // half, with the same one above and below.
+    // The band's lines (luma), with one above and one below; subsampled
+    // chroma has fewer, with the same one above and below.
     let band_lines = ctb + 2 * BAND_MARGIN;
-    let fits = work
-        .band
-        .as_ref()
-        .is_some_and(|p| p.width() == blocks.width && p.height() == band_lines);
+    let fits = work.band.as_ref().is_some_and(|p| {
+        p.width() == blocks.width && p.height() == band_lines && p.chroma_format() == format
+    });
     if !fits {
-        work.band = Picture::new(blocks.width, band_lines, 0).ok();
+        work.band = Picture::with_format(blocks.width, band_lines, format, 0).ok();
     }
     let Some(buffer) = work.band.as_mut() else {
         return;
     };
     let mut windows = [Window::default(); 3];
     for (c, plane) in PlaneIndex::ALL.into_iter().enumerate() {
-        let shift = usize::from(c > 0);
-        let height = blocks.height >> shift;
-        let width = blocks.width >> shift;
-        let (y0, y1) = (
-            (row * ctb) >> shift,
-            (((row + 1) * ctb) >> shift).min(height),
-        );
+        if !used[c] {
+            continue;
+        }
+        let (sx, sy) = format.plane_subsampling(plane);
+        let height = blocks.height >> sy;
+        let width = blocks.width >> sx;
+        let (y0, y1) = ((row * ctb) >> sy, (((row + 1) * ctb) >> sy).min(height));
         let window = Window {
             top: y0.saturating_sub(1),
             end: (y1 + 1).min(height),
@@ -295,9 +301,10 @@ pub(super) fn apply_band<T: Pixel>(
     let ctbs = row * layout.ctb_w..(row + 1) * layout.ctb_w;
     let band_blocks = blocks.stride * ((row * ctb) >> GRID_LOG2)
         ..blocks.stride * ((((row + 1) * ctb).min(blocks.height)) >> GRID_LOG2);
-    let any_exempt = blocks.info[band_blocks]
-        .iter()
-        .any(|b| b.flags & flag::NO_FILTER != 0);
+    let any_exempt = filter_exempt
+        && blocks.info[band_blocks]
+            .iter()
+            .any(|b| b.flags & flag::NO_FILTER != 0);
     for ctb in ctbs {
         let params = blocks.sao[ctb];
         if params.iter().all(|c| c.kind == Kind::Off) {
@@ -311,7 +318,7 @@ pub(super) fn apply_band<T: Pixel>(
             let ctx = CtbContext {
                 blocks: &blocks,
                 plane,
-                shift: usize::from(c > 0),
+                subsampling: format.plane_subsampling(plane),
                 ctb,
                 allowed: &allowed,
                 any_exempt,
@@ -375,7 +382,8 @@ fn neighbour_ctbs(b: &Blocks<'_>, ctb: usize, tiles_cross: bool) -> [[bool; 3]; 
 struct CtbContext<'a, 'b> {
     blocks: &'a Blocks<'b>,
     plane: PlaneIndex,
-    shift: usize,
+    /// The plane's `(sx, sy)` (log2 `SubWidthC`, `SubHeightC`; 0 for luma).
+    subsampling: (usize, usize),
     ctb: usize,
     allowed: &'a [[bool; 3]; 3],
     /// The picture has PCM / lossless samples somewhere.
@@ -391,17 +399,18 @@ fn filter_ctb<T: Pixel>(
     component: Component,
 ) {
     let b = cx.blocks;
-    let shift = cx.shift;
-    let size = (1usize << b.layout.log2_ctb) >> shift;
-    let (pw, ph) = (b.width >> shift, b.height >> shift);
-    let x0 = (cx.ctb % b.layout.ctb_w) * size;
-    let y0 = (cx.ctb / b.layout.ctb_w) * size;
-    let (x1, y1) = ((x0 + size).min(pw), (y0 + size).min(ph));
+    let (sx, sy) = cx.subsampling;
+    let ctb = 1usize << b.layout.log2_ctb;
+    let (size_x, size_y) = (ctb >> sx, ctb >> sy);
+    let (pw, ph) = (b.width >> sx, b.height >> sy);
+    let x0 = (cx.ctb % b.layout.ctb_w) * size_x;
+    let y0 = (cx.ctb / b.layout.ctb_w) * size_y;
+    let (x1, y1) = ((x0 + size_x).min(pw), (y0 + size_y).min(ph));
     let mut exempt = Vec::new();
     if cx.any_exempt {
         for y in y0..y1 {
             for x in x0..x1 {
-                exempt.push(b.info[b.block(x << shift, y << shift)].flags & flag::NO_FILTER != 0);
+                exempt.push(b.info[b.block(x << sx, y << sy)].flags & flag::NO_FILTER != 0);
             }
         }
         if !exempt.contains(&true) {
@@ -413,7 +422,7 @@ fn filter_ctb<T: Pixel>(
         y0,
         x1,
         y1,
-        size,
+        size: (size_x, size_y),
         width: pw,
         height: ph,
     };

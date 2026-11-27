@@ -188,3 +188,5 @@ rate.key_cap_buffer_first = 1.0
 # +5.61% / +4.77% (mean +5.19%; -0.40% J / 1% CPU vs front slope -0.160). CBR streams are byte-identical.
 fixed_qp.rate.fixed_qp_moving_key = 6
 fixed_qp.light.planner.depth_removal_min_quantizer = 0.86
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2

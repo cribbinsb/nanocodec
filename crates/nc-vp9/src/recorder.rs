@@ -4,7 +4,9 @@
 //!
 //! Coefficient "more coefficients" and "nonzero" decisions (nodes 0 and 1
 //! of every band/context model) are recorded by model slot and written with
-//! the frame's updated probability, and segment ids with the frame's own
+//! the frame's updated probability; so are the pivot decision (node 2) and
+//! the Pareto tail bits, whose probabilities follow the model's final pivot
+//! (`tables::PARETO`). Segment ids are written with the frame's own
 //! segment-tree probabilities; every other bit keeps the probability it
 //! was coded with.
 //!
@@ -20,18 +22,28 @@ use crate::tables::BandProbs;
 use crate::transform::TxSize;
 use crate::tree::{Tree, bit_cost};
 
-/// Updatable coefficient nodes: 4 sizes x 2 plane types x 2 references x
-/// 6 bands x 6 contexts x nodes 0 and 1.
-pub(crate) const COEF_SLOTS: usize = 4 * 2 * 2 * 6 * 6 * UPDATED_NODES;
-/// Nodes of each model the encoder updates (the pivot node 2 shapes the
-/// Pareto tail and keeps its probability).
+/// Coefficient models: 4 sizes x 2 plane types x 2 references x 6 bands x
+/// 6 contexts (band 0 uses 3 of them).
+pub(crate) const COEF_MODELS: usize = 4 * 2 * 2 * 6 * 6;
+/// Coefficient node slots: nodes 0 and 1 of every model.
+pub(crate) const COEF_SLOTS: usize = COEF_MODELS * UPDATED_NODES;
+/// Nodes 0 and 1, recorded by [`coef_slot`]; the pivot node and its tail
+/// are recorded by model ([`TileRecorder::write_pivot`]).
 pub(crate) const UPDATED_NODES: usize = 2;
+/// The pivot and its Pareto tail nodes: one slot each per model.
+pub(crate) const PIVOT_NODES: usize = 1 + PARETO_NODES;
+/// Nodes of a Pareto tail (`tables::PARETO` columns).
+pub(crate) const PARETO_NODES: usize = 8;
 /// Marks a bit with a fixed probability.
 const FIXED: u16 = u16::MAX;
 /// Slot of segment-tree node 0; the nodes follow the coefficient slots.
 const SEGMENT_TREE_SLOT: u16 = COEF_SLOTS as u16;
 /// Slot of mode/transform/skip/partition probability 0; follows the segment tree.
 const MODE_SLOT_BASE: u16 = SEGMENT_TREE_SLOT + TREE_PROBS as u16;
+/// Slot of model 0's pivot node, then its tail nodes ([`PIVOT_NODES`] a model);
+/// follows the mode slots.
+const PIVOT_SLOT_BASE: u16 = MODE_SLOT_BASE + MODE_SLOTS as u16;
+const _: () = assert!((PIVOT_SLOT_BASE as usize) + COEF_MODELS * PIVOT_NODES < FIXED as usize);
 
 const TX8_SLOT: usize = 0;
 const TX16_SLOT: usize = TX8_SLOT + 2;
@@ -132,12 +144,6 @@ pub(crate) fn mode_slot_probs(fc: &FrameContext) -> [u8; MODE_SLOTS] {
     probs
 }
 
-/// Put the [`MODE_SLOTS`] probabilities `probs` into `fc` (a frame's
-/// forward mode updates, VP9 §6.3).
-pub(crate) fn set_mode_slot_probs(fc: &mut FrameContext, probs: &[u8; MODE_SLOTS]) {
-    visit_mode_slots(fc, |slot, prob| *prob = probs[slot]);
-}
-
 /// Call `visit` with each mode slot and its probability in `fc`.
 fn visit_mode_slots(fc: &mut FrameContext, mut visit: impl FnMut(usize, &mut u8)) {
     let mut run = |first: usize, probs: &mut [u8]| {
@@ -186,6 +192,17 @@ fn visit_mode_slots(fc: &mut FrameContext, mut visit: impl FnMut(usize, &mut u8)
     }
 }
 
+/// The index (`0..COEF_MODELS`) of a coefficient model.
+pub(crate) fn coef_model(
+    tx: TxSize,
+    plane: usize,
+    reference: usize,
+    band: usize,
+    ctx: usize,
+) -> usize {
+    ((((tx as usize * 2 + plane) * 2 + reference) * 6 + band) * 6) + ctx
+}
+
 /// The slot of node `node` (0 or 1) of a coefficient model.
 pub(crate) fn coef_slot(
     tx: TxSize,
@@ -195,9 +212,30 @@ pub(crate) fn coef_slot(
     ctx: usize,
     node: usize,
 ) -> u16 {
-    ((((((tx as usize * 2 + plane) * 2 + reference) * 6 + band) * 6 + ctx) * UPDATED_NODES) + node)
-        as u16
+    (coef_model(tx, plane, reference, band, ctx) * UPDATED_NODES + node) as u16
 }
+
+/// The pivot probability of every model of a coefficient table, by model.
+pub(crate) fn pivot_probs(coef: &[[[BandProbs; 2]; 2]; 4]) -> Box<[u8; COEF_MODELS]> {
+    let mut probs = Box::new([0; COEF_MODELS]);
+    for (t, sizes) in coef.iter().enumerate() {
+        for (p, planes) in sizes.iter().enumerate() {
+            for (r, bands) in planes.iter().enumerate() {
+                for (b, contexts) in bands.iter().enumerate() {
+                    for (c, nodes) in contexts.iter().enumerate() {
+                        let tx = TxSize::from_log2(t as u8 + 2);
+                        probs[coef_model(tx, p, r, b, c)] = nodes[crate::coeff::PIVOT_NODE];
+                    }
+                }
+            }
+        }
+    }
+    probs
+}
+
+/// Branch `[zeros, ones]` counts of each model's pivot (`[0]`) and Pareto
+/// tail nodes (`[1 + k]`), by model.
+pub(crate) type PivotCounts = [[[u32; 2]; PIVOT_NODES]];
 
 /// The updatable node probabilities of a coefficient table, by slot.
 pub(crate) fn slot_probs(coef: &[[[BandProbs; 2]; 2]; 4]) -> [u8; COEF_SLOTS] {
@@ -254,6 +292,31 @@ impl TileRecorder {
         self.bits.push(Recorded { bit, prob, slot });
     }
 
+    /// A pivot (`node` 0) or Pareto tail (`node` 1 + k) decision of coefficient
+    /// model `model`, coded with `prob`, replayed with the model's final pivot.
+    pub(crate) fn write_pivot(&mut self, bit: bool, prob: u8, model: usize, node: usize) {
+        self.bits.push(Recorded {
+            bit,
+            prob,
+            slot: PIVOT_SLOT_BASE + (model * PIVOT_NODES + node) as u16,
+        });
+    }
+
+    /// Branch counts of every model's pivot and tail nodes, from the
+    /// recorded bits (forward pivot updates).
+    pub(crate) fn pivot_counts(&self) -> Box<PivotCounts> {
+        let mut counts = vec![[[0; 2]; PIVOT_NODES]; COEF_MODELS].into_boxed_slice();
+        for recorded in self
+            .bits
+            .iter()
+            .filter(|r| r.slot != FIXED && r.slot >= PIVOT_SLOT_BASE)
+        {
+            let index = usize::from(recorded.slot - PIVOT_SLOT_BASE);
+            counts[index / PIVOT_NODES][index % PIVOT_NODES][usize::from(recorded.bit)] += 1;
+        }
+        counts
+    }
+
     /// A mode/skip/partition/tx node decision coded with `prob` at
     /// `mode_slot` (`0..MODE_SLOTS`), counted and replayed with the slot's
     /// final probability when mode updates are active.
@@ -288,7 +351,7 @@ impl TileRecorder {
         for recorded in self
             .bits
             .iter()
-            .filter(|r| r.slot != FIXED && r.slot >= MODE_SLOT_BASE)
+            .filter(|r| (MODE_SLOT_BASE..PIVOT_SLOT_BASE).contains(&r.slot))
         {
             counts[usize::from(recorded.slot - MODE_SLOT_BASE)][usize::from(recorded.bit)] += 1;
         }
@@ -370,25 +433,37 @@ impl TileRecorder {
     #[cfg(test)]
     pub(crate) fn finish(
         self,
-        slot_probs: &[u8; COEF_SLOTS],
+        coef: &[[[BandProbs; 2]; 2]; 4],
         segment_tree_probs: [u8; TREE_PROBS],
     ) -> Vec<u8> {
-        self.finish_with_modes(slot_probs, Some(segment_tree_probs), None)
+        self.finish_with_modes(coef, Some(segment_tree_probs), None)
     }
 
-    /// Write the tile with the coefficient slots', optional segment-tree
-    /// (`None` when segmentation was disabled at `end_frame` because no block
-    /// took a non-zero feature), and optional mode slots' final probabilities.
+    /// Write the tile with the final coefficient table `coef` (its node 0
+    /// and 1 slots, and each model's pivot with the tail it selects), the
+    /// optional segment-tree (`None` when segmentation was disabled at
+    /// `end_frame` because no block took a non-zero feature), and optional
+    /// mode slots' final probabilities.
     pub(crate) fn finish_with_modes(
         self,
-        slot_probs: &[u8; COEF_SLOTS],
+        coef: &[[[BandProbs; 2]; 2]; 4],
         segment_tree_probs: Option<[u8; TREE_PROBS]>,
         mode_probs: Option<&[u8; MODE_SLOTS]>,
     ) -> Vec<u8> {
+        let slot_probs = slot_probs(coef);
+        let pivots = pivot_probs(coef);
         let mut writer = BoolWriter::new();
         for recorded in self.bits {
             let prob = match recorded.slot {
                 FIXED => recorded.prob,
+                slot if slot >= PIVOT_SLOT_BASE => {
+                    let index = usize::from(slot - PIVOT_SLOT_BASE);
+                    let pivot = pivots[index / PIVOT_NODES];
+                    match index % PIVOT_NODES {
+                        0 => pivot,
+                        node => crate::tables::PARETO[usize::from(pivot) - 1][node - 1],
+                    }
+                }
                 slot if slot >= MODE_SLOT_BASE => {
                     mode_probs.map_or(recorded.prob, |m| m[usize::from(slot - MODE_SLOT_BASE)])
                 }

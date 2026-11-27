@@ -12,6 +12,7 @@ mod deblock;
 mod filter_syntax;
 mod filters;
 mod ibc;
+mod palette;
 pub(crate) use filter_syntax::{CtuFilters, counts as filter_counts};
 #[cfg(test)]
 pub(crate) use filters::apply as apply_filters;
@@ -79,7 +80,10 @@ use crate::{
     decoder_headers::{PictureParameters, Sequence, SliceHeader},
     intra,
 };
-use nc_common::decode::{DecodeError, Result};
+use nc_common::{
+    ChromaFormat,
+    decode::{DecodeError, Result},
+};
 #[cfg(test)]
 pub(super) use transform::inverse_residuals;
 use tree::{Node, Split};
@@ -99,10 +103,13 @@ pub(crate) struct DecodeScratch<T: nc_dsp::Pixel> {
 
 /// Slice-reusable compact storage of non-zero `(pos, level)` pairs and
 /// coefficient-parsing grids across all transform units, avoiding per-TU
-/// `Vec` allocations and stack `memset`s.
+/// `Vec` allocations and stack `memset`s. Levels are 16-bit
+/// (`log2TransformRange` 15, §7.4.11.11), or 32-bit in `wide` with extended
+/// precision (up to 22 bits); a span into `wide` has [`WIDE_SPAN`] set.
 #[derive(Debug)]
 pub(crate) struct CoeffArena {
     pub(super) entries: Vec<(u16, i16)>,
+    pub(super) wide: Vec<(u16, i32)>,
     pub(super) grid: Box<[u32; coeff::PADDED_AREA]>,
     pub(super) pass1: Box<[u8; coeff::PADDED_AREA]>,
     pub(super) skip_vals: Box<[i32; 64 * 64]>,
@@ -112,6 +119,7 @@ impl Default for CoeffArena {
     fn default() -> Self {
         Self {
             entries: Vec::new(),
+            wide: Vec::new(),
             grid: Box::new([0; coeff::PADDED_AREA]),
             pass1: Box::new([0; coeff::PADDED_AREA]),
             skip_vals: Box::new([0; 64 * 64]),
@@ -119,11 +127,94 @@ impl Default for CoeffArena {
     }
 }
 
+/// The flag of a span into [`CoeffArena::wide`].
+pub(super) const WIDE_SPAN: u32 = 1 << 31;
+
 impl CoeffArena {
+    /// The levels of `span`.
     #[inline]
-    pub(super) fn slice(&self, (start, len): (u32, u16)) -> &[(u16, i16)] {
-        let s = start as usize;
-        &self.entries[s..s + usize::from(len)]
+    pub(super) fn slice(&self, (start, len): (u32, u16)) -> Levels<'_> {
+        let s = (start & !WIDE_SPAN) as usize;
+        let end = s + usize::from(len);
+        if start & WIDE_SPAN == 0 {
+            Levels::Narrow(&self.entries[s..end])
+        } else {
+            Levels::Wide(&self.wide[s..end])
+        }
+    }
+
+    /// The span start of the next level pushed to `entries`, or to `wide`.
+    pub(super) fn span_start(&self, wide: bool) -> Result<u32> {
+        let len = if wide {
+            self.wide.len()
+        } else {
+            self.entries.len()
+        };
+        u32::try_from(len)
+            .ok()
+            .filter(|&start| start & WIDE_SPAN == 0)
+            .map(|start| if wide { start | WIDE_SPAN } else { start })
+            .ok_or(DecodeError::Malformed("VVC coeff arena"))
+    }
+
+    /// The span from `start` (from [`Self::span_start`]) to the end.
+    pub(super) fn span_from(&self, start: u32) -> Result<(u32, u16)> {
+        let len = if start & WIDE_SPAN == 0 {
+            self.entries.len()
+        } else {
+            self.wide.len()
+        };
+        u16::try_from(len - (start & !WIDE_SPAN) as usize)
+            .map(|count| (start, count))
+            .map_err(|_| DecodeError::Malformed("VVC coeff count"))
+    }
+}
+
+/// The levels of one coded block: 16-bit, or 32-bit with extended precision.
+#[derive(Clone, Copy)]
+pub(super) enum Levels<'a> {
+    Narrow(&'a [(u16, i16)]),
+    Wide(&'a [(u16, i32)]),
+}
+
+impl Levels<'_> {
+    /// Whether no level is coded.
+    #[inline]
+    pub(super) fn is_empty(self) -> bool {
+        match self {
+            Self::Narrow(levels) => levels.is_empty(),
+            Self::Wide(levels) => levels.is_empty(),
+        }
+    }
+
+    /// Write each level into `buffer` at its raster position.
+    #[inline]
+    pub(super) fn scatter(self, buffer: &mut [i32]) {
+        match self {
+            Self::Narrow(levels) => {
+                for &(pos, value) in levels {
+                    buffer[usize::from(pos)] = i32::from(value);
+                }
+            }
+            Self::Wide(levels) => {
+                for &(pos, value) in levels {
+                    buffer[usize::from(pos)] = value;
+                }
+            }
+        }
+    }
+
+    /// Zero the positions [`Self::scatter`] wrote.
+    #[inline]
+    pub(super) fn clear(self, buffer: &mut [i32]) {
+        match self {
+            Self::Narrow(levels) => levels
+                .iter()
+                .for_each(|&(pos, _)| buffer[usize::from(pos)] = 0),
+            Self::Wide(levels) => levels
+                .iter()
+                .for_each(|&(pos, _)| buffer[usize::from(pos)] = 0),
+        }
     }
 }
 
@@ -151,6 +242,8 @@ pub(super) struct Unit {
     reference_line: u8,
     isp: Option<crate::isp::Split>,
     sbt: Option<sbt::Sbt>,
+    /// The palette of a palette-coded CU (`pred_mode_plt_flag`).
+    palette: Option<Box<palette::Palette>>,
     prof: bool,
     smvd: bool,
     bdof: bool,
@@ -159,6 +252,12 @@ pub(super) struct Unit {
     mts: u8,
     luma_mode: u8,
     chroma_mode: u8,
+    /// Whether 4:4:4 chroma of a single-tree MIP CU takes the derived mode,
+    /// and so is predicted by MIP too (H.266 §8.4.3, §8.4.5.2.2).
+    chroma_mip: bool,
+    /// `cu_act_enabled_flag` (H.266 §7.3.11.5): the residuals are coded in
+    /// YCgCo-R and converted back before reconstruction (§8.7.4.6).
+    act: bool,
     /// Luma QP of the CU (`QpY`, `−QpBdOffset ..= 63`; a chroma-tree CU
     /// holds the luma QP its chroma QPs derive from).
     qp: i8,
@@ -175,6 +274,11 @@ impl Unit {
     /// The CU's luma QP and chroma QP offsets, as `transform::qp` takes them.
     fn quant(&self) -> (i8, [i8; 3]) {
         (self.qp, self.chroma_offsets)
+    }
+    /// Whether the CU is intra predicted (`MODE_INTRA`; palette CUs are
+    /// `MODE_PLT`, H.266 §7.4.12.2).
+    fn intra(&self) -> bool {
+        self.inter.is_none() && self.palette.is_none()
     }
     /// Whether this is an IBC CU (known from its syntax, before its vector
     /// is resolved).
@@ -197,6 +301,8 @@ struct Parser<'a> {
     coefficients: coeff::Models,
     skip_coefficients: skip_coeff::Models,
     cclm: [Context; 2],
+    /// The `cu_act_enabled_flag` context (§9.3.2.2, Table 51).
+    act: Context,
     intra_models: intra_syntax::Models,
     joint: [Context; 3],
     constraint: [Context; 2],
@@ -205,7 +311,13 @@ struct Parser<'a> {
     transform_models: transform_syntax::Models,
     sbt_models: sbt::Models,
     ibc_models: ibc::Models,
+    palette_models: palette::Models,
+    /// The palette predictor (§7.4.12.13), kept across the slice's CUs.
+    palette_predictor: palette::Predictor,
     groups: quant_groups::QuantGroups,
+    /// The range extension's residual coding state (persistent Rice
+    /// statistics and the slice's Rice and range parameters).
+    rice: coeff::RiceContext,
     /// The CTU being parsed.
     ctu: layout::Ctu,
     /// The index of the slice being parsed in its picture.
@@ -237,29 +349,27 @@ pub(super) fn parse(
         &mut filters,
         &mut arena,
     )?;
-    populate_test_levels(&mut units, &arena);
+    populate_test_levels(&mut units, &arena, s);
     Ok(units)
 }
 
 #[cfg(test)]
-pub(super) fn populate_test_levels(units: &mut [Unit], arena: &CoeffArena) {
+pub(super) fn populate_test_levels(units: &mut [Unit], arena: &CoeffArena, s: &Sequence) {
     for unit in units {
         for transform in &mut unit.transforms {
             for plane in 0..3 {
                 if !transform.coded[plane] {
                     continue;
                 }
-                let shift = usize::from(plane != 0);
                 let block = if plane == 0 {
                     transform.block
                 } else {
                     transform.chroma_block.unwrap()
                 };
-                let area = (block.width() >> shift) * (block.height() >> shift);
+                let (width, height) = s.scaled(plane != 0, (block.width(), block.height()));
+                let area = width * height;
                 let mut full = vec![0i32; area];
-                for &(pos, val) in arena.slice(transform.spans[plane]) {
-                    full[usize::from(pos)] = i32::from(val);
-                }
+                arena.slice(transform.spans[plane]).scatter(&mut full);
                 transform.levels[plane] = full;
             }
         }
@@ -322,6 +432,7 @@ pub(crate) fn parse_filtered_into(
 ) -> Result<()> {
     validate_tools(s)?;
     arena.entries.clear();
+    arena.wide.clear();
     if arena.entries.capacity() < 16_384 {
         arena.entries.reserve(16_384 - arena.entries.capacity());
     }
@@ -412,7 +523,16 @@ impl<'a> Parser<'a> {
         units.clear();
         let inter = h.kind != 2;
         let (qp, init_kind) = initialization_of(h);
+        let mut rice = coeff::RiceContext {
+            log2_range: s.log2_transform_range(),
+            base_level: rice_base_level(s, h),
+            extension: s.range.rice_extension,
+            statistics: s.range.persistent_rice.then_some([0; 3]),
+            reverse_last: h.reverse_last,
+        };
+        rice.reset_statistics(s.depth.bits());
         Self {
+            rice,
             ctu: first,
             slice: 0,
             no_backward_prediction: false,
@@ -432,6 +552,8 @@ impl<'a> Parser<'a> {
             transform_models: transform_syntax::Models::new(qp, init_kind),
             sbt_models: sbt::Models::new(qp, init_kind),
             ibc_models: ibc::Models::new(qp, init_kind),
+            palette_models: palette::Models::new(qp, init_kind),
+            palette_predictor: palette::Predictor::default(),
             groups: quant_groups::QuantGroups::new(
                 [p.cu_qp_delta, h.cu_chroma_offsets],
                 [
@@ -445,6 +567,7 @@ impl<'a> Parser<'a> {
             constraint: initialization::bank([[25, 20], [25, 12], [35, 35]], [1, 0], qp, init_kind),
             ref_index: initialization::bank([[5, 35], [20, 35], [35, 35]], [0, 4], qp, init_kind),
             cclm: initialization::bank([[26, 27], [34, 27], [59, 27]], [4, 9], qp, init_kind),
+            act: initialization::bank::<1, 1>([[46], [46], [52]], [1], qp, init_kind)[0],
             joint: initialization::bank(
                 [[42, 43, 52], [27, 36, 45], [12, 21, 35]],
                 [1, 1, 0],
@@ -472,6 +595,27 @@ fn initialization_of(h: &SliceHeader) -> (u32, u8) {
     (h.qp.clamp(0, MAX_CONTEXT_QP) as u32, kind)
 }
 
+/// The deepest samples decoded (Main 12, and 12-bit streams of Main 16
+/// 4:4:4): residuals and high-precision inter samples fit 16 bits.
+const MAX_DECODED_BIT_DEPTH: u32 = 12;
+
+/// `baseLevel` of the remainders after the context-coded flags (H.266
+/// §9.3.3.11, VTM `setRiceBaseLevel`): 4, or with the extended Rice
+/// derivation 5, 10 or 15 by depth and slice type.
+fn rice_base_level(s: &Sequence, h: &SliceHeader) -> u32 {
+    const STEP: u32 = 5;
+    const DEEP_BITS: u32 = 12;
+    if !s.range.rice_extension {
+        return coeff::RiceContext::PLAIN.base_level;
+    }
+    let intra = u32::from(h.kind == 2);
+    if s.depth.bits() > DEEP_BITS {
+        STEP * (2 - intra)
+    } else {
+        STEP * (3 - intra)
+    }
+}
+
 /// The largest QP of context initialisation (§9.3.2.2).
 const MAX_CONTEXT_QP: i32 = 63;
 
@@ -479,7 +623,12 @@ fn validate_tools(s: &Sequence) -> Result<()> {
     // Each unsupported tool is named, so a corpus run reports what is missing.
     let unsupported = [
         (s.ctu_log2 > 7, "VVC CTU size"),
-        (s.tools.palette, "VVC palette mode"),
+        // 16-bit samples need wider residuals and inter intermediates than
+        // the 16-bit buffers the reconstruction uses.
+        (
+            s.depth.bits() > MAX_DECODED_BIT_DEPTH,
+            "VVC bit depth above 12",
+        ),
     ];
     match unsupported.iter().find(|(present, _)| *present) {
         Some(&(_, tool)) => Err(DecodeError::Unsupported(tool)),
@@ -561,7 +710,7 @@ impl Parser<'_> {
             max_bt: 1 << partition.max_bt_log2,
             max_tt: 1 << partition.max_tt_log2,
             max_depth: partition.mtt_depth,
-            chroma: channel != 0,
+            chroma: (channel != 0).then(|| self.sequence.subsampling()),
             dual,
             inter_only: constraint == Constraint::Inter,
         };
@@ -603,7 +752,9 @@ impl Parser<'_> {
         combined: bool,
         parent: Constraint,
     ) -> Result<Constraint> {
-        if !combined || parent != Constraint::Any {
+        // H.266 §7.4.12.4 modeTypeCondition: 0 in 4:4:4 (and monochrome,
+        // which has no combined tree).
+        if !combined || parent != Constraint::Any || self.sequence.format == ChromaFormat::Yuv444 {
             return Ok(parent);
         }
         let divisor = if matches!(
@@ -617,7 +768,10 @@ impl Parser<'_> {
         let area = node.width * node.height / divisor;
         let narrow = (node.width == 8 && split == Split::Vertical)
             || (node.width == 16 && split == Split::TripleVertical);
-        if area >= 64 && !narrow {
+        // Children of 32 luma samples (BT of 64, TT of 128) constrain only
+        // 4:2:0, where their chroma blocks would be 2 samples wide.
+        let small = area < 64 && (area < 32 || self.sequence.format == ChromaFormat::Yuv420);
+        if !small && !narrow {
             return Ok(parent);
         }
         // H.266 §7.4.12.4 modeTypeCondition: an I slice infers intra without a flag.
@@ -630,7 +784,7 @@ impl Parser<'_> {
                 self.neighbour(node.x, node.y.wrapping_sub(1), 0),
             ]
             .iter()
-            .any(|u| u.is_some_and(|u| u.inter.is_none())),
+            .any(|u| u.is_some_and(Unit::intra)),
         );
         Ok(if r.bin(&mut self.constraint[context])? {
             Constraint::Intra

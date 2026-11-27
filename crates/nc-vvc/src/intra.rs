@@ -19,6 +19,14 @@ pub(crate) const HORIZONTAL: u8 = 18;
 pub(crate) const VERTICAL: u8 = 50;
 const CORE_MODES: [u8; 4] = [PLANAR, DC, HORIZONTAL, VERTICAL];
 
+/// The 4:2:2 chroma intra mode of each mode 0 to 66 (H.266 §8.4.3,
+/// Table 20): directions re-spaced for chroma's halved width.
+pub(crate) const CHROMA_422_MODES: [u8; 67] = [
+    0, 1, 61, 62, 63, 64, 65, 66, 2, 3, 5, 6, 8, 10, 12, 13, 14, 16, 18, 20, 22, 23, 24, 26, 28,
+    30, 31, 33, 34, 35, 36, 37, 38, 39, 40, 41, 41, 42, 43, 43, 44, 44, 45, 45, 46, 47, 48, 48, 49,
+    49, 50, 51, 51, 52, 52, 53, 54, 55, 55, 56, 56, 57, 57, 58, 59, 59, 60,
+];
+
 pub(crate) fn mpm(left: u8, above: u8) -> [u8; 6] {
     if left <= DC && above <= DC {
         return [PLANAR, DC, VERTICAL, HORIZONTAL, 46, 54];

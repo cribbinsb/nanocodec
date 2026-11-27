@@ -20,6 +20,8 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.vvc_forward_dct = super::vvc_forward_simd::simd128;
     super::simd128_inverse::install(&mut table);
     table.nonzero_mask = nonzero_mask;
+    table.h264_eliminate_luma_4x4 = super::h264_levels::simd128;
+    table.h264_eliminate_luma_8x8 = super::h264_levels8::simd128;
     table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
     table.hevc_forward_bounded[2] = staged16_bounded;
     table.hevc_forward_bounded[3] = staged32_bounded;

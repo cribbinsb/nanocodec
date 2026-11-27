@@ -7,8 +7,10 @@
 //! then the row above from left to right (`p[0][-1]` .. `p[2n-1][-1]`).
 //! [`Refs::left`] and [`Refs::top`] index it the way the specification does.
 //!
-//! Main profile, 4:2:0: filtering and the DC / pure horizontal and vertical
-//! edge filters apply to luma only. The encoder never sets
+//! In 4:2:0 filtering and the DC / pure horizontal and vertical edge
+//! filters apply to luma only; the range extensions also filter 4:4:4
+//! chroma references and can turn filtering and the horizontal / vertical
+//! edge filters off ([`IntraFilters`]). The encoder never sets
 //! `strong_intra_smoothing_enabled_flag`; the decoder's
 //! [`predict_smoothed_into`] honours it.
 //!
@@ -50,13 +52,59 @@ pub const CHROMA_DM: u8 = 4;
 const EXPLICIT_CHROMA_MODES: [u8; 4] = [PLANAR, VERTICAL, HORIZONTAL, DC];
 
 /// `IntraPredModeC` for `intra_chroma_pred_mode` (0..=4) and the luma mode
-/// (§8.4.3, Table 8-2; 4:2:0 needs no further mapping).
+/// (§8.4.3, Table 8-2; 4:2:0 and 4:4:4 need no further mapping).
 #[must_use]
 pub fn chroma_mode(intra_chroma_pred_mode: u8, luma: u8) -> u8 {
     match EXPLICIT_CHROMA_MODES.get(usize::from(intra_chroma_pred_mode)) {
         Some(&mode) if mode == luma => ANGULAR34,
         Some(&mode) => mode,
         None => luma,
+    }
+}
+
+/// The 4:2:2 chroma mode of a Table 8-2 mode `mode` (§8.4.3, Table 8-3):
+/// angles re-mapped for chroma twice as tall as it is wide.
+#[must_use]
+pub fn chroma_mode_422(mode: u8) -> u8 {
+    const MODE_422: [u8; MODES as usize] = [
+        0, 1, 2, 2, 2, 2, 3, 5, 7, 8, 10, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 23, 24, 24, 25,
+        25, 26, 27, 27, 28, 28, 29, 29, 30, 31,
+    ];
+    MODE_422[usize::from(mode)]
+}
+
+/// Which filters of §8.4.4.2 one block's prediction applies.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one field per filter of §8.4.4.2"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntraFilters {
+    /// The [1 2 1] reference filter where the mode and size call for it
+    /// (§8.4.4.2.3): luma, and 4:4:4 chroma, unless
+    /// `intra_smoothing_disabled_flag`.
+    pub smooth: bool,
+    /// Strong smoothing of 32x32 luma (`strong_intra_smoothing_enabled_flag`).
+    pub strong: bool,
+    /// The DC edge filter (§8.4.4.2.5): luma.
+    pub dc_edges: bool,
+    /// The edge filter of pure horizontal and vertical modes (§8.4.4.2.6):
+    /// luma, unless `disableIntraBoundaryFilter` (implicit RDPCM in a
+    /// lossless coding unit).
+    pub angular_edges: bool,
+}
+
+impl IntraFilters {
+    /// Version 1: everything on for luma (strong smoothing as given), off
+    /// for chroma.
+    #[must_use]
+    pub const fn main(luma: bool, strong: bool) -> Self {
+        Self {
+            smooth: luma,
+            strong: luma && strong,
+            dc_edges: luma,
+            angular_edges: luma,
+        }
     }
 }
 
@@ -323,7 +371,7 @@ fn needs_filter(mode: u8, n: usize) -> bool {
 }
 
 /// Predict the `n`x`n` block from `refs` with `mode` into `out` (row-major).
-/// `luma` enables filtering and the luma edge filters.
+/// `luma` enables filtering and the luma edge filters (as version 1).
 pub fn predict(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, out: &mut [u8]) {
     if predict_oriented(dsp, refs, mode, luma, out) {
         transpose_in_place(&mut out[..refs.n * refs.n], refs.n);
@@ -337,7 +385,13 @@ pub fn predict(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, out: &mut [u8]) {
 /// can compare against a transposed source instead of transposing every
 /// candidate.
 pub fn predict_oriented(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, out: &mut [u8]) -> bool {
-    oriented(dsp.at(BitDepth::EIGHT), refs, mode, luma, false, out)
+    oriented(
+        dsp.at(BitDepth::EIGHT),
+        refs,
+        mode,
+        IntraFilters::main(luma, false),
+        out,
+    )
 }
 
 /// One luma block's references for a mode search, which predicts many
@@ -365,24 +419,30 @@ impl<'a> SearchRefs<'a> {
         } else {
             self.refs
         };
-        oriented_from(dsp.at(BitDepth::EIGHT), p, mode, true, out)
+        oriented_from(
+            dsp.at(BitDepth::EIGHT),
+            p,
+            mode,
+            IntraFilters::main(true, false),
+            out,
+        )
     }
 }
 
-/// [`predict`] with `strong_intra_smoothing_enabled_flag` = `strong`, straight
-/// into the picture: `scratch` (at least `n²` samples) takes the kernel's
-/// output, which `dst` (the `n`x`n` block) receives row by row, transposed
-/// for the horizontal modes in the same pass.
+/// [`predict`] with the filters `filters`, straight into the picture:
+/// `scratch` (at least `n²` samples) takes the kernel's output, which `dst`
+/// (the `n`x`n` block) receives row by row, transposed for the horizontal
+/// modes in the same pass.
 pub fn predict_smoothed_into<T: Pixel>(
     kernels: DepthKernels<'_>,
     refs: &Refs<T>,
-    (mode, luma, strong): (u8, bool, bool),
+    (mode, filters): (u8, IntraFilters),
     scratch: &mut [T],
     dst: &mut PlaneViewMut<'_, T>,
 ) {
     let n = refs.n;
     let block = &mut scratch[..n * n];
-    if oriented(kernels, refs, mode, luma, strong, block) {
+    if oriented(kernels, refs, mode, filters, block) {
         for row in 0..n {
             for (col, d) in dst.row_mut(row)[..n].iter_mut().enumerate() {
                 *d = block[col * n + row];
@@ -395,18 +455,18 @@ pub fn predict_smoothed_into<T: Pixel>(
     }
 }
 
-/// [`predict_oriented`] at any depth, with optional strong smoothing.
+/// [`predict_oriented`] at any depth, with the filters `filters`.
 fn oriented<T: Pixel>(
     kernels: DepthKernels<'_>,
     refs: &Refs<T>,
     mode: u8,
-    luma: bool,
-    strong: bool,
+    filters: IntraFilters,
     out: &mut [T],
 ) -> bool {
     let filtered;
-    let p = if luma && needs_filter(mode, refs.n) {
-        filtered = strong
+    let p = if filters.smooth && needs_filter(mode, refs.n) {
+        filtered = filters
+            .strong
             .then(|| refs.strongly_smoothed(kernels.depth()))
             .flatten()
             .unwrap_or_else(|| refs.filtered());
@@ -414,7 +474,7 @@ fn oriented<T: Pixel>(
     } else {
         refs
     };
-    oriented_from(kernels, p, mode, luma, out)
+    oriented_from(kernels, p, mode, filters, out)
 }
 
 /// [`oriented`] from references `p` already filtered as `mode` needs.
@@ -422,7 +482,7 @@ fn oriented_from<T: Pixel>(
     kernels: DepthKernels<'_>,
     p: &Refs<T>,
     mode: u8,
-    luma: bool,
+    filters: IntraFilters,
     out: &mut [T],
 ) -> bool {
     let n = p.n;
@@ -433,10 +493,10 @@ fn oriented_from<T: Pixel>(
             false
         }
         DC => {
-            dc(p, n, luma, out);
+            dc(p, n, filters.dc_edges, out);
             false
         }
-        _ => angular(kernels, p, mode, n, luma, out),
+        _ => angular(kernels, p, mode, n, filters.angular_edges, out),
     }
 }
 
@@ -469,13 +529,14 @@ fn planar<T: Pixel>(kernels: DepthKernels<'_>, p: &Refs<T>, n: usize, out: &mut 
     kernels.hevc_intra_planar(&edges, n, out);
 }
 
-/// §8.4.4.2.5 (DC), with the luma edge filter for blocks below 32x32.
-fn dc<T: Pixel>(p: &Refs<T>, n: usize, luma: bool, out: &mut [T]) {
+/// §8.4.4.2.5 (DC), with the (luma) edge filter for blocks below 32x32
+/// when `edges`.
+fn dc<T: Pixel>(p: &Refs<T>, n: usize, edges: bool, out: &mut [T]) {
     let sum: i32 = (0..n as isize).map(|i| p.top(i) + p.left(i)).sum();
     let log2 = n.trailing_zeros();
     let dc = (sum + n as i32) >> (log2 + 1);
     out.fill(T::from_i32(dc));
-    if luma && n < EDGE_FILTER_MAX_SIZE {
+    if edges && n < EDGE_FILTER_MAX_SIZE {
         out[0] = T::from_i32((p.left(0) + 2 * dc + p.top(0) + 2) >> 2);
         for i in 1..n {
             out[i] = T::from_i32((p.top(i as isize) + 3 * dc + 2) >> 2);
@@ -485,13 +546,14 @@ fn dc<T: Pixel>(p: &Refs<T>, n: usize, luma: bool, out: &mut [T]) {
 }
 
 /// §8.4.4.2.6 (angular modes 2..=34), in line order: returns `true` (the
-/// block is transposed) for horizontal modes.
+/// block is transposed) for horizontal modes. `edges`: the (luma) edge
+/// filter of pure horizontal and vertical modes.
 fn angular<T: Pixel>(
     kernels: DepthKernels<'_>,
     p: &Refs<T>,
     mode: u8,
     n: usize,
-    luma: bool,
+    edges: bool,
     out: &mut [T],
 ) -> bool {
     let angle = ANGLE[usize::from(mode) - 2];
@@ -533,7 +595,7 @@ fn angular<T: Pixel>(
     // Pure vertical / horizontal luma: smooth the first column (vertical) or
     // row (horizontal) towards the side references; in line order both are
     // the first sample of every line.
-    if luma && n < EDGE_FILTER_MAX_SIZE && angle == 0 {
+    if edges && n < EDGE_FILTER_MAX_SIZE && angle == 0 {
         let corner = p.top(-1);
         for (k, line) in out.chunks_exact_mut(n).enumerate() {
             let sample = main(0) + ((side(k as isize) - corner) >> 1);

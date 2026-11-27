@@ -15,6 +15,7 @@ use crate::general::frame_header::restoration::{
     CHROMA_TAP_MASKS, CHROMA_TAP_RANGE, LUMA_TAP_MASKS, LUMA_TAP_RANGE, MAX_CLASSES, MAX_TAPS,
     Taps, kind,
 };
+use crate::general::sample::Av2Sample;
 use nc_common::decode::Result;
 
 /// Filters a bank remembers.
@@ -86,7 +87,7 @@ impl Default for Banks {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// The restoration units of planes `planes` starting at the current
     /// superblock (dav2d `read_sb_restoration`).
     pub(super) fn restoration_units(&mut self, planes: std::ops::Range<usize>) -> Result<()> {

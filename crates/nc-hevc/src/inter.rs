@@ -22,6 +22,77 @@ use nc_common::{BitDepth, Plane, PlaneView, PlaneViewMut};
 use nc_dsp::{BlockSize, DepthKernels, Dsp, Filter, Pixel};
 use nc_encoder::Mv;
 
+/// The plane a vector predicts, which sets the filter and how the luma
+/// vector (quarter luma samples) addresses the plane's samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Component {
+    /// Quarter-sample phases of the 8-tap filters.
+    Luma,
+    /// Eighth-sample phases of the 4-tap filters in a chroma plane
+    /// subsampled by `(sx, sy)` (log2 `SubWidthC`, `SubHeightC`): the
+    /// chroma vector is the luma one `· 2 / SubWidthC` (eq. 8-228, 8-229),
+    /// so an axis has `2 + s` fractional bits whose phase is `frac << (1 −
+    /// s)` eighths.
+    Chroma(u8, u8),
+}
+
+impl Component {
+    /// The chroma planes of `format`.
+    #[must_use]
+    pub const fn chroma(format: nc_common::ChromaFormat) -> Self {
+        let (sx, sy) = format.subsampling();
+        // Each is 0 or 1.
+        Self::Chroma(sx as u8, sy as u8)
+    }
+
+    /// The plane's subsampling `(sx, sy)`: 0 for luma.
+    #[inline]
+    #[must_use]
+    pub fn subsampling(self) -> (usize, usize) {
+        match self {
+            Self::Luma => (0, 0),
+            Self::Chroma(sx, sy) => (usize::from(sx), usize::from(sy)),
+        }
+    }
+
+    /// The chroma of 4:2:0, the encoder's format: the luma vector is an
+    /// eighth-sample chroma vector.
+    pub const CHROMA_420: Self = Self::Chroma(1, 1);
+
+    #[inline]
+    fn filter(self) -> Filter {
+        match self {
+            Self::Luma => Filter::HevcLuma,
+            Self::Chroma(..) => Filter::HevcChroma,
+        }
+    }
+
+    /// The integer sample offsets and filter phases of `mv` in this plane.
+    #[inline]
+    fn split(self, mv: Mv) -> ((i32, i32), (usize, usize)) {
+        let (x, y) = (i32::from(mv.x), i32::from(mv.y));
+        match self {
+            Self::Luma => {
+                let ((ix, fx), (iy, fy)) = (split(x, 2), split(y, 2));
+                ((ix, iy), (fx, fy))
+            }
+            // 4:2:0 (every encoder's): eighth-sample vectors.
+            Self::CHROMA_420 => {
+                let ((ix, fx), (iy, fy)) = (split(x, 3), split(y, 3));
+                ((ix, iy), (fx, fy))
+            }
+            Self::Chroma(sx, sy) => {
+                let axis = |v: i32, s: u8| {
+                    let (int, frac) = split(v, 2 + u32::from(s));
+                    (int, frac << (1 - s))
+                };
+                let ((ix, fx), (iy, fy)) = (axis(x, sx), axis(y, sy));
+                ((ix, iy), (fx, fy))
+            }
+        }
+    }
+}
+
 /// Predict the `w`x`h` luma block at `(x, y)` from `reference` displaced by
 /// `mv` (quarter samples), writing `w * h` samples row-major into `out`.
 pub fn predict_luma(
@@ -34,7 +105,7 @@ pub fn predict_luma(
     mv: Mv,
     out: &mut [u8],
 ) {
-    predict(dsp, Filter::HevcLuma, 2, reference, x, y, w, h, mv, out);
+    predict(dsp, Component::Luma, reference, x, y, w, h, mv, out);
 }
 
 /// Predict the `w`x`h` chroma block at chroma position `(x, y)`: the luma
@@ -50,14 +121,13 @@ pub fn predict_chroma(
     mv: Mv,
     out: &mut [u8],
 ) {
-    predict(dsp, Filter::HevcChroma, 3, reference, x, y, w, h, mv, out);
+    predict(dsp, Component::CHROMA_420, reference, x, y, w, h, mv, out);
 }
 
-/// Shared body: `frac_bits` fractional bits per vector component.
+/// Shared body.
 fn predict(
     dsp: &Dsp,
-    filter: Filter,
-    frac_bits: u32,
+    component: Component,
     reference: &Plane,
     x: usize,
     y: usize,
@@ -69,8 +139,7 @@ fn predict(
     let mut dst = PlaneViewMut::new(out, w, w, h).expect("output covers the block");
     predict_view(
         dsp.at(BitDepth::EIGHT),
-        filter,
-        frac_bits,
+        component,
         reference,
         (x, y),
         mv,
@@ -78,31 +147,25 @@ fn predict(
     );
 }
 
-/// Predict a block of luma (`chroma` false) or chroma straight into `dst`
-/// (its size is the block's, a power of two from 4 to 64 per side), as
-/// [`predict_luma`] / [`predict_chroma`] do into a buffer.
+/// Predict a block of `component` straight into `dst` (its size is the
+/// block's, a power of two from 4 to 64 per side), as [`predict_luma`] /
+/// [`predict_chroma`] do into a buffer.
 pub fn predict_into<T: Pixel>(
     kernels: DepthKernels<'_>,
     reference: &Plane<T>,
     (x, y): (usize, usize),
     mv: Mv,
-    chroma: bool,
+    component: Component,
     dst: &mut PlaneViewMut<'_, T>,
 ) {
-    let (filter, frac_bits) = if chroma {
-        (Filter::HevcChroma, 3)
-    } else {
-        (Filter::HevcLuma, 2)
-    };
-    predict_view(kernels, filter, frac_bits, reference, (x, y), mv, dst);
+    predict_view(kernels, component, reference, (x, y), mv, dst);
 }
 
 /// Place the reference window of the block at `(x, y)` and run the kernel
 /// into `dst`.
 fn predict_view<T: Pixel>(
     kernels: DepthKernels<'_>,
-    filter: Filter,
-    frac_bits: u32,
+    component: Component,
     reference: &Plane<T>,
     (x, y): (usize, usize),
     mv: Mv,
@@ -110,37 +173,26 @@ fn predict_view<T: Pixel>(
 ) {
     let (w, h) = (dst.width(), dst.height());
     let size = BlockSize::new(w, h).expect("prediction blocks are 4..64 square");
-    with_window(
-        filter,
-        frac_bits,
-        reference,
-        (x, y),
-        (w, h),
-        mv,
-        |window, frac| {
-            kernels.predict(filter, size, window, frac, dst);
-        },
-    );
+    let filter = component.filter();
+    with_window(component, reference, (x, y), (w, h), mv, |window, frac| {
+        kernels.predict(filter, size, window, frac, dst);
+    });
 }
 
 /// The centered prediction samples `predSamplesLX - 8192` (HEVC §8.5.3.3.3) of the
-/// `w`x`h` luma (`chroma` false) or chroma block at `(x, y)` displaced by
-/// `mv`, row-major at stride `w` in `out` (grown as needed; at least the
-/// block rounded up to kernel sizes), for weighted sample prediction.
+/// `w`x`h` block of `component` at `(x, y)` displaced by `mv`, row-major
+/// at stride `w` in `out` (grown as needed; at least the block rounded up
+/// to kernel sizes), for weighted sample prediction.
 pub fn predict_samples<T: Pixel>(
     kernels: DepthKernels<'_>,
     reference: &Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv,
-    chroma: bool,
+    component: Component,
     out: &mut Vec<i16>,
 ) {
-    let (filter, frac_bits) = if chroma {
-        (Filter::HevcChroma, 3)
-    } else {
-        (Filter::HevcLuma, 2)
-    };
+    let filter = component.filter();
     // Odd block sides (chroma 2 and 6, AMP 12, 24 and 48) run the next
     // kernel size up: interpolation is per sample, so the block's samples
     // are the same and the extra ones are dropped.
@@ -150,8 +202,7 @@ pub fn predict_samples<T: Pixel>(
     }
     let size = BlockSize::new(kw, kh).expect("kernel sides are 4..64");
     with_window(
-        filter,
-        frac_bits,
+        component,
         reference,
         (x, y),
         (kw, kh),
@@ -167,39 +218,26 @@ pub fn predict_samples<T: Pixel>(
     }
 }
 
-/// Default-weight bi-prediction (HEVC eq. 8-251) of a block of luma
-/// (`chroma` false) or chroma straight into `dst` (its size is the
-/// block's, a power of two from 4 to 64 per side): the second list's
-/// prediction from `reference` displaced by `mv`, averaged with the first
-/// list's centred prediction `first` ([`predict_samples`], stride the
-/// block width).
+/// Default-weight bi-prediction (HEVC eq. 8-251) of a block of
+/// `component` straight into `dst` (its size is the block's, a power of two
+/// from 4 to 64 per side): the second list's prediction from `reference`
+/// displaced by `mv`, averaged with the first list's centred prediction
+/// `first` ([`predict_samples`], stride the block width).
 pub fn predict_bi_into<T: Pixel>(
     kernels: DepthKernels<'_>,
     reference: &Plane<T>,
     (x, y): (usize, usize),
     mv: Mv,
-    chroma: bool,
+    component: Component,
     first: &[i16],
     dst: &mut PlaneViewMut<'_, T>,
 ) {
-    let (filter, frac_bits) = if chroma {
-        (Filter::HevcChroma, 3)
-    } else {
-        (Filter::HevcLuma, 2)
-    };
+    let filter = component.filter();
     let (w, h) = (dst.width(), dst.height());
     let size = BlockSize::new(w, h).expect("bi-prediction blocks are 4..64 square");
-    with_window(
-        filter,
-        frac_bits,
-        reference,
-        (x, y),
-        (w, h),
-        mv,
-        |window, frac| {
-            kernels.hevc_predict_bi(filter, size, window, frac, (first, w), dst);
-        },
-    );
+    with_window(component, reference, (x, y), (w, h), mv, |window, frac| {
+        kernels.hevc_predict_bi(filter, size, window, frac, (first, w), dst);
+    });
 }
 
 /// The smallest kernel block side (4, 8, 16, 32 or 64) covering `n`.
@@ -207,20 +245,18 @@ fn kernel_side(n: usize) -> usize {
     n.next_power_of_two().max(4)
 }
 
-/// Run `f` on the reference window of the `w`x`h` block at `(x, y)`
-/// displaced by `mv` (`frac_bits` fractional bits), with the vector's
-/// sub-sample offsets.
+/// Run `f` on the reference window of the `w`x`h` block of `component` at
+/// `(x, y)` displaced by `mv`, with the vector's filter phases.
 fn with_window<T: Pixel>(
-    filter: Filter,
-    frac_bits: u32,
+    component: Component,
     reference: &Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv,
     run: impl FnOnce(&PlaneView<'_, T>, (usize, usize)),
 ) {
-    let (int_x, frac_x) = split(i32::from(mv.x), frac_bits);
-    let (int_y, frac_y) = split(i32::from(mv.y), frac_bits);
+    let filter = component.filter();
+    let ((int_x, int_y), (frac_x, frac_y)) = component.split(mv);
     let before = filter.before() as i32;
     let (wx, wy) = (x as i32 + int_x - before, y as i32 + int_y - before);
     let (ww, wh) = (w + filter.taps() - 1, h + filter.taps() - 1);

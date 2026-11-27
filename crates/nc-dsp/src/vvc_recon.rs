@@ -32,6 +32,35 @@ pub fn vvc_joint_chroma(coded: &[i16], mask: u8, negative: bool, cb: &mut [i16],
     }
 }
 
+/// H.266 inverse adaptive colour transform (§8.7.4.6, YCgCo-R to the
+/// coded colour space) of one transform unit's residuals in place: each
+/// input clipped to `BitDepth + 1` bits plus sign first (VTM
+/// `colorSpaceConvert`), then `t = Y − (Cg >> 1)`, `Y = Cg + t`,
+/// `Cb = t − (Co >> 1)`, `Cr = Co + Cb`. Up to 13 bits every value fits
+/// `i16` (inputs within ±2^14, outputs within ±2^15).
+/// # Panics
+/// If the planes differ in length or `depth` is above 13 bits.
+pub fn vvc_act_inverse(
+    (y, cb, cr): (&mut [i16], &mut [i16], &mut [i16]),
+    depth: nc_common::BitDepth,
+) {
+    assert!(y.len() == cb.len() && y.len() == cr.len());
+    assert!(depth.bits() <= ACT_MAX_BIT_DEPTH);
+    let limit = (1i32 << (depth.bits() + 1)) - 1;
+    for ((y, cb), cr) in y.iter_mut().zip(cb.iter_mut()).zip(cr.iter_mut()) {
+        let [luma, cg, co] = [*y, *cb, *cr].map(|v| i32::from(v).clamp(-limit - 1, limit));
+        let t = luma - (cg >> 1);
+        let blue = t - (co >> 1);
+        *y = (cg + t) as i16;
+        *cb = blue as i16;
+        *cr = (co + blue) as i16;
+    }
+}
+
+/// The deepest samples whose ACT residuals [`vvc_act_inverse`] holds in
+/// `i16`.
+const ACT_MAX_BIT_DEPTH: u32 = 13;
+
 impl Dsp {
     /// Add an inverse VVC residual to a packed prediction. Rectangles whose
     /// edges are at least four use the existing dispatched residual adder
@@ -235,6 +264,26 @@ pub(crate) mod high_simd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The inverse ACT undoes the forward YCgCo-R (VTM `colorSpaceConvert`
+    /// forward: `Co = R − B`, `t = B + (Co >> 1)`, `Cg = G − t`, `Y = t +
+    /// (Cg >> 1)`) exactly, the coded planes being G, B, R.
+    #[test]
+    fn act_inverse_undoes_the_forward_transform() {
+        let rgb = [(0, 0, 0), (1023, 0, 512), (-300, 700, -1023), (5, -6, 7)];
+        for (g, b, r) in rgb {
+            let co = r - b;
+            let t = b + (co >> 1);
+            let cg = g - t;
+            let y = t + (cg >> 1);
+            let (mut py, mut pcb, mut pcr) = ([y], [cg], [co]);
+            vvc_act_inverse((&mut py, &mut pcb, &mut pcr), nc_common::BitDepth::TEN);
+            assert_eq!((py[0], pcb[0], pcr[0]), (g, b, r));
+        }
+        // Inputs beyond BitDepth + 1 bits are clipped first.
+        let (mut py, mut pcb, mut pcr) = ([5000i16], [0i16], [0i16]);
+        vvc_act_inverse((&mut py, &mut pcb, &mut pcr), nc_common::BitDepth::EIGHT);
+        assert_eq!((py[0], pcb[0], pcr[0]), (511, 511, 511));
+    }
     #[test]
     fn joint_negative_odd_rounding() {
         let coded = [-7, -1, 0, 1, 7];

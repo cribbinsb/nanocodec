@@ -25,12 +25,15 @@ pub struct SlotInfo {
     /// Display order (the order hint unwrapped; dav2d `frame_offset`).
     pub order: u32,
     /// Base quantizer index.
-    pub quantizer: u8,
+    pub quantizer: u16,
     /// An inter frame (not key or intra-only): only those lend their
     /// entropy contexts.
     pub inter: bool,
     /// Temporal layer.
     pub temporal_layer: u8,
+    /// Embedded layer: each layer below the current frame's counts as one
+    /// more of display distance.
+    pub embedded_layer: u8,
     /// Luma width and height.
     pub size: (u32, u32),
 }
@@ -40,8 +43,12 @@ pub struct SlotInfo {
 pub struct Current {
     /// Display order.
     pub order: u32,
-    /// Temporal layer; references of higher layers are left out.
-    pub temporal_layer: u8,
+    /// Embedded layer.
+    pub embedded_layer: u8,
+    /// The temporal and embedded layers it may predict from (bit `n`:
+    /// layer `n`); references of other layers are left out, though they
+    /// still count as future frames.
+    pub layer_masks: (u8, u8),
     /// Luma size once known: references more than twice as large or less
     /// than a sixteenth of it in either dimension are left out.
     pub size: Option<(u32, u32)>,
@@ -62,9 +69,10 @@ struct Scored {
     slot: u8,
     score: i32,
     order: u32,
+    embedded_layer: u8,
     /// Current order minus the reference's: positive for a past reference.
     difference: i32,
-    quantizer: u8,
+    quantizer: u16,
 }
 
 /// The slots `current` predicts from, best first: distinct frames ordered
@@ -79,7 +87,11 @@ pub fn rank(slots: &[Option<SlotInfo>], current: Current) -> ([u8; MAX_REFERENCE
     let mut last_frame = None;
     for (slot, info) in slots.iter().enumerate() {
         let Some(info) = info else { continue };
-        if Some(info.frame) == last_frame || current.temporal_layer < info.temporal_layer {
+        let (temporal_mask, embedded_mask) = current.layer_masks;
+        if Some(info.frame) == last_frame
+            || temporal_mask & (1 << info.temporal_layer) == 0
+            || embedded_mask & (1 << info.embedded_layer) == 0
+        {
             continue;
         }
         if current
@@ -89,7 +101,9 @@ pub fn rank(slots: &[Option<SlotInfo>], current: Current) -> ([u8; MAX_REFERENCE
             continue;
         }
         let difference = difference(info);
-        let distance = difference.abs();
+        // AVM `av2_get_ref_frames` `tdist` (dav2d `get_ref_frames`).
+        let distance =
+            difference.abs() + i32::from(current.embedded_layer) - i32::from(info.embedded_layer);
         let distance_score = if any_future {
             distance << 6
         } else {
@@ -103,14 +117,16 @@ pub fn rank(slots: &[Option<SlotInfo>], current: Current) -> ([u8; MAX_REFERENCE
             slot: slot as u8,
             score: distance_score - area_log2 * AREA_WEIGHT + i32::from(info.quantizer),
             order: info.order,
+            embedded_layer: info.embedded_layer,
             difference,
             quantizer: info.quantizer,
         };
         // A frame already ranked from another slot.
-        if ranked
-            .iter()
-            .any(|other| other.score == scored.score && other.order == scored.order)
-        {
+        if ranked.iter().any(|other| {
+            other.score == scored.score
+                && other.order == scored.order
+                && other.embedded_layer == scored.embedded_layer
+        }) {
             continue;
         }
         // Ascending score; equal scores keep slot order.
@@ -175,6 +191,28 @@ fn demote_furthest(ranked: &mut [Scored]) {
     }
 }
 
+/// The ranks `0..count` ordered by `precedes` the way dav2d orders them
+/// (`find_tip_ref_frames`, `dav2d_refmvs_init_frame`; dav2d 8f30abf3,
+/// 54856741): each rank walks the order so far and swaps into the first
+/// place it precedes, the displaced rank walking on. This is a sort, but
+/// not a stable one: a rank inserted before a run of equal ranks moves
+/// the first of them behind the others, and AVM's references come out in
+/// that order.
+#[must_use]
+pub fn swap_insertion_order(count: usize, precedes: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    let mut order: Vec<usize> = Vec::with_capacity(count);
+    for n in 0..count {
+        let mut current = n;
+        for held in &mut order {
+            if precedes(current, *held) {
+                std::mem::swap(held, &mut current);
+            }
+        }
+        order.push(current);
+    }
+    order
+}
+
 /// The ranks (into `references`, a frame's slots best first) whose final
 /// entropy contexts a frame of `quantizer` at display order `order` starts
 /// from when it does not name one, and the second choice that averaging
@@ -183,7 +221,7 @@ fn demote_furthest(ranked: &mut [Scored]) {
 #[must_use]
 pub fn context_sources(
     references: &[Option<SlotInfo>],
-    quantizer: u8,
+    quantizer: u16,
     order: u32,
 ) -> (Option<u8>, Option<u8>) {
     // (rank, quantizer difference, order difference, order), best first.
@@ -223,14 +261,24 @@ pub fn context_sources(
 mod tests {
     use super::*;
 
+    #[test]
+    fn swap_insertion_moves_the_first_of_equal_ranks_back() {
+        // Orders 2, 1, 3, 1, 0: dav2d's walk gives 4, 3, 1, 0, 2 (a stable
+        // sort would give 4, 1, 3, 0, 2).
+        let orders = [2, 1, 3, 1, 0];
+        let order = swap_insertion_order(orders.len(), |a, b| orders[a] < orders[b]);
+        assert_eq!(order, [4, 3, 1, 0, 2]);
+    }
+
     #[allow(clippy::unnecessary_wraps, reason = "an occupied slot")]
-    fn frame(frame: u32, order: u32, quantizer: u8, inter: bool) -> Option<SlotInfo> {
+    fn frame(frame: u32, order: u32, quantizer: u16, inter: bool) -> Option<SlotInfo> {
         Some(SlotInfo {
             frame,
             order,
             quantizer,
             inter,
             temporal_layer: 0,
+            embedded_layer: 0,
             size: (640, 360),
         })
     }
@@ -238,7 +286,8 @@ mod tests {
     fn current(order: u32) -> Current {
         Current {
             order,
-            temporal_layer: 0,
+            embedded_layer: 0,
+            layer_masks: (1, 1),
             size: Some((640, 360)),
         }
     }

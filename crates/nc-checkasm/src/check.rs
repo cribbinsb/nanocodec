@@ -128,6 +128,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_av1_grain::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av1_scaled::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_av1_restoration::check(&candidate, &reference, &mut rng, &mut report);
+    crate::check_av2_ccso::check(&candidate, &reference, &mut rng.clone(), &mut report);
     crate::check_av2_gdf::check(&candidate, &mut rng, &mut report);
     crate::check_av2_warp::check(&candidate, &mut rng.clone(), &mut report);
     crate::check_av1_warp::check(&candidate, &reference, &mut rng, &mut report);

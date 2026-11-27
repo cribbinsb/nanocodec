@@ -90,7 +90,9 @@ const BLEND_PRECISION: u32 = 17;
 
 impl Dsp {
     /// Blend signed six-fractional-bit predictions using a geometric mask.
-    /// `origin` and mask geometry are in luma samples; `chroma` selects 4:2:0
+    /// `origin` and mask geometry are in luma samples; `subsampling` (log2
+    /// `SubWidthC`, `SubHeightC`) places each sample of a chroma block on
+    /// the luma mask (H.266 §8.5.7.2)
     /// ([`crate::DepthKernels::vvc_geometric_blend`] for deeper samples).
     /// # Panics
     /// If a slice cannot hold the requested rectangle.
@@ -99,7 +101,7 @@ impl Dsp {
         mask: VvcGeometric,
         origin: (usize, usize),
         size: (usize, usize),
-        chroma: bool,
+        subsampling: (usize, usize),
         sources: (&[i16], &[i16]),
         out: &mut [u8],
     ) {
@@ -107,7 +109,7 @@ impl Dsp {
             mask,
             origin,
             size,
-            chroma,
+            subsampling,
             sources,
             out,
             nc_common::BitDepth::EIGHT,
@@ -125,7 +127,7 @@ pub(crate) fn blend_at<T: nc_common::Sample>(
     mask: VvcGeometric,
     origin: (usize, usize),
     size: (usize, usize),
-    chroma: bool,
+    (sx, sy): (usize, usize),
     sources: (&[i16], &[i16]),
     out: &mut [T],
     depth: nc_common::BitDepth,
@@ -137,8 +139,8 @@ pub(crate) fn blend_at<T: nc_common::Sample>(
     let count = size.0 * size.1;
     let (a, b) = (&sources.0[..count], &sources.1[..count]);
     for (i, (out, (&a, &b))) in out[..count].iter_mut().zip(a.iter().zip(b)).enumerate() {
-        let x = origin.0 + ((i % size.0) << usize::from(chroma));
-        let y = origin.1 + ((i / size.0) << usize::from(chroma));
+        let x = origin.0 + ((i % size.0) << sx);
+        let y = origin.1 + ((i / size.0) << sy);
         let weight = i32::from(mask.weight(x, y));
         let sum = weight * i32::from(a) + (WEIGHT_DENOMINATOR - weight) * i32::from(b);
         *out = depth.clip_to((sum + offset) >> shift);
@@ -192,18 +194,17 @@ pub(crate) mod high_simd {
         mask: VvcGeometric,
         origin: (usize, usize),
         (width, height): (usize, usize),
-        chroma: bool,
+        (sx, sy): (usize, usize),
         sources: (&[i16], &[i16]),
         out: &mut [u16],
         depth: BitDepth,
     ) {
-        let sub = usize::from(chroma);
         let max_coord = origin
             .0
             .max(origin.1)
-            .saturating_add(width.max(height) << sub);
+            .saturating_add((width << sx).max(height << sy));
         if max_coord > 512 {
-            blend_at(mask, origin, (width, height), chroma, sources, out, depth);
+            blend_at(mask, origin, (width, height), (sx, sy), sources, out, depth);
             return;
         }
         let shift = BLEND_PRECISION
@@ -214,11 +215,11 @@ pub(crate) mod high_simd {
         let (a, b) = (&sources.0[..count], &sources.1[..count]);
         let out = &mut out[..count];
         let sign = if mask.flip { -1 } else { 1 };
-        let dx = ((2 * mask.direction[0] * sign) << sub) as i16;
+        let dx = ((2 * mask.direction[0] * sign) << sx) as i16;
         let max_w = W::splat(depth.max() as i16);
         let max_h = H::splat(depth.max() as i16);
         for ry in 0..height {
-            let y = origin.1 + (ry << sub);
+            let y = origin.1 + (ry << sy);
             let row_base = 36 + mask.distance(origin.0, y) * sign;
             let row_off = ry * width;
             let mut rx = 0;
@@ -271,14 +272,14 @@ pub(crate) mod high_simd {
                     mask: VvcGeometric,
                     origin: (usize, usize),
                     size: (usize, usize),
-                    chroma: bool,
+                    subsampling: (usize, usize),
                     sources: (&[i16], &[i16]),
                     out: &mut [u16],
                     depth: BitDepth,
                 ) {
                     // SAFETY: caller enables `$feature`; `blend_lanes` slices bounds on entry.
                     unsafe {
-                        blend_lanes::<$w, $h>(mask, origin, size, chroma, sources, out, depth);
+                        blend_lanes::<$w, $h>(mask, origin, size, subsampling, sources, out, depth);
                     }
                 }
             }

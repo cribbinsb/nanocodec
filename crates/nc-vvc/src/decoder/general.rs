@@ -15,7 +15,8 @@ use crate::{
     decoder_metadata::FieldParity,
 };
 use nc_common::{
-    BitDepth, BitDepths, DecodedPicture, OutputPicture, Picture, PlaneIndex, ShownPicture,
+    BitDepth, BitDepths, ChromaFormat, DecodedPicture, OutputPicture, Picture, PlaneIndex,
+    ShownPicture,
     decode::{DecodeError, Result},
 };
 use nc_dsp::{DepthKernels, Dsp, Pixel};
@@ -246,8 +247,8 @@ impl<T: Pixel> General<T> {
         let geometry = Geometry::of(active.sequence, active.parameters);
         let filler = if starting_gdr || self.recovery.is_some() {
             Some(Arc::new(unavailable_picture(
-                width,
-                height,
+                (width, height),
+                active.sequence.format,
                 active.sequence.depth,
             )?))
         } else {
@@ -285,7 +286,7 @@ impl<T: Pixel> General<T> {
             Some(point) if poc < point => references.withhold_output(),
             _ => self.recovery = None,
         }
-        let picture = references.take_picture(width, height)?;
+        let picture = references.take_picture(width, height, active.sequence.format)?;
         let tiles = &active.parameters.partitioning.tiles;
         let ctus = (tiles.ctus(0) * tiles.ctus(1)) as usize;
         let mut units = std::mem::take(&mut self.spare_units);
@@ -389,7 +390,7 @@ impl<T: Pixel> General<T> {
         let sources = blocks::InterSources::new(
             [&pictures[0], &pictures[1]],
             &header,
-            edges,
+            (edges, sequence.subsampling()),
             [&scalings[0], &scalings[1]],
         );
         blocks::derive_refinement(
@@ -502,8 +503,10 @@ impl<T: Pixel> General<T> {
         field: Option<FieldParity>,
         non_reference: bool,
     ) {
-        let crop_unit = if active.sequence.chroma { 2 } else { 1 };
-        let [left, right, top, bottom] = active.parameters.crop.map(|v| crop_unit * v as usize);
+        let [unit_x, unit_y] = active.sequence.crop_units().map(|v| v as usize);
+        let [left, right, top, bottom] = active.parameters.crop.map(|v| v as usize);
+        let [left, right, top, bottom] =
+            [unit_x * left, unit_x * right, unit_y * top, unit_y * bottom];
         let [width, height] = active.parameters.dimensions.map(|v| v as usize);
         self.window = ((left, top), (width - left - right, height - top - bottom));
         let depth = active.sequence.depth;
@@ -602,11 +605,11 @@ impl Instance {
 /// A generated reference picture (H.266 §8.3.4.2): every sample the
 /// mid-grey of the depth, borders extended for prediction.
 fn unavailable_picture<T: Pixel>(
-    width: usize,
-    height: usize,
+    (width, height): (usize, usize),
+    format: ChromaFormat,
     depth: BitDepth,
 ) -> Result<Picture<T>> {
-    let mut picture = Picture::new(width, height, REFERENCE_BORDER)
+    let mut picture = Picture::with_format(width, height, format, REFERENCE_BORDER)
         .map_err(|_| DecodeError::Malformed("VVC picture dimensions"))?;
     let mid = T::from_i32(depth.of::<T>().mid());
     for plane in PlaneIndex::ALL {

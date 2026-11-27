@@ -67,27 +67,51 @@ impl TrellisQuantizer {
         // Coefficient-domain squared error to sample SSE.
         let to_sse = 1.0 / f64::from(1_u32 << (COEFFICIENT_GAIN_LOG2 - 2 * log_scale));
         model.beam_rates = None;
+        let dc_step = i64::from(quantizer.dc_step);
+        let ac_step = i64::from(quantizer.ac_step);
+        let max_level = quantizer.max_level;
         self.candidates.clear();
-        self.candidates.extend(scan.iter().map(|&p| {
-            let pos = usize::from(p);
-            let step = i64::from(if pos == 0 {
-                quantizer.dc_step
-            } else {
-                quantizer.ac_step
-            });
+        self.candidates.reserve(eob);
+        if let Some((&dc_p, ac_scan)) = scan.split_first() {
+            let pos = usize::from(dc_p);
             let magnitude = i64::from(coeffs[pos].unsigned_abs());
             let plain = u32::from(levels[pos].unsigned_abs());
-            let past_half = 2 * (magnitude << log_scale) >= (2 * i64::from(plain) + 1) * step;
-            let nearest = if past_half && (plain as i32) < quantizer.max_level {
+            let past_half = 2 * (magnitude << log_scale) >= (2 * i64::from(plain) + 1) * dc_step;
+            let nearest = if past_half && (plain as i32) < max_level {
                 plain + 1
             } else {
                 plain
             };
-            Candidates::around(nearest, |level| {
-                let error = (magnitude - ((i64::from(level) * step) >> log_scale)) as f64;
+            self.candidates.push(Candidates::around(nearest, |level| {
+                let error = (magnitude - ((i64::from(level) * dc_step) >> log_scale)) as f64;
                 (error * error * to_sse) as f32
-            })
-        }));
+            }));
+            for &p in ac_scan {
+                let pos = usize::from(p);
+                let magnitude = i64::from(coeffs[pos].unsigned_abs());
+                let plain = u32::from(levels[pos].unsigned_abs());
+                if plain == 0 && (magnitude << (log_scale + 1)) < ac_step {
+                    let error = magnitude as f64;
+                    self.candidates.push(Candidates {
+                        levels: [0, 0, 0],
+                        distortion: [(error * error * to_sse) as f32, 0.0, 0.0],
+                        count: 1,
+                    });
+                    continue;
+                }
+                let past_half =
+                    2 * (magnitude << log_scale) >= (2 * i64::from(plain) + 1) * ac_step;
+                let nearest = if past_half && (plain as i32) < max_level {
+                    plain + 1
+                } else {
+                    plain
+                };
+                self.candidates.push(Candidates::around(nearest, |level| {
+                    let error = (magnitude - ((i64::from(level) * ac_step) >> log_scale)) as f64;
+                    (error * error * to_sse) as f32
+                }));
+            }
+        }
         self.chosen.resize(eob, 0);
         let coded = self.search.quantize(
             model,
@@ -178,6 +202,18 @@ pub struct ContextState {
 const _: () = assert!(MAX_BASE_BR_RANGE <= 15);
 
 impl ContextState {
+    /// `coeff_base` sum only (for [`RateModel::zero_step`], which needs no `br`).
+    #[inline(always)]
+    fn base_sum(&self, at: Position) -> u32 {
+        const _: () = assert!(super::BASE_CONTEXT_LEVEL_MAX == 3);
+        let next = self.magnitudes[usize::from(at.slots[1])].window(at.shift) & 0xFF;
+        let after = self.magnitudes[usize::from(at.slots[2])].window(at.shift);
+        let five = next | ((after & 0xFFF) << 8);
+        let above_three = ((five >> 2) | (five >> 3)) & 0x11111;
+        let saturated = (five | (above_three * 3)) & 0x33333;
+        (saturated.wrapping_mul(0x11111) >> 16) & 15
+    }
+
     /// `(coeff_base sum, coeff_br sum)` of the coefficient at `row` on
     /// `diagonal`, as `LevelMap::base_sum` and
     /// `LevelMap::range_sum`.
@@ -421,9 +457,10 @@ impl CoeffRateModel for RateModel<'_> {
     /// [`Self::level_rates`] of a zero (only its `coeff_base` symbol, under
     /// the survivor's context: a survivor has coded a level, so its state is
     /// never the initial one), then [`Self::advance`].
+    #[inline]
     fn zero_step(&mut self, state: &mut ContextState, scan_pos: usize) -> f32 {
         let at = self.positions[scan_pos];
-        let (base_sum, _) = state.neighbour_sums(at);
+        let base_sum = state.base_sum(at);
         let ctx = base_context(scan_pos, base_sum, at.base_offset);
         let cost = self.cdfs.base[self.context][self.plane as usize][ctx].cost_q9(0);
         // A scan visits a row only once per diagonal. This nibble is

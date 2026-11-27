@@ -44,11 +44,11 @@ fn channel_planes(channel: usize) -> &'static [PlaneIndex] {
 }
 
 /// The samples of the CTB at luma `(x, y)` (`ctu` luma samples square,
-/// clipped to the `width` x `height` plane, subsampled by `shift`) whose
+/// clipped to the `width` x `height` plane, subsampled by `(sx, sy)`) whose
 /// `class` neighbours lie in the plane.
 fn bounds(
     (width, height): (usize, usize),
-    shift: usize,
+    (sx, sy): (usize, usize),
     (x, y): (usize, usize),
     ctu: usize,
     class: u8,
@@ -56,10 +56,10 @@ fn bounds(
     let horizontal = usize::from(class != 1);
     let vertical = usize::from(class != 0);
     (
-        (x >> shift).max(horizontal),
-        (y >> shift).max(vertical),
-        ((x + ctu) >> shift).min(width - horizontal),
-        ((y + ctu) >> shift).min(height - vertical),
+        (x >> sx).max(horizontal),
+        (y >> sy).max(vertical),
+        ((x + ctu) >> sx).min(width - horizontal),
+        ((y + ctu) >> sy).min(height - vertical),
     )
 }
 /// The width and height of `plane` of `picture`.
@@ -137,18 +137,29 @@ pub(crate) fn apply_band<T: Pixel>(
     offsets: [i16; 4],
 ) {
     let columns = picture.width().div_ceil(ctu);
-    let shift = usize::from(plane != PlaneIndex::Y);
+    let (sx, sy) = picture.chroma_format().plane_subsampling(plane);
     let mut view = picture.plane_mut(plane).view_mut();
-    let x = (index % columns * ctu) >> shift;
-    let y = (index / columns * ctu) >> shift;
+    let x = (index % columns * ctu) >> sx;
+    let y = (index / columns * ctu) >> sy;
     let area = (
         x,
         y,
-        (x + (ctu >> shift)).min(view.width()),
-        (y + (ctu >> shift)).min(view.height()),
+        (x + (ctu >> sx)).min(view.width()),
+        (y + (ctu >> sy)).min(view.height()),
     );
     kernels.sao_band_apply_masked(position, offsets, &mut view, area, &[]);
 }
+
+/// The offsets of an edge class (`SaoOffsetVal`, H.266 §7.4.9.3.2): the
+/// coded offsets scaled by `log2OffsetScale = Max(0, BitDepth − 10)`.
+pub(crate) fn offset_values(coded: [i8; 4], depth: BitDepth) -> [i16; 4] {
+    let scale = depth.bits().saturating_sub(MAX_UNSCALED_OFFSET_BITS);
+    coded.map(|offset| i16::from(offset) << scale)
+}
+
+/// The deepest samples whose SAO offsets are the coded values themselves
+/// (§7.4.9.3.2).
+const MAX_UNSCALED_OFFSET_BITS: u32 = 10;
 
 /// What a decoded picture's edge offsets may not compare across (H.266
 /// §8.8.4.2): CTBs at closed slice, tile or subpicture edges, and virtual
@@ -191,12 +202,14 @@ fn apply_plane<T: Pixel>(
     limits: &Limits,
 ) {
     let channel = usize::from(plane != PlaneIndex::Y);
-    let cuts = limits
-        .cuts
-        .each_ref()
-        .map(|positions| positions.iter().map(|&p| p >> channel).collect::<Vec<_>>());
+    let (sx, sy) = picture.chroma_format().plane_subsampling(plane);
+    let [cuts_x, cuts_y] = &limits.cuts;
+    let cuts = [
+        cuts_x.iter().map(|&p| p >> sx).collect::<Vec<_>>(),
+        cuts_y.iter().map(|&p| p >> sy).collect::<Vec<_>>(),
+    ];
     let (width, height) = plane_size(picture, plane);
-    let band_rows = ctu >> channel;
+    let band_rows = ctu >> sy;
     let columns = picture.width().div_ceil(ctu);
     // The band's rows with the one above and the one below it.
     let mut band = vec![T::default(); width * (band_rows + 2)];
@@ -238,8 +251,8 @@ fn apply_plane<T: Pixel>(
             let Some(class) = sao.classes[channel] else {
                 continue;
             };
-            let side = ctu >> channel;
-            let (x, y) = (column * side, row * side);
+            let side = (ctu >> sx, ctu >> sy);
+            let (x, y) = (column * side.0, row * side.1);
             let near = |positions: &[usize], start: usize, end: usize| {
                 positions.iter().any(|&p| start <= p && p <= end)
             };
@@ -249,15 +262,15 @@ fn apply_plane<T: Pixel>(
                 .copied()
                 .flatten()
                 .or_else(|| {
-                    (near(&cuts[0], x, x + side) || near(&cuts[1], y, y + side))
+                    (near(&cuts[0], x, x + side.0) || near(&cuts[1], y, y + side.1))
                         .then_some([[true; 3]; 3])
                 });
             if let Some(ctbs) = restricted {
                 let area = nc_dsp::SaoCtb {
                     x0: x,
                     y0: y - first,
-                    x1: (x + side).min(width),
-                    y1: (y + side).min(height) - first,
+                    x1: (x + side.0).min(width),
+                    y1: (y + side.1).min(height) - first,
                     size: side,
                     width,
                     height: rows,
@@ -267,21 +280,21 @@ fn apply_plane<T: Pixel>(
                     cuts: [&cuts[0], &band_cuts],
                     exempt: &[],
                 };
-                let offsets = sao.offsets[plane as usize].map(i16::from);
+                let offsets = offset_values(sao.offsets[plane as usize], dsp.depth());
                 let parameters = (class, offsets, dsp.depth());
                 nc_dsp::sao_edge_restricted(&input, &mut output, area, parameters, &limits);
                 continue;
             }
             let (x0, y0, x1, y1) = bounds(
                 (width, height),
-                channel,
+                (sx, sy),
                 (column * ctu, row * ctu),
                 ctu,
                 class,
             );
             dsp.sao_edge_apply(
                 class,
-                sao.offsets[plane as usize].map(i16::from),
+                offset_values(sao.offsets[plane as usize], dsp.depth()),
                 &input,
                 &mut output,
                 (x0, y0 - first, x1, y1 - first),

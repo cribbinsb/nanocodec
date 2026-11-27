@@ -223,8 +223,8 @@ its output under the GPL; we distribute only the output streams, not the program
 
 ## Conformance
 
-Our decoders also decode other encoders' streams, natively and in the browser, 8-bit and 10-bit (AV2:
-8-bit only), but **none of them decodes every valid stream of its codec's main profiles yet**. Below, each
+Our decoders also decode other encoders' streams, natively and in the browser, 8-bit and 10-bit, but
+**none of them decodes every valid stream of its codec's main profiles yet**. Below, each
 line names the suite, says whether it is an official ITU-T/ISO conformance suite or an encoder project's
 test vectors, gives the count, and lists every valid-stream feature of the main profiles that decoder
 still rejects. Streams decoded natively and compared picture by picture with the reference decoder named,
@@ -234,51 +234,94 @@ exception with its reason), is in the [decoder compliance register](decoder-comp
 keeps in step with the decoders' rejection paths.
 
 - **HEVC** (Main, Main Still Picture, Main 10): 147/147 of the official ITU-T/ISO JCT-VC HEVC_v1
-  conformance suite (H.265.1; 136 8-bit, 11 10-bit), against HM. No known gap in these profiles. Not
-  supported (other profiles): the range extensions (4:0:0, 4:2:2, 4:4:4, 12-bit); the RExt, SCC,
-  MV-HEVC, SHVC and 3D-HEVC suites are not run.
-- **VVC** (Main 10 and Main 10 Still Picture, 4:2:0 and 4:0:0): 226 of the 283 streams of the official
-  ITU-T H.266.1 first-edition conformance suite (9 8-bit, 217 10-bit), against VTM 24.0: all of its Main 10
-  streams but HRD_B_2 (VTM itself fails it) and VPS_C_2 (not run). The other 55 are 4:2:2 / 4:4:4,
-  multilayer, palette and ACT streams (other profiles, not supported). STILL_B_1 is compared with VTM's
-  output, which differs from the MD5 in its zip. **Not yet** (valid Main 10 streams rejected): reserved
+  conformance suite (H.265.1; 136 8-bit, 11 10-bit), against HM. No known gap in these profiles.
+  **Range extensions** (4:0:0, 4:2:2, 4:4:4, 8 to 16 bits and every RExt tool): 49/49 of the JCT-VC RExt
+  conformance set (15 8-bit, 13 10-bit, 15 12-bit, 6 16-bit; 4:0:0 3/3, 4:2:0 8/8, 4:2:2 7/7, 4:4:4 31/31),
+  against HM 19.0 built with high bit depth and the streams' shipped MD5s (2026-11-27, not part of the
+  record above). **Not yet**: inter prediction above 12 bits (Monochrome 16; no conformance stream codes
+  it). Not supported: screen content coding; the SCC, MV-HEVC, SHVC and 3D-HEVC suites are not run.
+- **VVC** (Main 10, Main 10 4:4:4 and their Still Picture profiles: 4:0:0, 4:2:0, 4:2:2 and 4:4:4,
+  palette and ACT): 272 of the 283 streams of the official ITU-T H.266.1 first-edition conformance suite
+  (11 8-bit, 261 10-bit), against VTM 24.0: all of its single-layer streams but HRD_B_2 (VTM itself fails
+  it) and VPS_C_2 (not run). The other 9 are multilayer streams (other profiles, not supported). STILL_B_1
+  and STILL444_B_1 are compared with VTM's output, which differs from the MD5 in their zips. **Not yet** (valid Main 10 streams rejected): reserved
   and unspecified NAL unit types and NAL units with `nuh_layer_id` above 0 are an error instead of being
   ignored (§7.4.2.2), and an SPS with `sps_video_parameter_set_id` above 0 is rejected. Also 138 of 138
   short 8-bit streams we coded with VTM and VVenC to cover the tools one by one (our own streams, not a suite).
-- **H.264** (Baseline, Constrained Baseline, Main, High, High 10; frames and field pictures): 150 of the 190
-  streams of the official ITU-T H.264.1 conformance suite's AVCv1, FRExt and Professional (High 10) sets,
-  against JM (2026-11-27 natively, at the field-picture landing; the record above had 110): all 113
-  progressive streams without SP/SI slices (FMO/ASO included) and all 37 interlaced streams without MBAFF
-  frames. **Not yet**: MBAFF frames (38 Main, High and High 10 Intra streams) and pictures larger than
-  level 5.2 allows (levels 6 to 6.2, 8K). The other 2 failures use SP/SI slices (Extended only). The
-  suite's 4:2:2, 4:4:4, MVC and SVC streams are not fetched (other profiles, not supported).
-- **AV1** (Main, 8- and 10-bit): 242/242 libaom v3.15.3 test vectors (176 8-bit, 66 10-bit), against
-  aomdec. These are an encoder project's test vectors, **not a conformance suite**; the AOM Argon AV1
-  conformance streams have not been run. **Not yet** (valid Main streams rejected): quantizer matrices,
-  block loop-filter deltas, segment features other than the quantizer, lossless segments in a frame that
-  is not wholly lossless, odd frame sizes, switch frames. A fix is in progress. High and Professional
-  profiles are not supported.
+  Range extensions (Main 12, Main 12 4:4:4, Main 16 4:4:4 and their Intra/Still Picture profiles): 72 of
+  the 116 streams of the H.266.1 second-edition range-extension set we run (suite `vvc-rext`), against
+  VTM built for high bit depth: all 72 12-bit streams (4:0:0 to 4:4:4, every range-extension tool). Not
+  supported: 16-bit samples (the other 44 streams are refused).
+- **H.264** (Baseline, Constrained Baseline, Extended, Main, High, High 10, High 4:2:2, High 4:4:4
+  Predictive and their Intra profiles, CAVLC 4:4:4 Intra; 8 to 14 bits; progressive and interlaced:
+  field pictures and MBAFF frames): all 190 of the 190 streams of the official ITU-T H.264.1 conformance
+  suite's AVCv1, FRExt and Professional (High 10) sets, against JM (2026-11-27 natively, at the MBAFF
+  landing; the record above had 110), the 75 interlaced ones (37 field-picture, 38 MBAFF) among them.
+  Interlaced streams of x264 `--interlaced` and ffmpeg `-flags +ilme+ildct` (CABAC and CAVLC, B frames,
+  spatial and temporal direct, weighted prediction) decode bit-exactly against ffmpeg. **Not yet**: MBAFF
+  frames with slice groups or data partitioning (Extended only; no stream of either in the suites). The
+  suite's 4:2:2 and 4:4:4 sets (fetched as their own suite, `h264-chroma`): 34 of 38 against JM
+  (2026-11-27 natively; 8-bit 7/7, 10-bit 14/18, 14-bit 13/13: every progressive one, separate colour
+  planes and lossless included, and the 2 field-picture ones); **not yet** the 4 MBAFF ones (MBAFF frames
+  in 4:2:2 and 4:4:4 are refused). Every 4:4:4 stream of the suite codes its colour planes separately, so
+  4:4:4 with Cb and Cr coded like luma and lossless coding in every chroma format are covered by ten x264
+  streams we made (`h264-x264-chroma`, 10/10, JM and ffmpeg agree on each). MVC and SVC streams are not
+  fetched (other profiles, not supported).
+- **AV1** (Main, High and Professional: 8- to 12-bit, 4:2:0, 4:2:2, 4:4:4 and 4:0:0), natively on
+  2026-11-27 at ec8cd468b ([record](results/conformance-2026-11-27-av1/summary.json)):
+  - 3343 of 3343 streams of the official AOM **Argon** conformance suite (v2.1.1), in 18 sets: for each
+    of profiles 0, 1 and 2, the core, core special, not-Annex-B, not-Annex-B special and stress sets
+    (3008 streams) each match aomdec's output on the same stream (`aomdec --rawvideo`; not Argon's own
+    MD5s, which hash aomdec's all-layers output), and the error sets' 335 deliberately invalid streams
+    end without a crash or hang (their output is not compared). Some streams have frames larger than
+    level 6.3 allows: our decoder refuses those by default (a bound for untrusted input) and decodes them
+    with `--unbounded 1`, as this run did. The first profile 0 run that day had 790 of 889: 61 streams
+    decoded to the wrong output, from two bugs since fixed (the loop filter's chroma transform size in
+    lossless blocks, and intra block copy near the frame's right and bottom edges). The large-scale-tile
+    sets were not run (not supported). The nightly verifier runs every set but stress.
+  - 242/242 libaom v3.15.3 test vectors (176 8-bit, 66 10-bit), against aomdec: an encoder project's
+    test vectors, not a conformance suite.
+  - 28/28 short streams we made with libaom (aomenc, and its ROI example encoder) and SVT-AV1 v4.3.0 for
+    the Main tools those vectors lack (quantizer matrices, superblock quantizer and loop-filter deltas,
+    segmentation with loop-filter, reference and skip features, lossless, odd frame sizes, switch
+    frames), each kept only where aomdec and dav1d agree, against aomdec. Our own streams, not a suite.
+
+  - High and Professional profiles (8-, 10- and 12-bit; 4:2:0, 4:2:2, 4:4:4, monochrome, RGB): libaom
+    ships no such vectors, so 27 streams we made with aomenc and ffmpeg's libaom
+    (`tools/dev/av1_profile_streams.sh`: 4:4:4 and 4:2:2 at 8/10/12 bits, 12-bit 4:2:0 and monochrome,
+    sRGB and identity-matrix RGB, screen content with palette and intra block copy, film grain, superres,
+    lossless, quantizer matrices, 128x128 superblocks, odd sizes) match `aomdec --rawvideo` 27/27 (High
+    11/11, Professional 16/16; dav1d agrees on all but monochrome, which it writes as luma only). Our own
+    streams, not a suite (Argon's profile 1 and 2 sets, above, are).
+
+  No Main, High or Professional tool is refused any more (quantizer matrices, block loop-filter deltas,
+  all segment features, lossless segments, odd frame sizes and switch frames, and the High and
+  Professional profiles were added on 2026-11-27). Large-scale tile decoding is not supported.
 - **VP9** (profiles 0 to 3, 8- to 12-bit, 4:2:0, 4:2:2, 4:4:0, 4:4:4): 314/314 libvpx v1.16.0 test
   vectors (306 8-bit, four 10-bit, four 12-bit; 303 profile 0, 3 profile 1, 2 profile 2, 6 profile 3),
   against vpxdec and the vectors' shipped MD5s. These are an encoder project's test vectors (the de facto
   suite; VP9 has no official one), and only eleven cover profiles 1 to 3; 26 more profile 1 and 3 streams
   we made with ffmpeg's libvpx-vp9 (every format and depth, sRGB, odd sizes, lossless, alt-ref) also
   decode bit-exact against vpxdec (`docs/handoff/chroma-formats.md`).
-- **AV2** (a draft standard, AVM v1.0.0): 30 of 30 foreign streams (12 dav2d test vectors, 18 we made with
-  avmenc v1.0.0), all 8-bit, single tile, 640x360 or smaller, bit-exact against avmdec v1.0.0 and dav2d
-  (re-run on 2026-11-23 against AVM's frame hashes: 30/30; not part of the record above). No AV2
-  conformance suite exists; this is a small check corpus, not conformance. **Not yet**: 10-bit, monochrome
-  (4:0:0), several tiles or tile groups, references of another size (reference scaling), multi-frame
-  headers, bridge frames, wedge compound when motion fields are stored, embedded/extended layers, and the
-  bilinear chroma phase of odd eighth-sample vectors.
+- **AV2** (a draft standard, AVM v1.0.0): 117 of the 128 streams of our check corpus bit-exact against
+  avmdec v1.0.0, 98 of them also against dav2d 237229e (the other 19 are dav2d test vectors newer than that
+  dav2d, which decodes them differently; their MD5s in the test data agree with avmdec), on 2026-11-27 at
+  df87b4f57 (`tools/dev/av2_foreign/compare.py`; not part of the record above). The corpus: dav2d's 8-bit
+  and deeper test vectors and avmenc v1.0.0 streams we made, at 8 and 10 bits, 4:2:0 and 4:0:0, odd and
+  non-multiple-of-8 sizes, several tiles and tile groups, references of another size, multi-frame
+  headers, bridge frames, embedded layers, 256x256 superblocks and film grain. The 11 not counted:
+  seven 4:2:2/4:4:4 streams (other profiles, rejected by name) and four 12-bit vectors that avmdec v1.0.0
+  itself refuses (our decoder decodes 12-bit, unchecked). No AV2 conformance suite exists; this is a
+  check corpus, not conformance. **Not yet**: extended layers (several streams multiplexed; avmenc
+  cannot make them), 4:2:2 and 4:4:4.
 
 In the browser (the WebAssembly module, plain and relaxed SIMD), on the suites' 4:2:0 progressive streams:
 HEVC 147/147, AV1 240/240, VP9 305/305 (10- and 12-bit included) and H.264 108/113 (same record), and VVC
 221/221 by whole-output MD5 against VTM (d010259d0: the record's 214/221 was a runner fault on seven streams
-whose picture size changes or whose fields are output as frames). The 5 H.264 streams not decoded use FMO or
-SP/SI slices, which the native decoder does not support either. Monochrome (4:0:0) and interlaced streams
-are left out of every browser run, so monochrome decoding in the browser is untested; AV2 has no browser
-run in the record.
+whose picture size changes or whose fields are output as frames). Since 2026-11-27 the H.264 browser run
+takes every stream of the suite, interlaced and 4:0:0 ones included: 190/190 in both builds (gate
+profile, at the MBAFF landing). Monochrome streams of the other codecs are still left out, so their
+monochrome decoding in the browser is untested; AV2 has no browser run in the record.
 
 Browser decode time against ffmpeg.wasm 0.12.10 (the official build: FFmpeg 5.1.4 with `--disable-asm`, so
 without FFmpeg's hand-written SIMD kernels), decode alone on both sides, stream by stream, is recorded in
@@ -313,6 +356,11 @@ except where a cell says otherwise.
 - ² Refused: VP9's backward-adapted probabilities and previous-frame motion vectors, and AV2's
   `primary_ref_frame`, carry state a lost frame changes, so vpxdec and avmdec do not recover by a sweep
   ([handoff](handoff/loss-resilience.md#intra-refresh-after-a-dropped-frame-2026-11-15)).
+- Each sweep's first frame is marked as a recovery point, so a decoder joining mid-stream knows when its
+  pictures become exact: H.264 and HEVC write a recovery-point SEI, VVC codes the frame as a GDR picture.
+  VVdeC-based players skip the first refresh sweep after a stream start (they withhold the first GDR
+  picture's recovering pictures even after an IDR picture); the stream is spec-conformant per H.266
+  §8.1.1/§8.1.2, and FFmpeg and our decoder show every frame.
 - Not combined: intra refresh with spatial layers (SVC) or with an explicit second reference
   (`refs.second` 1).
 
@@ -321,17 +369,18 @@ except where a cell says otherwise.
 - **Single-threaded** encode and decode; no slices or tiles beyond one per frame.
 - **8-bit 4:2:0 encoders.** The encoders code 8-bit 4:2:0 only (no 10-bit, no 4:4:4, no HDR). The decoders
   also decode 10-bit (HEVC Main 10, AV1 10-bit, VP9 profile 2 at 10 and 12 bits, H.264 High 10, VVC Main 10),
-  natively and in the browser.
+  natively and in the browser, and natively HEVC's range extensions (4:0:0 to 4:4:4, up to 16 bits).
 - **Decoders:** no decoder decodes every valid stream of its codec's main profiles yet; the counts, which
   suites are official and which are encoder test vectors, are under [Conformance](#conformance). Not yet
-  decoded (valid streams of the main profiles): H.264 MBAFF frames (field pictures are decoded) and pictures above
-  level 5.2; AV1 quantizer matrices, block loop-filter deltas, segment features other than the quantizer,
+  decoded (valid streams of the main profiles): AV1 quantizer matrices, block loop-filter deltas, segment features other than the quantizer,
   lossless segments in mixed frames, odd frame sizes and switch frames (fix in progress); VVC reserved NAL
   types, `nuh_layer_id` above 0 and a VPS id above 0 (rejected instead of ignored);
-  AV2 10-bit, monochrome, several tiles, reference scaling, multi-frame headers, bridge frames and layers.
-  Not checked: the AV1 Argon conformance streams; no AV2 suite exists (30 streams only); monochrome in the
-  browser. Other profiles not supported: H.264 Baseline/Extended tools (FMO/ASO, SP/SI) and 4:2:2/4:4:4;
-  HEVC range extensions; VVC 4:2:2 / 4:4:4, multilayer, palette and ACT.
+  AV2 extended layers.
+  Not checked: the AV1 Argon conformance streams; no AV2 suite exists (a 128-stream check corpus only);
+  AV2 12-bit and the AV2 browser path at 10 bits; monochrome in the
+  browser. Other profiles not supported: H.264 MBAFF frames with slice groups or data partitioning
+  (Extended only) and 4:2:2/4:4:4;
+  HEVC screen content coding; VVC multilayer and 12/16-bit (range extensions).
 - **Speed gaps:** decoding in process with one thread (2026-11-23, decode alone on both sides, release 0.6.0's
   PGO build, [record](results/decoder-speed-2026-11-23/README.md)), on one Zen 5 core our H.264 decoder took
   1.10–1.18x FFmpeg's time, our AV1 decoder 1.16–1.43x dav1d's, our VP9 decoder 1.00–1.04x libvpx's (0.91–1.01x

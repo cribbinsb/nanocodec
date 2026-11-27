@@ -3,16 +3,19 @@
 //! `LevelScale` factors of the dequantisation (§8.5.9).
 //!
 //! Lists are numbered as in Table 7-2: 4x4 lists 0..=5 are Intra Y, Intra Cb,
-//! Intra Cr, Inter Y, Inter Cb, Inter Cr; 8x8 lists 0 and 1 (Table 7-2's 6
-//! and 7) are Intra Y and Inter Y. 4:2:0 and 4:0:0 have no 8x8 chroma lists.
+//! Intra Cr, Inter Y, Inter Cb, Inter Cr; 8x8 lists 0..=5 (Table 7-2's 6 to
+//! 11) are Intra Y, Inter Y, Intra Cb, Inter Cb, Intra Cr, Inter Cr. Only
+//! 4:4:4 codes the chroma 8x8 lists (the others fall back and are unused).
 
 use super::Result;
 use super::reader::Reader;
 use crate::tables::{ZIGZAG_4X4, ZIGZAG_8X8};
 
-/// Number of 4x4 and 8x8 scaling lists of 4:2:0 (and 4:0:0).
+/// Number of 4x4 and 8x8 scaling lists.
 pub(super) const LISTS_4X4: usize = 6;
-pub(super) const LISTS_8X8: usize = 2;
+pub(super) const LISTS_8X8: usize = 6;
+/// 8x8 lists of one colour component (Intra and Inter).
+pub(super) const LISTS_8X8_PER_PLANE: usize = 2;
 /// First Inter 4x4 list; the 8x8 Inter list is 1.
 const FIRST_INTER_4X4: usize = 3;
 /// `Flat_4x4_16` / `Flat_8x8_16` (§7.4.2.1.1).
@@ -159,11 +162,17 @@ pub(super) fn resolve(parsed: &ParsedMatrix, fallback: Option<&ScalingMatrix>) -
             ParsedList::Absent => out.lists_4x4[i - 1],
         };
     }
-    for (i, (list, default)) in out.lists_8x8.iter_mut().zip(DEFAULT_8X8).enumerate() {
-        *list = match parsed.lists_8x8[i] {
+    for i in 0..LISTS_8X8 {
+        let default = DEFAULT_8X8[i % LISTS_8X8_PER_PLANE];
+        out.lists_8x8[i] = match parsed.lists_8x8[i] {
             ParsedList::Explicit(list) => list,
             ParsedList::UseDefault => default,
-            ParsedList::Absent => fallback.map_or(default, |sps| sps.lists_8x8[i]),
+            // Y falls back to the default (rule A) or the SPS list (rule
+            // B); Cb and Cr to the list of the previous component.
+            ParsedList::Absent if i < LISTS_8X8_PER_PLANE => {
+                fallback.map_or(default, |sps| sps.lists_8x8[i])
+            }
+            ParsedList::Absent => out.lists_8x8[i - LISTS_8X8_PER_PLANE],
         };
     }
     out
@@ -178,7 +187,9 @@ pub(super) struct LevelScale {
 }
 
 impl LevelScale {
-    pub fn new(matrix: &ScalingMatrix) -> Self {
+    /// The factors of `matrix`'s 4x4 lists and of its first `lists_8x8`
+    /// 8x8 lists (Y only, or Y, Cb and Cr in 4:4:4).
+    pub fn new(matrix: &ScalingMatrix, lists_8x8: usize) -> Self {
         let mut scale = Self {
             scale_4x4: [[[0; 16]; QP_PERIOD]; LISTS_4X4],
             scale_8x8: [[[0; 64]; QP_PERIOD]; LISTS_8X8],
@@ -196,7 +207,12 @@ impl LevelScale {
                 }
             }
         }
-        for (list, weights) in scale.scale_8x8.iter_mut().zip(&matrix.lists_8x8) {
+        for (list, weights) in scale
+            .scale_8x8
+            .iter_mut()
+            .zip(&matrix.lists_8x8)
+            .take(lists_8x8)
+        {
             for (m, out) in list.iter_mut().enumerate() {
                 for (k, &pos) in ZIGZAG_8X8.iter().enumerate() {
                     let class = norm_adjust_8x8_class(pos % 8, pos / 8);
@@ -231,7 +247,7 @@ mod tests {
 
     #[test]
     fn flat_scale_is_the_classic_dequantiser() {
-        let scale = LevelScale::new(&ScalingMatrix::FLAT);
+        let scale = LevelScale::new(&ScalingMatrix::FLAT, LISTS_8X8);
         // 16 * v: QP%6 = 0 gives 160 at (0,0), 256 at (1,1), 208 elsewhere.
         assert_eq!(scale.scale_4x4[0][0][0], 160);
         assert_eq!(scale.scale_4x4[0][0][5], 256);
@@ -250,6 +266,8 @@ mod tests {
         assert_eq!(a.lists_4x4[2], [7; 16]);
         assert_eq!(a.lists_4x4[3], DEFAULT_4X4[1]);
         assert_eq!(a.lists_8x8[1], DEFAULT_8X8[1]);
+        // Inter Cr 8x8 from Inter Cb from Inter Y.
+        assert_eq!(a.lists_8x8[5], DEFAULT_8X8[1]);
         let mut sps = ScalingMatrix::FLAT;
         sps.lists_4x4[3] = [9; 16];
         let b = resolve(&parsed, Some(&sps));

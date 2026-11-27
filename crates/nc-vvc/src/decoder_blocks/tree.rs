@@ -122,7 +122,9 @@ pub(super) struct Limits {
     pub max_bt: usize,
     pub max_tt: usize,
     pub max_depth: u8,
-    pub chroma: bool,
+    /// The chroma subsampling (log2 `SubWidthC`, `SubHeightC`) of a chroma
+    /// tree, `None` for a luma or single tree.
+    pub chroma: Option<(usize, usize)>,
     pub dual: bool,
     pub inter_only: bool,
 }
@@ -137,6 +139,7 @@ struct Choices {
     tv: bool,
 }
 impl Choices {
+    #[inline]
     fn new(n: Node, limits: Limits, dimensions: [usize; 2]) -> Self {
         let Limits {
             min_qt,
@@ -167,7 +170,13 @@ impl Choices {
                 tv: false,
             };
         }
-        c.quad = matches!(n.parent, Split::None | Split::Quad) && w > min_qt && (!chroma || w > 8);
+        // A chroma tree splits no block 4 chroma samples wide (H.266
+        // §6.4.1-6.4.3, VTM MIN_DUALTREE_CHROMA_WIDTH), nor one of 16 chroma
+        // samples or fewer (BT) or 32 or fewer (TT).
+        let chroma_width = chroma.map(|(sx, _)| w >> sx);
+        c.quad = matches!(n.parent, Split::None | Split::Quad)
+            && w > min_qt
+            && chroma_width.is_none_or(|cw| cw > MIN_CHROMA_WIDTH);
         let mut mtt = n.mtt_depth < max_depth + n.implicit_depth;
         let right_inside = n.x + w <= dimensions[0];
         let bottom_inside = n.y + h <= dimensions[1];
@@ -178,7 +187,10 @@ impl Choices {
             c.tv = false;
             c.quad |= !binary;
             c.bh = binary && !bottom_inside && (right_inside || !c.quad);
-            c.bv = binary && bottom_inside && !right_inside && (!chroma || w > 8);
+            c.bv = binary
+                && bottom_inside
+                && !right_inside
+                && chroma_width.is_none_or(|cw| cw > MIN_CHROMA_WIDTH);
             c.quad |= !c.bh && !c.bv;
             return c;
         }
@@ -199,12 +211,12 @@ impl Choices {
         }
         c.th = w <= max_tt && h <= max_tt && w <= 64 && h <= 64 && h > 2 * min_cb;
         c.tv = w <= max_tt && h <= max_tt && w <= 64 && h <= 64 && w > 2 * min_cb;
-        if chroma {
-            let area = w * h / 4;
-            c.bh &= area > 16;
-            c.bv &= area > 16 && w > 8;
-            c.th &= area > 32;
-            c.tv &= area > 32 && w > 16;
+        if let Some((sx, sy)) = chroma {
+            let (cw, ch) = (w >> sx, h >> sy);
+            c.bh &= cw * ch > MIN_CHROMA_BT_AREA;
+            c.bv &= cw * ch > MIN_CHROMA_BT_AREA && cw > MIN_CHROMA_WIDTH;
+            c.th &= cw * ch > 2 * MIN_CHROMA_BT_AREA;
+            c.tv &= cw * ch > 2 * MIN_CHROMA_BT_AREA && cw > 2 * MIN_CHROMA_WIDTH;
         }
         if inter_only {
             if w * h == 32 {
@@ -219,6 +231,13 @@ impl Choices {
         c
     }
 }
+/// The chroma-tree split limits in chroma samples (H.266 §6.4.2, §6.4.3;
+/// VTM `MIN_DUALTREE_CHROMA_WIDTH`, `MIN_DUALTREE_CHROMA_SIZE`): no split of
+/// a block this wide, nor a binary split of one this large (a ternary split
+/// of one twice as large or wide).
+const MIN_CHROMA_WIDTH: usize = 4;
+const MIN_CHROMA_BT_AREA: usize = 16;
+
 #[derive(Clone)]
 pub(super) struct Models {
     split: [Context; 9],
@@ -267,6 +286,7 @@ impl Models {
             ),
         }
     }
+    #[inline]
     pub fn read(
         &mut self,
         r: &mut Reader<'_>,
@@ -345,7 +365,7 @@ mod tests {
             max_bt: 32,
             max_tt: 32,
             max_depth: 3,
-            chroma: false,
+            chroma: None,
             dual: true,
             inter_only: false,
         }
@@ -380,7 +400,7 @@ mod tests {
     #[test]
     fn smallest_chroma_unit_cannot_split() {
         let limits = Limits {
-            chroma: true,
+            chroma: Some((1, 1)),
             ..limits()
         };
         let choices = Choices::new(Node::root(0, 0, 8), limits, [32, 32]);

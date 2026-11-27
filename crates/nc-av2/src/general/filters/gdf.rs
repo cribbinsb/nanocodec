@@ -7,23 +7,25 @@
 //! its stripe: there the two rows next to the stripe come from the
 //! deblocked frame (dav2d's `lr_db_line`), further rows repeat the second
 //! of them, and at the frame's top and bottom the stripe's own edge row
-//! repeats. Columns outside the frame repeat its edge columns.
+//! repeats. Columns outside the frame (with loop filters kept within
+//! tiles, outside the tile: AVM v1.0.0 `av2_gdf_frame`'s
+//! `tile_boundary_left`/`_right`) repeat its edge columns. The window
+//! holds 10-bit samples whatever the depth (dav2d `gdf_backup_row`'s
+//! `HBD_SHIFT`).
 
-use nc_common::{Picture, PlaneIndex, PlaneView};
+use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView};
 use nc_dsp::Dsp;
 use nc_dsp::av2_dec::gdf::{
     GDF_BORDER, GDF_ERROR_STRIDE, GDF_INPUT_BITS, GDF_MAX_SIDE, GdfParams, GdfWindow,
-    gdf_add_with_dsp, gdf_error_with_dsp,
+    gdf_error_with_dsp,
 };
 use nc_dsp::av2_dec::gdf_tables::{INTER, INTRA};
 
 use super::FilterMaps;
-use super::stripes::{STRIPE_CONTEXT_ROWS, Stripe, stripes};
+use super::stripes::{STRIPE_CONTEXT_ROWS, Stripe, TileSpans, stripes};
 use crate::general::frame_header::FrameHeader;
+use crate::general::sample::Av2Sample;
 
-/// Rows below a stripe's top whose filter block decides its flag (dav2d
-/// `inc`: the stripe starts 8 rows above its 64-row band).
-const FLAG_ROW_OFFSET: usize = 8;
 /// Reference distance class by the larger distance of the first two
 /// references (dav2d `ref_dst_idx_tbl`).
 const DISTANCE_CLASS: [usize; 12] = [4, 0, 1, 2, 2, 2, 3, 3, 3, 3, 3, 4];
@@ -52,14 +54,16 @@ pub fn params(header: &FrameHeader, distances: &[u32]) -> &'static GdfParams {
 
 /// Correct the luma of `picture` (after the Wiener filters, if any) where
 /// the block layer set GDF flags, from `source` (the frame after CDEF and
-/// CCSO, before restoration) and `deblocked` (the frame before CDEF).
-pub fn filter(
+/// CCSO, before restoration) and `deblocked` (the frame before CDEF);
+/// `isolated` keeps the filter within tiles.
+pub fn filter<T: Av2Sample>(
     dsp: &Dsp,
-    picture: &mut Picture,
-    (source, deblocked): (&Picture, &Picture),
+    picture: &mut Picture<T>,
+    (source, deblocked): (&Picture<T>, &Picture<T>),
     maps: &FilterMaps,
-    (header, params): (&FrameHeader, &GdfParams),
+    (header, params, depth, isolated): (&FrameHeader, &GdfParams, BitDepth, bool),
 ) {
+    let depth = depth.of::<T>();
     let source = source.plane(PlaneIndex::Y).view();
     let deblocked = deblocked.plane(PlaneIndex::Y).view();
     let (width, height) = (source.width(), source.height());
@@ -68,9 +72,12 @@ pub fn filter(
     let mut window = vec![0_u16; stride * stride];
     let mut error = vec![0_i8; GDF_ERROR_STRIDE * GDF_MAX_SIDE];
     let mut output = picture.plane_mut(PlaneIndex::Y).view_mut();
-    for stripe in stripes(height) {
-        let flag_row = if stripe.top != 0 && stripe.top + FLAG_ROW_OFFSET < height {
-            stripe.top + FLAG_ROW_OFFSET
+    let tiles = TileSpans::new(header, (width, height), isolated);
+    for stripe in stripes(height, tiles.row_starts(), isolated) {
+        // The filter block of the stripe's band decides its flag; the
+        // frame's last stripe has no band below its top (dav2d `inc`).
+        let flag_row = if stripe.band_top < height {
+            stripe.band_top
         } else {
             stripe.top
         };
@@ -85,7 +92,8 @@ pub fn filter(
                 stride,
                 (&source, &deblocked),
                 stripe,
-                (left, w),
+                (left, w, depth),
+                tiles.column_span(left),
             );
             let view = GdfWindow {
                 samples: &window,
@@ -96,32 +104,40 @@ pub fn filter(
             gdf_error_with_dsp(dsp, &view, params, &mut error);
             let out_stride = output.stride();
             let start = stripe.top * out_stride + left;
-            gdf_add_with_dsp(
+            T::gdf_add(
                 dsp,
-                &mut output.data_mut()[start..],
-                out_stride,
+                (&mut output.data_mut()[start..], out_stride),
                 &error,
                 (w, stripe.height()),
-                scale,
+                (scale, depth),
             );
         }
     }
 }
 
 /// The window of the block of `stripe` at columns `left..left + width`,
-/// normalised to 10 bits.
-fn fill_window(
+/// normalised from `depth` to 10 bits.
+fn fill_window<T: Av2Sample>(
     window: &mut [u16],
     stride: usize,
-    (source, deblocked): (&PlaneView<'_>, &PlaneView<'_>),
+    (source, deblocked): (&PlaneView<'_, T>, &PlaneView<'_, T>),
     stripe: Stripe,
-    (left, width): (usize, usize),
+    (left, width, depth): (usize, usize, BitDepth),
+    (span_start, span_end): (usize, usize),
 ) {
-    let up = GDF_INPUT_BITS - 8;
-    let frame_width = source.width();
-    let first = left.saturating_sub(GDF_BORDER);
-    let pre = GDF_BORDER.saturating_sub(left);
-    let end = (left + width + GDF_BORDER).min(frame_width);
+    let bits = depth.of::<T>().bits();
+    let normalise = |sample: T| {
+        let value = sample.to_i32() as u32;
+        (if bits <= GDF_INPUT_BITS {
+            value << (GDF_INPUT_BITS - bits)
+        } else {
+            value >> (bits - GDF_INPUT_BITS)
+        }) as u16
+    };
+    // The columns the block may read: the frame's or its tile's.
+    let first = left.saturating_sub(GDF_BORDER).max(span_start);
+    let pre = first + GDF_BORDER - left;
+    let end = (left + width + GDF_BORDER).min(span_end);
     let middle = end - first;
     let row_width = width + 2 * GDF_BORDER;
     let rows = stripe.height() + 2 * GDF_BORDER;
@@ -133,10 +149,10 @@ fn fill_window(
         };
         let (prefix, out) = out[..row_width].split_at_mut(pre);
         let (pixels, suffix) = out.split_at_mut(middle);
-        prefix.fill(u16::from(row[0]) << up);
+        prefix.fill(normalise(row[span_start]));
         for (dst, &src) in pixels.iter_mut().zip(&row[first..end]) {
-            *dst = u16::from(src) << up;
+            *dst = normalise(src);
         }
-        suffix.fill(u16::from(row[frame_width - 1]) << up);
+        suffix.fill(normalise(row[span_end - 1]));
     }
 }

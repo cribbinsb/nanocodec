@@ -9,13 +9,13 @@
 
 use nc_common::BitWriter;
 use nc_common::colour::write_video_signal_type;
-use nc_encoder::{FrameRate, StreamSignal, TimingSignal};
+use nc_encoder::{FrameRate, StreamRate, StreamSignal, TimingSignal};
 
 use crate::deblock::DeblockControl;
 use crate::references::{
     LONG_TERM_EXTRA_FRAMES, LONG_TERM_FRAME_INDICES, ListModification, Marking, PictureReferences,
 };
-use crate::tables::LEVELS;
+use crate::tables::{HIGH_CPB_BR_VCL_FACTOR, LEVELS};
 
 /// High profile (H.264 §A.2.4): CABAC plus 8x8 transforms.
 const PROFILE_IDC_HIGH: u32 = 100;
@@ -76,8 +76,13 @@ pub struct StreamParams {
     pub mb_rows: usize,
     /// Signalled in the VUI timing information.
     pub frame_rate: FrameRate,
-    /// `level_idc` (Table A-1).
+    /// `level_idc` (Table A-1): of the picture size and rate, raised for
+    /// the delivery rate under rate control ([`StreamParams::with_rate`]).
     pub level_idc: u8,
+    /// The vectors the size level allows: a level raised for the bit rate
+    /// allows at least these, and the coded vectors must not depend on the
+    /// rate.
+    mv_range: MvRange,
     /// `max_num_ref_frames`: the engine's reference slot count (§7.4.2.1.1).
     pub max_num_ref_frames: u32,
     /// `gaps_in_frame_num_value_allowed_flag`: set for three-layer streams
@@ -135,22 +140,24 @@ impl MvRange {
 }
 
 impl StreamParams {
-    /// The vectors this stream's level allows.
+    /// The vectors this stream codes: those its size level allows.
     pub fn mv_range(&self) -> MvRange {
-        MvRange::of_level(self.level_idc)
+        self.mv_range
     }
 
     /// Parameters for a `width` x `height` stream at `frame_rate`.
     pub fn new(width: usize, height: usize, frame_rate: FrameRate) -> Self {
         let mb_cols = width.div_ceil(16);
         let mb_rows = height.div_ceil(16);
+        let level_idc = level_for(mb_cols, mb_rows, frame_rate, None);
         Self {
             width,
             height,
             mb_cols,
             mb_rows,
             frame_rate,
-            level_idc: level_for(mb_cols, mb_rows, frame_rate),
+            level_idc,
+            mv_range: MvRange::of_level(level_idc),
             max_num_ref_frames: 1,
             frame_num_gaps: false,
             signal: StreamSignal::default(),
@@ -191,6 +198,16 @@ impl StreamParams {
         }
     }
 
+    /// These parameters with the level covering delivery at `rate` (`None`:
+    /// a fixed quantizer, the size level).
+    #[must_use]
+    pub fn with_rate(self, rate: Option<StreamRate>) -> Self {
+        Self {
+            level_idc: level_for(self.mb_cols, self.mb_rows, self.frame_rate, rate),
+            ..self
+        }
+    }
+
     /// Number of macroblocks in a picture.
     pub fn mb_count(&self) -> usize {
         self.mb_cols * self.mb_rows
@@ -198,8 +215,15 @@ impl StreamParams {
 }
 
 /// The lowest level whose frame size and macroblock rate limits hold
-/// (Table A-1); level 6 if none does (bring-up: never refuse a size).
-fn level_for(mb_cols: usize, mb_rows: usize, frame_rate: FrameRate) -> u8 {
+/// (Table A-1), and whose High-profile `MaxBR` and `MaxCPB` hold `rate`
+/// when given (§A.3.1 j, x264 raises its level for the VBV likewise); the
+/// highest level if none does (never refuse a size).
+fn level_for(
+    mb_cols: usize,
+    mb_rows: usize,
+    frame_rate: FrameRate,
+    rate: Option<StreamRate>,
+) -> u8 {
     let frame_mbs = (mb_cols * mb_rows) as u64;
     let mbs_per_second =
         (frame_mbs * u64::from(frame_rate.num)).div_ceil(u64::from(frame_rate.den));
@@ -212,6 +236,10 @@ fn level_for(mb_cols: usize, mb_rows: usize, frame_rate: FrameRate) -> u8 {
             frame_mbs <= max_fs
                 && longest_side * longest_side <= 8 * max_fs
                 && mbs_per_second <= u64::from(l.max_mbs_per_second)
+                && rate.is_none_or(|r| {
+                    r.peak_bps <= u64::from(l.max_br) * HIGH_CPB_BR_VCL_FACTOR
+                        && r.buffer_bits <= u64::from(l.max_cpb) * HIGH_CPB_BR_VCL_FACTOR
+                })
         })
         .map_or(LEVELS[LEVELS.len() - 1].level_idc, |l| l.level_idc)
 }
@@ -468,6 +496,26 @@ mod tests {
         assert_eq!(StreamParams::new(640, 360, FPS30).level_idc, 30);
         assert_eq!(StreamParams::new(1280, 720, FPS30).level_idc, 31);
         assert_eq!(StreamParams::new(1920, 1080, FPS30).level_idc, 40);
+    }
+
+    #[test]
+    fn the_delivery_rate_raises_the_level_not_the_vectors() {
+        let size = StreamParams::new(320, 180, FPS30);
+        let rate = |peak_bps, buffer_bits| {
+            Some(StreamRate {
+                peak_bps,
+                buffer_bits,
+            })
+        };
+        assert_eq!(size.with_rate(rate(600_000, 300_000)).level_idc, 13);
+        // 1.3 allows 960 kbit/s at High (768 x 1250 bits); 2 allows 2.5 Mbit/s.
+        assert_eq!(size.with_rate(rate(2_000_000, 1_000_000)).level_idc, 20);
+        let fast = StreamParams::new(1920, 1080, FPS30).with_rate(rate(40_000_000, 20_000_000));
+        assert_eq!(fast.level_idc, 41);
+        assert_eq!(
+            fast.mv_range(),
+            StreamParams::new(1920, 1080, FPS30).mv_range()
+        );
     }
 
     #[test]

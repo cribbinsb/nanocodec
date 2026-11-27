@@ -245,3 +245,7 @@ fixed_qp.rate.cadence_period = 8
 fixed_qp.rate.cadence_base_boost = 4
 fixed_qp.rate.cadence_startup_period = 0
 fixed_qp.rate.fixed_qp_moving_key = 6
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2
+# The split override (2026-11-27) is off here: final 600f +0.21 % J [-0.00, +0.42] (1/150), pulse guard +0.69 dB.
+planner.split_override = 0

@@ -50,7 +50,7 @@ use crate::headers::{
     NalType, POC_LSB_BITS, SIGN_DATA_HIDING, SliceDeblocking, SliceQp, SliceReferenceSet,
     StreamInfo, inter_slice_header, irap_slice_header, nal_header, pps, sps, vps,
 };
-use crate::inter::{predict_bi_into, predict_chroma, predict_luma, predict_samples};
+use crate::inter::{Component, predict_bi_into, predict_chroma, predict_luma, predict_samples};
 use crate::mvpred::{
     AMVP_CANDIDATES, DEFAULT_MERGE_CANDIDATES, List, ListMotion, MAX_MERGE_CANDIDATES, MergeList,
     Motion, ReferenceDistances, SliceLists, amvp_candidates, candidate_lists,
@@ -64,7 +64,7 @@ use crate::quant::{
 use crate::rate::BinCosts;
 use crate::residual_trellis::{BlockQuantizer, RateModel, TrellisQuantizer};
 use crate::sao::{self, Candidates, CtbTypes, PictureSao};
-use crate::scan::{Scan, ScanKind, Scans, coded_sub_blocks};
+use crate::scan::{Scan, ScanKind, Scans, coded_sub_blocks_counted};
 use crate::syntax::{
     AmvpList, CuKind, CuRecord, Item, LevelStore, MAX_TUS, MVD_EG_ORDER, PlaneResidual,
     TransformSyntax, TransformUnit, TransformUnits, TuRange, split_ctx_inc, split_flag_present,
@@ -611,7 +611,9 @@ pub struct HevcBackend {
     rounding: [(i32, i32); 2],
     /// Multiple of HM's λ (`hevc.lambda_scale`).
     lambda_scale: f32,
-    frame_quantization: FrameQuantization,
+    /// Boxed: a block QP swaps it with a parked one per CU
+    /// (`block_qp.rs`), and by value each swap moved its 792 bytes.
+    frame_quantization: Box<FrameQuantization>,
     /// Per-CU QPs (`cu_qp_delta`), once the engine enables block QP.
     block_qp: Option<BlockQp>,
     column_zero_scale: f32,
@@ -1251,6 +1253,13 @@ impl CodecBackend for HevcBackend {
     ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Periodic keys at their own quantizer, without the reuse term's finer
+        // still cells (`reuse.rs`; owner, 2026-11-27: smaller periodic keys at
+        // neutral J). Final check (medium, 600 f keys every 150 and 900 f keys
+        // every 300, draw 2026-11-27, --strict-buffer): J -0.03% [-0.13, +0.06],
+        // no guard; FourPeople 854x480 400 kbps, keys every 150: 26.8 -> 19.4 KB.
+        // The other presets pin 2 until screened.
+        ("persist.reuse_keys", 0.0),
         // Start-up QP cadence (period 8, base frames 6 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,
@@ -1527,8 +1536,12 @@ impl CodecBackend for HevcBackend {
         let info = stream_info(config, &params);
         let (width, height) = (info.width, info.height);
         let rounding = rounding_of(&params);
-        let frame_quantization =
-            FrameQuantization::without_headroom(qp, info.chroma_qp_offset, rounding, &params);
+        let frame_quantization = Box::new(FrameQuantization::without_headroom(
+            qp,
+            info.chroma_qp_offset,
+            rounding,
+            &params,
+        ));
         Ok(Self {
             info,
             slice: SliceKind::Intra,
@@ -2142,6 +2155,12 @@ impl CodecBackend for HevcBackend {
             payload.map(|payload| nal::sei_rbsp(nal::SEI_USER_DATA_UNREGISTERED, &payload));
     }
 
+    /// The VPS and SPS level from the next IRAP picture on covers `rate`.
+    fn set_stream_rate(&mut self, rate: Option<nc_encoder::StreamRate>) {
+        let info = &mut self.info;
+        info.level_idc = luma_level(info.width, info.height, info.frame_rate, rate).hevc_idc();
+    }
+
     fn begin_frame(&mut self, plan: &FramePlan) {
         self.pending_sao_classes = None;
         self.sao_outcome.begin_picture();
@@ -2186,7 +2205,7 @@ impl CodecBackend for HevcBackend {
             pre_transform_zero_scale: self.pre_transform_zero_scale * headroom_step,
             headroom_step,
         };
-        self.frame_quantization = settings.at(self.qp);
+        *self.frame_quantization = settings.at(self.qp);
         if let Some(block_qp) = self.block_qp.as_mut() {
             block_qp.begin_frame(self.qp, settings);
         }
@@ -2451,6 +2470,12 @@ impl CodecBackend for HevcBackend {
             if let Some(sei) = &self.encoder_info {
                 nal::write_nal_unit(&nal_header(NalType::PrefixSei, 0), sei, &mut unit);
             }
+        } else if let Some(sei) = self.recovery_point() {
+            nal::write_nal_unit(
+                &nal_header(NalType::PrefixSei, temporal_id),
+                &sei,
+                &mut unit,
+            );
         }
         nal::write_nal_unit(&nal_header(nal_type, temporal_id), &rbsp, &mut unit);
         unit
@@ -2491,6 +2516,27 @@ impl CodecBackend for HevcBackend {
 }
 
 impl HevcBackend {
+    /// The recovery point SEI (§D.2.8) of a picture starting an intra-refresh
+    /// sweep: decoding from it, pictures are exact from the one the sweep
+    /// completes on, `recovery_poc_cnt` pictures later (POC follows the
+    /// frame index, as the sweep's count does). None past the POC LSB range
+    /// the count must stay within (§D.3.8).
+    fn recovery_point(&self) -> Option<Vec<u8>> {
+        let window = self.refresh.as_ref().filter(|w| w.sweep_start)?;
+        let frames = i32::try_from(window.recovery_frames).ok()?;
+        if frames >= 1 << (self.info.poc_lsb_bits - 1) {
+            return None;
+        }
+        let mut w = BitWriter::new();
+        w.put_se(frames); // recovery_poc_cnt
+        w.put_bit(true); // exact_match_flag: clean blocks never read dirty samples
+        w.put_bit(false); // broken_link_flag
+        Some(nal::sei_rbsp(
+            nal::SEI_RECOVERY_POINT,
+            &nal::sei_payload_bytes(w),
+        ))
+    }
+
     /// The VPS and SPS this picture's coded video sequence needs.
     fn sequence_set_bytes(&self) -> Vec<u8> {
         [vps(&self.info), sps(&self.info)].concat()
@@ -3544,7 +3590,7 @@ fn quantised_sub_blocks(levels: &[i16], nonzero: u32, scan: &Scan) -> CodedGroup
     match nonzero {
         0 => CodedGroups::default(),
         1 if levels[0] != 0 => CodedGroups::FIRST,
-        _ => coded_sub_blocks(levels, scan),
+        _ => coded_sub_blocks_counted(levels, scan, nonzero),
     }
 }
 
@@ -3720,14 +3766,18 @@ fn predict_bi_cu(
     let kernels = dsp.at(nc_common::BitDepth::EIGHT);
     for (plane, pred) in PlaneIndex::ALL.into_iter().zip(planes) {
         let (x, y, n) = plane_rect(plane, block.x, block.y, block.log2_size());
-        let chroma = plane != PlaneIndex::Y;
+        let component = if plane == PlaneIndex::Y {
+            Component::Luma
+        } else {
+            Component::CHROMA_420
+        };
         predict_samples(
             kernels,
             references[0].plane(plane),
             (x, y),
             (n, n),
             motion.mv,
-            chroma,
+            component,
             first,
         );
         let mut dst = PlaneViewMut::new(&mut pred[..n * n], n, n, n).expect("CU prediction");
@@ -3736,7 +3786,7 @@ fn predict_bi_cu(
             references[1].plane(plane),
             (x, y),
             l1.mv,
-            chroma,
+            component,
             &first[..n * n],
             &mut dst,
         );
@@ -3769,7 +3819,7 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams) -> StreamInfo {
         width,
         height,
         crop: (width - config.width, height - config.height),
-        level_idc: luma_level(width, height, config.frame_rate).hevc_idc(),
+        level_idc: luma_level(width, height, config.frame_rate, None).hevc_idc(),
         init_qp: config.quantizer as i32,
         max_transform_log2: params.max_transform_log2.round() as u8,
         inter_transform_depth: if params.inter_tu_split >= 0.5

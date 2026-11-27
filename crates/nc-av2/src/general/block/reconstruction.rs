@@ -13,9 +13,11 @@ use super::intra::{IntraModes, LUMA_MAP_SIDE, mode};
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::transform::{LumaTransforms, TxPartition, TxSize, chroma_max, luma_max};
+use crate::general::sample::Av2Sample;
 use nc_common::decode::Result;
 
-/// Blocks larger than 64x64 reconstruct in 64x64 (256: 128x128) pieces.
+/// Blocks larger than 64x64 reconstruct in 64x64 pieces; 256-sided blocks
+/// split into 128x128 pieces first, each split again (dav2d `recon_b`).
 const PIECE_UNITS: u32 = 16;
 const LARGE_PIECE_UNITS: u32 = 32;
 /// The nominal angle of each directional mode, by mode - 1 (dav2d
@@ -58,23 +60,26 @@ fn wide_angle(tx: TxSize, mode: u8, delta: i8, mrl_index: u8) -> (u8, i32) {
 /// The chroma transforms' decoded residuals of one block (dav2d
 /// `chroma_txtp`, `chroma_eob`, `cf_uv`).
 #[derive(Debug, Clone, Default)]
-pub struct ChromaResiduals {
-    pub coefficients: [Vec<i16>; 2],
+pub struct ChromaResiduals<C> {
+    pub coefficients: [Vec<C>; 2],
     pub residuals: Vec<[Option<Residual>; 2]>,
 }
 
-impl ChromaResiduals {
+impl<C: Default + Clone> ChromaResiduals<C> {
     /// Allocate the tile's coefficient buffers once. Taking the scratch
     /// during reconstruction leaves an empty placeholder in the tile.
     pub(super) fn new() -> Self {
         Self {
-            coefficients: [vec![0; CHROMA_COEFFICIENTS], vec![0; CHROMA_COEFFICIENTS]],
+            coefficients: [
+                vec![C::default(); CHROMA_COEFFICIENTS],
+                vec![C::default(); CHROMA_COEFFICIENTS],
+            ],
             residuals: Vec::new(),
         }
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Reconstruct an intra or block-copy block (its luma and/or chroma
     /// tree parts).
     pub(super) fn reconstruct(
@@ -87,7 +92,7 @@ impl Tile<'_, '_> {
         let size = record.luma.or(record.chroma).unwrap_or(BlockSize::B4x4);
         let (bw4, bh4) = size.units();
         if bw4.max(bh4) > PIECE_UNITS {
-            self.reconstruct_pieces(depth, record, modes, transforms)?;
+            self.reconstruct_pieces(depth, (record, size), modes, transforms)?;
             // The pieces move the current position; the block's siblings
             // start from the block's.
             (self.row, self.column) = (record.row, record.column);
@@ -97,14 +102,16 @@ impl Tile<'_, '_> {
         self.reconstruct_piece(depth, (record, size), modes, transforms, stages)
     }
 
-    /// A block above 64x64 in 64x64 pieces (128x128 for 256 sides): luma
-    /// piece by piece; chroma coefficients with the first luma piece of
-    /// each chroma piece, its reconstruction with the last (dav2d
-    /// `recon_b`'s split).
+    /// A part of a block of size `whole` above 64x64 in 64x64 pieces
+    /// (128x128 for 256 sides, each split again): luma piece by piece;
+    /// chroma coefficients with the first luma piece of each chroma piece,
+    /// its reconstruction with the last (dav2d `recon_b`'s recursive
+    /// split). The 64x64 limit is the prediction scratch's (masks,
+    /// compound intermediates).
     fn reconstruct_pieces(
         &mut self,
         depth: usize,
-        record: &BlockRecord,
+        (record, whole): (&BlockRecord, BlockSize),
         modes: &IntraModes,
         transforms: LumaTransforms,
     ) -> Result<()> {
@@ -159,7 +166,18 @@ impl Tile<'_, '_> {
                 piece_record.chroma = chroma_piece;
                 (piece_record.row, piece_record.column) = (row, column);
                 (piece_record.chroma_row, piece_record.chroma_column) = (chroma_row, chroma_column);
-                self.reconstruct_piece(depth, (&piece_record, size), modes, transforms, stages)?;
+                if large {
+                    // Interleaved: both chroma stages are the piece's.
+                    self.reconstruct_pieces(depth, (&piece_record, whole), modes, transforms)?;
+                } else {
+                    self.reconstruct_piece(
+                        depth,
+                        (&piece_record, whole),
+                        modes,
+                        transforms,
+                        stages,
+                    )?;
+                }
                 if interleaved {
                     chroma_column += step;
                 } else if x & 1 == 1 {
@@ -414,8 +432,12 @@ impl Tile<'_, '_> {
                 let (row0, column0) = (self.row, self.column);
                 // The luma type at each chroma transform, or, where the
                 // chroma block covers several luma blocks, the current
-                // luma block's (dav2d `recon_b`'s `y_txtp`).
-                let follows_luma = record.luma == Some(chroma);
+                // luma block's (dav2d `recon_b`'s `y_txtp`). Lossless
+                // blocks of intra frames (block copies) keep the first
+                // luma transform's type (AVM v1.0.0 `av2_get_tx_type`'s
+                // lossless chroma; dav2d c3de036d).
+                let follows_luma =
+                    record.luma == Some(chroma) && (!self.lossless() || !self.frame.is_intra());
                 for plane in 0..2 {
                     for y in (0..ch4ss).step_by(uth4 as usize) {
                         for x in (0..cw4ss).step_by(utw4 as usize) {
@@ -431,7 +453,7 @@ impl Tile<'_, '_> {
                             let input = TransformInput {
                                 plane: plane + 1,
                                 tx: uvtx,
-                                block: chroma,
+                                block: record.block_chroma.unwrap_or(chroma),
                                 intra,
                                 fsc: modes.fsc,
                                 luma_fsc,

@@ -10,7 +10,7 @@ use super::{
     blend_overlap, grain_range, scaling_lut, templates, templates_at,
 };
 use crate::Dsp;
-use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
+use nc_common::{BitDepth, ChromaFormat, PlaneIndex, PlaneView, PlaneViewMut, Sample};
 
 /// The row kernels the synthesis driver calls, on samples `T` with grain
 /// stored as `G`: [`Dsp`]'s 8-bit table, [`HighRows`] (`u16` SIMD), or [`DeepRows`].
@@ -232,8 +232,27 @@ impl Dsp {
         size: (usize, usize),
         output: [&mut PlaneViewMut<'_>; 3],
     ) {
+        self.av1_add_film_grain_in(params, ChromaFormat::Yuv420, input, size, output);
+    }
+
+    /// [`Self::av1_add_film_grain`] of a frame in chroma `format`
+    /// (§7.18.3: chroma templates, blocks, overlaps and luma averages
+    /// follow `subsampling_x` and `subsampling_y`).
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::av1_add_film_grain`].
+    pub fn av1_add_film_grain_in(
+        &self,
+        params: &Av1FilmGrainParams,
+        format: ChromaFormat,
+        input: [&PlaneView<'_>; 3],
+        size: (usize, usize),
+        output: [&mut PlaneViewMut<'_>; 3],
+    ) {
         let grain = (params, GrainBlocks::Av1);
-        add_film_grain(self, grain, &templates(params), (input, size), output);
+        let templates = templates(params, format);
+        add_film_grain(self, grain, format, &templates, (input, size), output);
     }
 
     /// AV2 8-bit 4:2:0 film grain (dav2d `dav2d_apply_grain`): AV1's
@@ -257,10 +276,44 @@ impl Dsp {
                 large: large_blocks,
             },
         );
-        add_film_grain(self, grain, &templates(params), (input, size), output);
+        let format = ChromaFormat::Yuv420;
+        let templates = templates(params, format);
+        add_film_grain(self, grain, format, &templates, (input, size), output);
     }
 
-    /// [`Self::av1_add_film_grain`] of samples of any depth, with the
+    /// [`Self::av2_add_film_grain`] of `u16` samples of `depth` (the general
+    /// AV2 decoder's 10- and 12-bit pictures), with this ISA's high-depth
+    /// row kernels (dav2d's 16bpc `fg_apply_tmpl.c`).
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::av1_add_film_grain`].
+    pub fn av2_add_film_grain_u16(
+        &self,
+        (params, large_blocks): (&Av1FilmGrainParams, bool),
+        input: [&PlaneView<'_, u16>; 3],
+        size: (usize, usize),
+        output: [&mut PlaneViewMut<'_, u16>; 3],
+        depth: BitDepth,
+    ) {
+        let format = ChromaFormat::Yuv420;
+        let templates = templates_at::<i16>(params, depth, format);
+        add_film_grain(
+            &HighRows(self, depth),
+            (
+                params,
+                GrainBlocks::Av2 {
+                    large: large_blocks,
+                },
+            ),
+            format,
+            &templates,
+            (input, size),
+            output,
+        );
+    }
+
+    /// [`Self::av1_add_film_grain_in`] of samples of any depth, with the
     /// scalar row kernels (AV1 §7.18.3 at `BitDepth`: grain range, shifts,
     /// clips and the interpolated scaling function).
     ///
@@ -269,30 +322,39 @@ impl Dsp {
     /// As [`Self::av1_add_film_grain`].
     pub fn av1_add_film_grain_at<T: Sample>(
         &self,
-        params: &Av1FilmGrainParams,
+        (params, format): (&Av1FilmGrainParams, ChromaFormat),
         input: [&PlaneView<'_, T>; 3],
         size: (usize, usize),
         output: [&mut PlaneViewMut<'_, T>; 3],
         depth: BitDepth,
     ) {
-        let templates = templates_at::<i16>(params, depth);
+        let templates = templates_at::<i16>(params, depth, format);
         let grain = (params, GrainBlocks::Av1);
-        add_film_grain(&DeepRows(depth), grain, &templates, (input, size), output);
+        add_film_grain(
+            &DeepRows(depth),
+            grain,
+            format,
+            &templates,
+            (input, size),
+            output,
+        );
     }
 
-    /// High-bit-depth (`u16`) film grain synthesis with this ISA's row kernels.
+    /// High-bit-depth (`u16`) film grain synthesis of a frame in chroma
+    /// `format` with this ISA's row kernels.
     pub(crate) fn av1_add_film_grain_u16(
         &self,
-        params: &Av1FilmGrainParams,
+        (params, format): (&Av1FilmGrainParams, ChromaFormat),
         input: [&PlaneView<'_, u16>; 3],
         size: (usize, usize),
         output: [&mut PlaneViewMut<'_, u16>; 3],
         depth: BitDepth,
     ) {
-        let templates = templates_at::<i16>(params, depth);
+        let templates = templates_at::<i16>(params, depth, format);
         add_film_grain(
             &HighRows(self, depth),
             (params, GrainBlocks::Av1),
+            format,
             &templates,
             (input, size),
             output,
@@ -300,10 +362,12 @@ impl Dsp {
     }
 }
 
-/// Film grain of every plane with `rows`, laid out as `blocks`.
+/// Film grain of every plane of a frame in chroma `format` with `rows`,
+/// laid out as `blocks`.
 fn add_film_grain<T: Sample, G: Grain, R: GrainRows<T, G>>(
     rows: &R,
     (params, blocks): (&Av1FilmGrainParams, GrainBlocks),
+    format: ChromaFormat,
     templates: &[Template<G>; 3],
     (input, size): ([&PlaneView<'_, T>; 3], (usize, usize)),
     output: [&mut PlaneViewMut<'_, T>; 3],
@@ -327,7 +391,7 @@ fn add_film_grain<T: Sample, G: Grain, R: GrainRows<T, G>>(
             rows,
             (params, blocks),
             &templates[plane],
-            plane,
+            (plane, format.plane_subsampling(PlaneIndex::ALL[plane])),
             (input, destination),
             table,
             size,
@@ -335,17 +399,17 @@ fn add_film_grain<T: Sample, G: Grain, R: GrainRows<T, G>>(
     }
 }
 
+/// Film grain of plane `plane`, subsampled by `(sub_x, sub_y)`.
 fn synthesize_plane<T: Sample, G: Grain, R: GrainRows<T, G>>(
     rows: &R,
     (params, blocks): (&Av1FilmGrainParams, GrainBlocks),
     template: &Template<G>,
-    plane: usize,
+    (plane, (sub_x, sub_y)): (usize, (usize, usize)),
     (input, output): ([&PlaneView<'_, T>; 3], &mut PlaneViewMut<'_, T>),
     scaling: Option<&R::Scaling>,
     (width, height): (usize, usize),
 ) {
-    let sub = usize::from(plane != 0);
-    let (plane_w, plane_h) = ((width + sub) >> sub, (height + sub) >> sub);
+    let (plane_w, plane_h) = ((width + sub_x) >> sub_x, (height + sub_y) >> sub_y);
     assert!(input[plane].width() >= plane_w && input[plane].height() >= plane_h);
     assert!(output.width() >= plane_w && output.height() >= plane_h);
     let Some(scaling) = scaling else {
@@ -380,11 +444,15 @@ fn synthesize_plane<T: Sample, G: Grain, R: GrainRows<T, G>>(
     {
         return;
     }
-    let block = blocks.luma_side() >> sub;
-    let reach = OVERLAP >> sub;
-    let stride = plane_w.div_ceil(block) * block + reach;
-    let mut current = vec![G::default(); (block + reach) * stride];
+    let (block_w, block_h) = (blocks.luma_side() >> sub_x, blocks.luma_side() >> sub_y);
+    let (reach_x, reach_y) = (OVERLAP >> sub_x, OVERLAP >> sub_y);
+    let stride = plane_w.div_ceil(block_w) * block_w + reach_x;
+    let mut current = vec![G::default(); (block_h + reach_y) * stride];
     let mut previous = vec![G::default(); current.len()];
+    // The row kernels average horizontal pairs of luma samples (4:2:0 and
+    // 4:2:2); full-resolution chroma reads each luma sample twice, whose
+    // pair average is the sample itself (§7.18.3.5 `averageLuma`).
+    let mut doubled_luma = Vec::new();
     let coefficients = if params.chroma_scaling_from_luma {
         [0, 64, 0]
     } else {
@@ -399,27 +467,34 @@ fn synthesize_plane<T: Sample, G: Grain, R: GrainRows<T, G>>(
             offset as i16 - 256,
         ]
     };
-    for (stripe_index, first_row) in (0..plane_h).step_by(block).enumerate() {
+    for (stripe_index, first_row) in (0..plane_h).step_by(block_h).enumerate() {
         fill_stripe(
             (params, blocks),
             template,
-            (sub, depth),
+            ((sub_x, sub_y), depth),
             stripe_index,
             stride,
             &mut current,
         );
-        for y in 0..block.min(plane_h - first_row) {
+        for y in 0..block_h.min(plane_h - first_row) {
             let noise = &mut current[y * stride..y * stride + plane_w];
-            if params.overlap && stripe_index != 0 && y < reach {
-                let old = &previous[(block + y) * stride..(block + y) * stride + plane_w];
-                rows.blend_row(old, noise, weights(sub, y));
+            if params.overlap && stripe_index != 0 && y < reach_y {
+                let old = &previous[(block_h + y) * stride..(block_h + y) * stride + plane_w];
+                rows.blend_row(old, noise, weights(sub_y, y));
             }
             let source = &input[plane].row(first_row + y)[..plane_w];
             let destination = &mut output.row_mut(first_row + y)[..plane_w];
             if plane == 0 {
                 rows.luma_row(source, noise, scaling, bounds, destination);
             } else {
-                let luma = &input[0].row((first_row + y) * 2)[..width];
+                let luma_row = &input[0].row((first_row + y) << sub_y)[..width];
+                let luma = if sub_x == 1 {
+                    luma_row
+                } else {
+                    doubled_luma.clear();
+                    doubled_luma.extend(luma_row.iter().flat_map(|&s| [s, s]));
+                    &doubled_luma[..]
+                };
                 rows.chroma_row(
                     source,
                     luma,
@@ -445,59 +520,65 @@ fn weights(sub: usize, index: usize) -> [i16; 2] {
     }
 }
 
-/// Lay stripe `index`'s grain blocks (each `block + reach` square, from a
-/// random offset into the template) side by side in `stripe`, blending each
-/// block's first `reach` columns over the previous block's overhang.
+/// Lay stripe `index`'s grain blocks (each `block + reach` per axis, from
+/// a random offset into the template) side by side in `stripe`, blending
+/// each block's first `reach` columns over the previous block's overhang.
+/// `sub` is the plane's subsampling (log2 per axis).
 fn fill_stripe<G: Grain>(
     grain: (&Av1FilmGrainParams, GrainBlocks),
     template: &Template<G>,
-    (sub, depth): (usize, BitDepth),
+    (sub, depth): ((usize, usize), BitDepth),
     index: usize,
     stride: usize,
     stripe: &mut [G],
 ) {
-    // The block side is a constant per plane type and block size, so each
+    // The block sides are constants per plane type and block size, so each
     // row's copy is a fixed-size move rather than a `memcpy` call.
-    const LUMA: usize = BLOCK + OVERLAP;
-    const CHROMA: usize = (BLOCK >> 1) + (OVERLAP >> 1);
-    const SMALL_LUMA: usize = AV2_SMALL_BLOCK + OVERLAP;
-    const SMALL_CHROMA: usize = (AV2_SMALL_BLOCK >> 1) + (OVERLAP >> 1);
-    let (blocks, chroma) = (grain.1.luma_side(), sub != 0);
-    let fill = match (blocks, chroma) {
-        (BLOCK, false) => fill_stripe_blocks::<G, LUMA>,
-        (BLOCK, true) => fill_stripe_blocks::<G, CHROMA>,
-        (AV2_SMALL_BLOCK, false) => fill_stripe_blocks::<G, SMALL_LUMA>,
-        _ => fill_stripe_blocks::<G, SMALL_CHROMA>,
+    const FULL: usize = BLOCK + OVERLAP;
+    const HALF: usize = (BLOCK >> 1) + (OVERLAP >> 1);
+    const SMALL_FULL: usize = AV2_SMALL_BLOCK + OVERLAP;
+    const SMALL_HALF: usize = (AV2_SMALL_BLOCK >> 1) + (OVERLAP >> 1);
+    let fill = match (grain.1.luma_side(), sub) {
+        (BLOCK, (0, 0)) => fill_stripe_blocks::<G, FULL, FULL>,
+        (BLOCK, (1, 1)) => fill_stripe_blocks::<G, HALF, HALF>,
+        (BLOCK, (1, 0)) => fill_stripe_blocks::<G, HALF, FULL>,
+        (BLOCK, _) => fill_stripe_blocks::<G, FULL, HALF>,
+        (_, (0, 0)) => fill_stripe_blocks::<G, SMALL_FULL, SMALL_FULL>,
+        (_, (1, 1)) => fill_stripe_blocks::<G, SMALL_HALF, SMALL_HALF>,
+        _ => unreachable!("AV2 film grain is 4:2:0"),
     };
     fill(grain, template, (sub, depth), index, stride, stripe);
 }
 
-/// [`fill_stripe`] for blocks of side `SIDE` (`block + reach`).
-fn fill_stripe_blocks<G: Grain, const SIDE: usize>(
+/// [`fill_stripe`] for blocks of `COLS` x `ROWS` (`block + reach` per
+/// axis).
+fn fill_stripe_blocks<G: Grain, const COLS: usize, const ROWS: usize>(
     (params, blocks): (&Av1FilmGrainParams, GrainBlocks),
     template: &Template<G>,
-    (sub, depth): (usize, BitDepth),
+    ((sub_x, sub_y), depth): ((usize, usize), BitDepth),
     index: usize,
     stride: usize,
     stripe: &mut [G],
 ) {
     let range = grain_range(depth);
-    let block = blocks.luma_side() >> sub;
-    let reach = OVERLAP >> sub;
-    debug_assert_eq!(block + reach, SIDE);
+    let block = blocks.luma_side() >> sub_x;
+    let reach = OVERLAP >> sub_x;
+    debug_assert_eq!(block + reach, COLS);
+    debug_assert_eq!((blocks.luma_side() >> sub_y) + (OVERLAP >> sub_y), ROWS);
     let mut random = Random(blocks.stripe_seed(params.grain_seed, index));
-    // Offsets count pairs of luma samples: whole samples in chroma.
-    let base = |offset: usize| AR_PADDING + ((AR_PADDING + offset) << (1 - sub));
+    // Offsets count pairs of luma samples: whole samples along a
+    // subsampled axis (§7.18.3.5 `planeOffsetX`, `planeOffsetY`).
+    let base = |offset: usize, sub: usize| AR_PADDING + ((AR_PADDING + offset) << (1 - sub));
     for x in (0..stride - reach).step_by(block) {
         let (offset_x, offset_y) = blocks.offsets(&mut random);
-        let (base_x, base_y) = (base(offset_x), base(offset_y));
+        let (base_x, base_y) = (base(offset_x, sub_x), base(offset_y, sub_y));
         let overlap = if params.overlap && x != 0 { reach } else { 0 };
-        for y in 0..SIDE {
+        for y in 0..ROWS {
             let start = (base_y + y) * template.columns + base_x;
-            let source: &[G; SIDE] = template.values[start..start + SIDE]
+            let source: &[G; COLS] = template.values[start..start + COLS]
                 .try_into()
                 .expect("a template row holds a block");
-            let destination: &mut [G; SIDE] = (&mut stripe[y * stride + x..][..SIDE])
+            let destination: &mut [G; COLS] = (&mut stripe[y * stride + x..][..COLS])
                 .try_into()
                 .expect("a stripe row holds a block");
             // The previous block's overhang, then the whole row at once (a
@@ -508,7 +589,7 @@ fn fill_stripe_blocks<G: Grain, const SIDE: usize>(
                 destination[j] = G::from_i32(blend_overlap(
                     previous.into(),
                     source[j].into(),
-                    (j, sub),
+                    (j, sub_x),
                     range,
                 ));
             }

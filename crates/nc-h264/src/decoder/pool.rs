@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use nc_common::{Picture, PictureRecycler, Sample};
+use nc_common::{ChromaFormat, Picture, PictureRecycler, Sample};
 
 use super::Result;
 
@@ -29,9 +29,14 @@ impl<T: Sample> Default for PicturePool<T> {
 }
 
 impl<T: Sample> PicturePool<T> {
-    /// A `width` x `height` picture with `border`; its samples are stale
-    /// when it is reused.
-    pub fn take(&mut self, width: usize, height: usize, border: usize) -> Result<Picture<T>> {
+    /// A `width` x `height` picture of chroma format `format` with
+    /// `border`; its samples are stale when it is reused.
+    pub fn take_with_format(
+        &mut self,
+        (width, height): (usize, usize),
+        format: ChromaFormat,
+        border: usize,
+    ) -> Result<Picture<T>> {
         let (released, kept): (Vec<_>, Vec<_>) = self
             .shared
             .drain(..)
@@ -42,7 +47,9 @@ impl<T: Sample> PicturePool<T> {
                 self.recycler.give(picture);
             }
         }
-        Ok(self.recycler.take(width, height, border)?)
+        Ok(self
+            .recycler
+            .take_with_format(width, height, format, border)?)
     }
 
     /// Share the decoded `picture` with the DPB (if it is a reference) and
@@ -83,12 +90,28 @@ mod tests {
     #[test]
     fn released_references_are_reused() {
         let mut pool = PicturePool::<u8>::default();
-        let picture = pool.take(16, 16, 0).unwrap();
+        let picture = pool
+            .take_with_format((16, 16), ChromaFormat::Yuv420, 0)
+            .unwrap();
         let shared = pool.share(picture);
         let pointer = address(&shared);
         // Still referenced: a new buffer.
-        assert_ne!(address(&pool.take(16, 16, 0).unwrap()), pointer);
+        assert_ne!(
+            address(
+                &pool
+                    .take_with_format((16, 16), ChromaFormat::Yuv420, 0)
+                    .unwrap()
+            ),
+            pointer
+        );
         drop(shared);
-        assert_eq!(address(&pool.take(16, 16, 0).unwrap()), pointer);
+        assert_eq!(
+            address(
+                &pool
+                    .take_with_format((16, 16), ChromaFormat::Yuv420, 0)
+                    .unwrap()
+            ),
+            pointer
+        );
     }
 }

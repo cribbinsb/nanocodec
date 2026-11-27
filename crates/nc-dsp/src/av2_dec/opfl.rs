@@ -26,6 +26,8 @@ const ZERO_BIAS_BITS: u32 = 3;
 const EARLY_EXIT_PER_SAMPLE: u32 = 2;
 /// Side of the [`sad8x8`] block.
 const SAD_SIDE: usize = 8;
+/// Smallest optical-flow block width.
+const OPFL_MIN_WIDTH: usize = 8;
 /// Largest optical-flow block width.
 const OPFL_MAX_WIDTH: usize = 64;
 /// Optical-flow block heights.
@@ -157,16 +159,44 @@ fn scale_to_eight(value: i32, shift: u32) -> i32 {
     (value + rounding - i32::from(value < 0)) >> shift
 }
 
-/// The 4-tap gradient at `i` of `line(k)` within `[min, max]` (edges
-/// repeat; the 2-tap fallback at an edge doubles).
-fn gradient(line: impl Fn(usize) -> i32, i: usize, (min, max): (usize, usize)) -> i16 {
-    let p0 = line(i.saturating_sub(2).max(min));
-    let p1 = line(i.saturating_sub(1).max(min));
-    let p2 = line((i + 1).min(max));
-    let p3 = line((i + 2).min(max));
-    let at_edge = i + 1 > max || i < min + 1;
+/// The 4-tap gradient from the samples two before, one before, one after
+/// and two after a position (edges repeated by the caller); `at_edge`
+/// doubles the result where the 2-tap fallback applies.
+#[inline]
+fn gradient([p0, p1, p2, p3]: [i16; 4], at_edge: bool) -> i16 {
+    let (p0, p1, p2, p3) = (i32::from(p0), i32::from(p1), i32::from(p2), i32::from(p3));
     let g = ((p2 - p1) * GRADIENT_NEAR + (p3 - p0) * GRADIENT_FAR) * (1 + i32::from(at_edge));
     ((g + (1 << (GRADIENT_BITS - 1)) - 1 + i32::from(g > 0)) >> GRADIENT_BITS) as i16
+}
+
+/// The horizontal gradients of one span of `N` samples (edges repeat
+/// within the span). A fixed-size span lets every clamped index be
+/// checked at compile time.
+#[inline]
+fn gradient_span<const N: usize>(line: &[i16; N], out: &mut [i16; N]) {
+    for (x, out) in out.iter_mut().enumerate() {
+        let at = |i: usize| line[i.min(N - 1)];
+        let taps = [
+            at(x.saturating_sub(2)),
+            at(x.saturating_sub(1)),
+            at(x + 1),
+            at(x + 2),
+        ];
+        *out = gradient(taps, x == 0 || x + 1 == N);
+    }
+}
+
+/// The horizontal gradients of a row, taken within spans of `N` samples
+/// ([`GRADIENT_SPAN`], or the whole row when narrower).
+fn gradient_row<const N: usize>(line: &[i16], out: &mut [i16]) {
+    for (line, out) in line
+        .as_chunks::<N>()
+        .0
+        .iter()
+        .zip(out.as_chunks_mut::<N>().0)
+    {
+        gradient_span(line, out);
+    }
 }
 
 /// The regression sums of the optical-flow sub-blocks (`bs` x `bs`, 4 or
@@ -187,50 +217,98 @@ pub fn opfl_refine_mv<T: Sample>(
     distance: [i8; 2],
     depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
     assert!(matches!(bs, 4 | 8) && (bs == 8 || (w == 8 && h == 8)));
-    assert!(w.is_power_of_two() && (8..=OPFL_MAX_WIDTH).contains(&w) && OPFL_HEIGHTS.contains(&h));
+    assert!(
+        w.is_power_of_two()
+            && (OPFL_MIN_WIDTH..=OPFL_MAX_WIDTH).contains(&w)
+            && OPFL_HEIGHTS.contains(&h)
+    );
     let shift = depth.above_eight();
     let (d0, d1) = (i32::from(distance[0]), i32::from(distance[1]));
     // The distance-weighted sum and the plain difference, at 8 bits.
     let mut weighted = [0_i16; OPFL_MAX_AREA];
     let mut difference = [0_i16; OPFL_MAX_AREA];
-    for y in 0..h {
+    let rows = weighted[..w * h]
+        .chunks_exact_mut(w)
+        .zip(difference[..w * h].chunks_exact_mut(w));
+    for (y, (weighted, difference)) in rows.enumerate() {
         let a = &p0.0[p0.1 + y * p0.2..][..w];
         let b = &p1.0[p1.1 + y * p1.2..][..w];
-        for x in 0..w {
-            let (a, b) = (a[x].to_i32(), b[x].to_i32());
-            weighted[y * w + x] = scale_to_eight(d0 * a + d1 * b, shift) as i16;
-            difference[y * w + x] = scale_to_eight(a - b, shift) as i16;
+        for (((weighted, difference), a), b) in weighted.iter_mut().zip(difference).zip(a).zip(b) {
+            let (a, b) = (a.to_i32(), b.to_i32());
+            *weighted = scale_to_eight(d0 * a + d1 * b, shift) as i16;
+            *difference = scale_to_eight(a - b, shift) as i16;
         }
     }
+    let weighted = &weighted[..w * h];
     let mut gx = [0_i16; OPFL_MAX_AREA];
     let mut gy = [0_i16; OPFL_MAX_AREA];
-    for y in 0..h {
-        for x in 0..w {
-            let span = (
-                x / GRADIENT_SPAN * GRADIENT_SPAN,
-                (x | (GRADIENT_SPAN - 1)).min(w - 1),
-            );
-            gx[y * w + x] = gradient(|i| i32::from(weighted[y * w + i]), x, span);
-            gy[y * w + x] = gradient(|i| i32::from(weighted[i * w + x]), y, (0, h - 1));
+    for (line, out) in weighted.chunks_exact(w).zip(gx.chunks_exact_mut(w)) {
+        if w < GRADIENT_SPAN {
+            gradient_row::<OPFL_MIN_WIDTH>(line, out);
+        } else {
+            gradient_row::<GRADIENT_SPAN>(line, out);
         }
     }
-    let area = (bs * bs) as i32;
+    // Vertical gradients a row at a time: the four source rows (edges
+    // repeated) zipped column by column.
+    let row = |y: usize| &weighted[y * w..][..w];
+    for (y, out) in gy.chunks_exact_mut(w).take(h).enumerate() {
+        let sources = (
+            row(y.saturating_sub(2)),
+            row(y.saturating_sub(1)),
+            row((y + 1).min(h - 1)),
+            row((y + 2).min(h - 1)),
+        );
+        let at_edge = y == 0 || y + 1 == h;
+        let columns = sources
+            .0
+            .iter()
+            .zip(sources.1)
+            .zip(sources.2)
+            .zip(sources.3);
+        for (out, (((&p0, &p1), &p2), &p3)) in out.iter_mut().zip(columns) {
+            *out = gradient([p0, p1, p2, p3], at_edge);
+        }
+    }
+    let fields = (&gx[..], &gy[..], &difference[..]);
+    // A constant block side gives the sums fixed trip counts.
+    if bs == 8 {
+        regressions::<8>(out, fields, (w, h));
+    } else {
+        regressions::<4>(out, fields, (w, h));
+    }
+}
+
+/// The regression sums of each `BS` x `BS` sub-block of the `w` x `h`
+/// gradient and difference fields, in raster order into `out`.
+fn regressions<const BS: usize>(
+    out: &mut [OpflRegressionData],
+    (gx, gy, difference): (&[i16], &[i16], &[i16]),
+    (w, h): (usize, usize),
+) {
+    let area = (BS * BS) as i32;
     let blocks = (0..h)
-        .step_by(bs)
-        .flat_map(|y| (0..w).step_by(bs).map(move |x| (x, y)));
+        .step_by(BS)
+        .flat_map(|y| (0..w).step_by(BS).map(move |x| (x, y)));
     for (slot, (x0, y0)) in out.iter_mut().zip(blocks) {
         let mut sums = OpflRegressionData {
             su2: area,
             sv2: area,
             ..OpflRegressionData::default()
         };
-        for y in y0..y0 + bs {
-            for x in x0..x0 + bs {
-                let at = y * w + x;
-                let grad_x = i32::from(gx[at]);
-                let grad_y = i32::from(gy[at]);
-                let diff = i32::from(difference[at]);
+        for y in y0..y0 + BS {
+            let row = y * w + x0;
+            let (gx, gy, diff) = (
+                &gx[row..row + BS],
+                &gy[row..row + BS],
+                &difference[row..row + BS],
+            );
+            for x in 0..BS {
+                let grad_x = i32::from(gx[x]);
+                let grad_y = i32::from(gy[x]);
+                let diff = i32::from(diff[x]);
                 sums.su2 += grad_x * grad_x;
                 sums.suv += grad_x * grad_y;
                 sums.sv2 += grad_y * grad_y;

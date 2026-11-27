@@ -2,9 +2,11 @@
 //!
 //! Small normative tables are written out here with their spec references;
 //! the large CABAC tables are generated from openh264 (`generated`), as are
-//! the decoder's CAVLC code tables (`cavlc`).
+//! the decoder's CAVLC code tables (`cavlc`), except the 4:2:2 chroma DC
+//! ones (`cavlc_422`).
 
 pub mod cavlc;
+pub mod cavlc_422;
 mod generated;
 
 pub use generated::{
@@ -14,16 +16,9 @@ pub use generated::{
 
 /// Frame zig-zag scan of a 4x4 block (H.264 §8.5.6, Table 8-13): scan
 /// position → raster index (`row * 4 + column`).
-pub const ZIGZAG_4X4: [usize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
+pub use nc_dsp::H264_ZIGZAG_4X4 as ZIGZAG_4X4;
 
-/// Frame zig-zag scan of an 8x8 block (H.264 §8.5.7, Table 8-14): scan
-/// position → raster index (`row * 8 + column`).
-pub const ZIGZAG_8X8: [usize; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, //
-    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, //
-    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, //
-    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
-];
+pub use nc_dsp::H264_ZIGZAG_8X8 as ZIGZAG_8X8;
 
 /// Field scan of a 4x4 block (H.264 §8.5.6, Table 8-13, field
 /// macroblocks): scan position → raster index.
@@ -104,84 +99,150 @@ pub struct LevelLimits {
     pub max_frame_mbs: u32,
     /// `MaxMBPS`: maximum macroblock processing rate.
     pub max_mbs_per_second: u32,
+    /// `MaxBR`, in units of `cpbBrVclFactor` bits/s (Table A-2).
+    pub max_br: u32,
+    /// `MaxCPB`, in units of `cpbBrVclFactor` bits.
+    pub max_cpb: u32,
 }
 
+/// `cpbBrVclFactor` of the High profile (Table A-2): bits per `MaxBR` /
+/// `MaxCPB` unit.
+pub const HIGH_CPB_BR_VCL_FACTOR: u64 = 1250;
+
 /// H.264 Table A-1, in increasing order (level 1b omitted).
-pub const LEVELS: [LevelLimits; 15] = [
+pub const LEVELS: [LevelLimits; 19] = [
     LevelLimits {
         level_idc: 10,
         max_frame_mbs: 99,
         max_mbs_per_second: 1485,
+        max_br: 64,
+        max_cpb: 175,
     },
     LevelLimits {
         level_idc: 11,
         max_frame_mbs: 396,
         max_mbs_per_second: 3000,
+        max_br: 192,
+        max_cpb: 500,
     },
     LevelLimits {
         level_idc: 12,
         max_frame_mbs: 396,
         max_mbs_per_second: 6000,
+        max_br: 384,
+        max_cpb: 1000,
     },
     LevelLimits {
         level_idc: 13,
         max_frame_mbs: 396,
         max_mbs_per_second: 11880,
+        max_br: 768,
+        max_cpb: 2000,
+    },
+    LevelLimits {
+        level_idc: 20,
+        max_frame_mbs: 396,
+        max_mbs_per_second: 11880,
+        max_br: 2000,
+        max_cpb: 2000,
     },
     LevelLimits {
         level_idc: 21,
         max_frame_mbs: 792,
         max_mbs_per_second: 19800,
+        max_br: 4000,
+        max_cpb: 4000,
     },
     LevelLimits {
         level_idc: 22,
         max_frame_mbs: 1620,
         max_mbs_per_second: 20250,
+        max_br: 4000,
+        max_cpb: 4000,
     },
     LevelLimits {
         level_idc: 30,
         max_frame_mbs: 1620,
         max_mbs_per_second: 40500,
+        max_br: 10000,
+        max_cpb: 10000,
     },
     LevelLimits {
         level_idc: 31,
         max_frame_mbs: 3600,
         max_mbs_per_second: 108_000,
+        max_br: 14000,
+        max_cpb: 14000,
     },
     LevelLimits {
         level_idc: 32,
         max_frame_mbs: 5120,
         max_mbs_per_second: 216_000,
+        max_br: 20000,
+        max_cpb: 20000,
     },
     LevelLimits {
         level_idc: 40,
         max_frame_mbs: 8192,
         max_mbs_per_second: 245_760,
+        max_br: 20000,
+        max_cpb: 25000,
+    },
+    LevelLimits {
+        level_idc: 41,
+        max_frame_mbs: 8192,
+        max_mbs_per_second: 245_760,
+        max_br: 50000,
+        max_cpb: 62500,
     },
     LevelLimits {
         level_idc: 42,
         max_frame_mbs: 8704,
         max_mbs_per_second: 522_240,
+        max_br: 50000,
+        max_cpb: 62500,
     },
     LevelLimits {
         level_idc: 50,
         max_frame_mbs: 22080,
         max_mbs_per_second: 589_824,
+        max_br: 135_000,
+        max_cpb: 135_000,
     },
     LevelLimits {
         level_idc: 51,
         max_frame_mbs: 36864,
         max_mbs_per_second: 983_040,
+        max_br: 240_000,
+        max_cpb: 240_000,
     },
     LevelLimits {
         level_idc: 52,
         max_frame_mbs: 36864,
         max_mbs_per_second: 2_073_600,
+        max_br: 240_000,
+        max_cpb: 240_000,
     },
     LevelLimits {
         level_idc: 60,
         max_frame_mbs: 139_264,
         max_mbs_per_second: 4_177_920,
+        max_br: 240_000,
+        max_cpb: 240_000,
+    },
+    LevelLimits {
+        level_idc: 61,
+        max_frame_mbs: 139_264,
+        max_mbs_per_second: 8_355_840,
+        max_br: 480_000,
+        max_cpb: 480_000,
+    },
+    LevelLimits {
+        level_idc: 62,
+        max_frame_mbs: 139_264,
+        max_mbs_per_second: 16_711_680,
+        max_br: 800_000,
+        max_cpb: 800_000,
     },
 ];
 

@@ -28,6 +28,8 @@ pub(crate) fn check_codec_txfm(
         check_hevc_quant(candidate, reference, rng, report);
         check_h264(candidate, reference, rng, report);
         check_nonzero_mask(candidate, reference, rng, report);
+        check_h264_luma_elimination(candidate, reference, rng, report);
+        check_h264_luma_elimination_8x8(candidate, reference, rng, report);
     }
     for _ in 0..2 * iterations {
         for size in Av2TxSize::ALL {
@@ -52,6 +54,95 @@ fn check_nonzero_mask(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &
     record(report, candidate.isa(), got == want, || {
         format!("nonzero_mask len {len}: got {got:#x}, want {want:#x} ({levels:?})")
     });
+}
+
+/// Compare both the retained levels and the coded pattern, including blocks
+/// with nonzero levels whose run cost is zero.
+fn check_h264_luma_elimination(
+    candidate: &Dsp,
+    reference: &Dsp,
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    let mode = rng.below(4);
+    let input = core::array::from_fn(|_| {
+        let mut levels = [0i16; 16];
+        let count = match mode {
+            0 => 0,
+            1 => 1,
+            _ => rng.below(17),
+        };
+        for _ in 0..count {
+            let index = rng.below(levels.len());
+            levels[index] = if mode == 3 {
+                [i16::MIN, -129, -128, -2, -1, 1, 2, 127, 128, i16::MAX][rng.below(10)]
+            } else {
+                1 - 2 * rng.below(2) as i16
+            };
+        }
+        levels
+    });
+    let limits = (rng.below(11) as u32, rng.below(17) as u32);
+    let (mut got, mut want) = (input, input);
+    let got_pattern = candidate.h264_eliminate_luma_4x4(&mut got, limits);
+    let want_pattern = reference.h264_eliminate_luma_4x4(&mut want, limits);
+    record(
+        report,
+        candidate.isa(),
+        got_pattern == want_pattern && got == want,
+        || {
+            format!(
+                "H.264 luma elimination limits {limits:?}: {got_pattern:#x} != {want_pattern:#x} or retained levels differ"
+            )
+        },
+    );
+}
+
+/// Compare the 8×8 transform path with positive exact counts and with
+/// stale levels behind zero counts, as produced by the encoder's skip path.
+fn check_h264_luma_elimination_8x8(
+    candidate: &Dsp,
+    reference: &Dsp,
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    let mut counts = [0; 4];
+    let input = core::array::from_fn(|quadrant| {
+        let mode = rng.below(6);
+        let mut levels = [0i16; 64];
+        let placements = match mode {
+            0 => 0,
+            1 | 2 => 1,
+            3 | 4 => rng.below(9),
+            _ => rng.below(65),
+        };
+        for _ in 0..placements {
+            let index = rng.below(levels.len());
+            levels[index] = if mode == 4 {
+                [i16::MIN, -129, -128, -2, -1, 1, 2, 127, 128, i16::MAX][rng.below(10)]
+            } else {
+                1 - 2 * rng.below(2) as i16
+            };
+        }
+        if mode != 1 {
+            counts[quadrant] = levels.iter().filter(|&&level| level != 0).count() as u32;
+        }
+        levels
+    });
+    let limits = (rng.below(11) as u32, rng.below(37) as u32);
+    let (mut got, mut want) = (input, input);
+    let got_pattern = candidate.h264_eliminate_luma_8x8(&mut got, counts, limits);
+    let want_pattern = reference.h264_eliminate_luma_8x8(&mut want, counts, limits);
+    record(
+        report,
+        candidate.isa(),
+        got_pattern == want_pattern && got == want,
+        || {
+            format!(
+                "H.264 8×8 luma elimination counts {counts:?}, limits {limits:?}: {got_pattern:#x} != {want_pattern:#x} or retained levels differ"
+            )
+        },
+    );
 }
 
 /// A residual of 8-bit sample differences in one of four patterns: random,

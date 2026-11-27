@@ -35,10 +35,35 @@ struct DecodeArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     frame_md5: Option<PathBuf>,
+    stream: StreamOptions,
+    bench: Option<u32>,
+}
+
+/// How the decoder runs over a stream: what it shows, and the size guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StreamOptions {
     film_grain: FilmGrain,
     operating_point: Option<u8>,
     all_layers: bool,
-    bench: Option<u32>,
+    /// AV1: decode frames beyond the level 6.3 size bound that guards
+    /// untrusted input (`--unbounded 1`, for conformance streams).
+    unbounded: bool,
+    /// AV1: write a monochrome picture's mid-grey chroma planes (the
+    /// default, as `aomdec --i420` and libaom's MD5s), or luma only
+    /// (`--monochrome-chroma 0`, as `aomdec --rawvideo` and dav1d).
+    monochrome_chroma: bool,
+}
+
+impl Default for StreamOptions {
+    fn default() -> Self {
+        Self {
+            film_grain: FilmGrain::Apply,
+            operating_point: None,
+            all_layers: false,
+            unbounded: false,
+            monochrome_chroma: true,
+        }
+    }
 }
 
 /// Parse an AV1 `--operating-point` argument in `0..=MAX_OPERATING_POINT`.
@@ -65,20 +90,112 @@ enum FilmGrain {
     Skip,
 }
 
+/// A `0|1` option's value.
+fn switch(flag: &str, value: &str) -> Result<bool, String> {
+    match value {
+        "1" => Ok(true),
+        "0" => Ok(false),
+        _ => Err(format!("{flag} takes 0 or 1, not '{value}'")),
+    }
+}
+
+/// The stream options as given (`None`: not given), checked against the
+/// codec by [`StreamFlags::options`].
+#[derive(Default)]
+struct StreamFlags {
+    film_grain: Option<bool>,
+    operating_point: Option<u8>,
+    all_layers: Option<bool>,
+    unbounded: Option<bool>,
+    monochrome_chroma: Option<bool>,
+}
+
+impl StreamFlags {
+    /// Take `flag` if it is a stream option not given yet: `Ok(false)` if it
+    /// is none.
+    fn take(&mut self, flag: &str, value: &str) -> Result<bool, String> {
+        let slot = match flag {
+            "--film-grain" => &mut self.film_grain,
+            "--all-layers" => &mut self.all_layers,
+            "--unbounded" => &mut self.unbounded,
+            "--monochrome-chroma" => &mut self.monochrome_chroma,
+            "--operating-point" if self.operating_point.is_none() => {
+                self.operating_point = Some(parse_operating_point(value, "")?);
+                return Ok(true);
+            }
+            _ => return Ok(false),
+        };
+        if slot.is_some() {
+            return Ok(false);
+        }
+        *slot = Some(switch(flag, value)?);
+        Ok(true)
+    }
+
+    /// The options for `codec`, refusing those that do not apply to it.
+    fn options(self, codec: Codec) -> Result<StreamOptions, String> {
+        let av1 = codec == Codec::Av1;
+        let layered = matches!(codec, Codec::Av1 | Codec::Vp9);
+        for (given, applies, flag) in [
+            (
+                self.film_grain.is_some(),
+                av1,
+                "--film-grain applies to AV1 only",
+            ),
+            (
+                self.unbounded.is_some(),
+                av1,
+                "--unbounded applies to AV1 only",
+            ),
+            (
+                self.monochrome_chroma.is_some(),
+                av1,
+                "--monochrome-chroma applies to AV1 only",
+            ),
+            (
+                self.operating_point.is_some(),
+                layered,
+                "--operating-point applies to AV1 and VP9 only",
+            ),
+            (
+                self.all_layers.is_some(),
+                layered,
+                "--all-layers applies to AV1 and VP9 only",
+            ),
+        ] {
+            if given && !applies {
+                return Err(flag.into());
+            }
+        }
+        Ok(StreamOptions {
+            film_grain: if self.film_grain.unwrap_or(true) {
+                FilmGrain::Apply
+            } else {
+                FilmGrain::Skip
+            },
+            operating_point: self.operating_point,
+            all_layers: self.all_layers.unwrap_or(false),
+            unbounded: self.unbounded.unwrap_or(false),
+            monochrome_chroma: self.monochrome_chroma.unwrap_or(true),
+        })
+    }
+}
+
 fn parse(args: &[String]) -> Result<DecodeArgs, String> {
     stdio::check_streams(args, &[], &["--output", "--frame-md5"])?;
     let mut codec = None;
     let mut input = None;
     let mut output = None;
     let mut frame_md5 = None;
-    let mut film_grain = None;
-    let mut operating_point = None;
-    let mut all_layers = None;
+    let mut stream = StreamFlags::default();
     let mut discard = None;
     let mut bench = None;
     let (pairs, remainder) = args.as_chunks::<2>();
     for pair in pairs {
         let value = pair[1].clone();
+        if stream.take(&pair[0], &value)? {
+            continue;
+        }
         match pair[0].as_str() {
             "--codec" if codec.is_none() => {
                 codec = Some(match value.as_str() {
@@ -94,30 +211,7 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
             "--input" if input.is_none() => input = Some(PathBuf::from(value)),
             "--output" if output.is_none() => output = Some(PathBuf::from(value)),
             "--frame-md5" if frame_md5.is_none() => frame_md5 = Some(PathBuf::from(value)),
-            "--film-grain" if film_grain.is_none() => {
-                film_grain = Some(match value.as_str() {
-                    "1" => FilmGrain::Apply,
-                    "0" => FilmGrain::Skip,
-                    _ => return Err(format!("--film-grain takes 0 or 1, not '{value}'")),
-                });
-            }
-            "--operating-point" if operating_point.is_none() => {
-                operating_point = Some(parse_operating_point(&value, "")?);
-            }
-            "--all-layers" if all_layers.is_none() => {
-                all_layers = Some(match value.as_str() {
-                    "1" => true,
-                    "0" => false,
-                    _ => return Err(format!("--all-layers takes 0 or 1, not '{value}'")),
-                });
-            }
-            "--discard" if discard.is_none() => {
-                discard = Some(match value.as_str() {
-                    "1" => true,
-                    "0" => false,
-                    _ => return Err(format!("--discard takes 0 or 1, not '{value}'")),
-                });
-            }
+            "--discard" if discard.is_none() => discard = Some(switch("--discard", &value)?),
             "--bench" if bench.is_none() => {
                 bench = Some(
                     value
@@ -137,15 +231,6 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
     if bench.is_some() && (output.is_some() || frame_md5.is_some()) {
         return Err("--bench writes no frames: drop --output and --frame-md5".into());
     }
-    if film_grain.is_some() && codec != Codec::Av1 {
-        return Err("--film-grain applies to AV1 only".into());
-    }
-    if operating_point.is_some() && !matches!(codec, Codec::Av1 | Codec::Vp9) {
-        return Err("--operating-point applies to AV1 and VP9 only".into());
-    }
-    if all_layers.is_some() && !matches!(codec, Codec::Av1 | Codec::Vp9) {
-        return Err("--all-layers applies to AV1 and VP9 only".into());
-    }
     Ok(DecodeArgs {
         codec,
         input: input.ok_or("missing --input")?,
@@ -159,9 +244,7 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
             output
         },
         frame_md5,
-        film_grain: film_grain.unwrap_or(FilmGrain::Apply),
-        operating_point,
-        all_layers: all_layers.unwrap_or(false),
+        stream: stream.options(codec)?,
         bench,
     })
 }
@@ -183,24 +266,17 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     let mut yuv_output = args.output.as_ref().map(create).transpose()?;
     let mut md5_output = args.frame_md5.as_ref().map(create).transpose()?;
     let mut input = stdio::open(&args.input)?;
-    decode_stream_with_op(
-        args.codec,
-        args.film_grain,
-        args.operating_point,
-        args.all_layers,
-        &mut input,
-        &mut |frame: &Shown| {
-            if let Some(output) = yuv_output.as_mut() {
-                frame
-                    .write_rows(output)
-                    .map_err(|error| error.to_string())?;
-            }
-            if let Some(output) = md5_output.as_mut() {
-                writeln!(output, "{}", frame.md5()).map_err(|error| error.to_string())?;
-            }
-            Ok(())
-        },
-    )?;
+    decode_stream_with_op(args.codec, args.stream, &mut input, &mut |frame: &Shown| {
+        if let Some(output) = yuv_output.as_mut() {
+            frame
+                .write_rows(output)
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(output) = md5_output.as_mut() {
+            writeln!(output, "{}", frame.md5()).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })?;
     for output in yuv_output.iter_mut().chain(md5_output.iter_mut()) {
         output.flush().map_err(|error| error.to_string())?;
     }
@@ -219,9 +295,7 @@ fn bench(args: &DecodeArgs, passes: u32) -> Result<(), String> {
         let start = Instant::now();
         let frames = decode_stream_with_op(
             args.codec,
-            args.film_grain,
-            args.operating_point,
-            args.all_layers,
+            args.stream,
             &mut std::io::Cursor::new(stream.as_slice()),
             &mut |_: &Shown| Ok(()),
         )?;
@@ -235,6 +309,9 @@ fn bench(args: &DecodeArgs, passes: u32) -> Result<(), String> {
 /// picture; 4:2:0 chroma covers `(size + 1) / 2`).
 pub(crate) struct Shown<'a> {
     planes: usize,
+    /// A monochrome picture whose chroma planes are the decoder's mid-grey
+    /// fill (AV1), written unless `--monochrome-chroma 0`.
+    grey_chroma: bool,
     samples: Samples<'a>,
     width: usize,
     height: usize,
@@ -272,6 +349,7 @@ impl<'a> Shown<'a> {
     pub(crate) fn whole(picture: Picture) -> Self {
         Self {
             planes: 3,
+            grey_chroma: false,
             width: picture.width(),
             height: picture.height(),
             samples: Samples::Owned(picture),
@@ -283,6 +361,7 @@ impl<'a> Shown<'a> {
     fn view(shown: ShownPicture<'a>, planes: usize) -> Self {
         Self {
             planes,
+            grey_chroma: false,
             width: shown.width(),
             height: shown.height(),
             samples: Samples::View(shown),
@@ -300,6 +379,7 @@ impl<'a> Shown<'a> {
         };
         Self {
             planes: 3,
+            grey_chroma: false,
             width,
             height,
             samples,
@@ -325,15 +405,11 @@ impl<'a> Shown<'a> {
         };
         Self {
             planes: 3,
+            grey_chroma: false,
             width,
             height,
             samples,
         }
-    }
-
-    /// An HEVC picture in output order (all three planes).
-    fn hevc(frame: DecodedPicture) -> Result<Self, String> {
-        Self::decoded(frame, 3)
     }
 
     /// A picture in output order, its first `planes` planes, shared with the
@@ -350,10 +426,25 @@ impl<'a> Shown<'a> {
         };
         Ok(Self {
             planes,
+            grey_chroma: false,
             samples,
             width,
             height,
         })
+    }
+
+    /// Mark a picture `monochrome`: its chroma planes are mid-grey fill.
+    fn monochrome(mut self, monochrome: bool) -> Self {
+        self.grey_chroma = monochrome;
+        self
+    }
+
+    /// Leave out a monochrome picture's grey chroma planes: luma only, as
+    /// `aomdec --rawvideo` and dav1d write it.
+    fn drop_grey_chroma(&mut self) {
+        if self.grey_chroma {
+            self.planes = 1;
+        }
     }
 
     /// The owned picture, to give back to its decoder for reuse; a shared
@@ -548,7 +639,9 @@ impl Decoder {
                     return Ok(None);
                 }
                 let shown = decoder.shown_frame().expect("a decoded picture is shown");
-                Ok(Some(Shown::frame(shown)))
+                Ok(Some(
+                    Shown::frame(shown).monochrome(decoder.is_monochrome()),
+                ))
             }
             Self::Vp9(decoder) => {
                 // 8-bit frames written straight from the decoder's picture,
@@ -571,13 +664,18 @@ impl Decoder {
         }
     }
 
-    /// The next picture of the AV2 output queue.
+    /// The next picture of the AV2 output queue: luma alone for a
+    /// monochrome sequence, as avmdec writes it.
     fn next_av2(decoder: &mut nc_av2::Decoder) -> Option<Shown<'_>> {
         if !decoder.next_output() {
             return None;
         }
-        let shown = decoder.shown().expect("a decoded picture is shown");
-        Some(Shown::view(shown, 3))
+        let planes = if decoder.is_monochrome() { 1 } else { 3 };
+        let shown = decoder.shown_frame().expect("a decoded picture is shown");
+        Some(Shown {
+            planes,
+            ..Shown::frame(shown)
+        })
     }
 
     /// A further picture the last packet shows (AV2 temporal units may
@@ -603,7 +701,7 @@ impl Decoder {
             Self::Av1(decoder) => decoder.decode_all_layers(packet).map(|layers| {
                 layers
                     .into_iter()
-                    .map(|(pic, _)| Shown::whole(pic))
+                    .map(|(pic, _)| Shown::whole(pic).monochrome(decoder.is_monochrome()))
                     .collect()
             }),
             Self::Vp9(decoder) => decoder.decode_all_layers(packet).map(|layers| {
@@ -611,6 +709,7 @@ impl Decoder {
                     .into_iter()
                     .map(|frame| Shown {
                         planes: 3,
+                        grey_chroma: false,
                         samples: Samples::Owned(frame.picture),
                         width: frame.width,
                         height: frame.height,
@@ -625,6 +724,13 @@ impl Decoder {
     pub(crate) fn skip_film_grain(&mut self) {
         if let Self::Av1(decoder) = self {
             decoder.set_film_grain(false);
+        }
+    }
+
+    /// Decode AV1 frames beyond the level 6.3 size bound.
+    pub(crate) fn lift_size_limit(&mut self) {
+        if let Self::Av1(decoder) = self {
+            decoder.set_size_limit(false);
         }
     }
 
@@ -649,23 +755,28 @@ fn decode_stream<R: BufRead>(
     input: &mut R,
     output: &mut impl FnMut(&Shown) -> Result<(), String>,
 ) -> Result<u64, String> {
-    decode_stream_with_op(codec, film_grain, None, false, input, output)
+    let stream = StreamOptions {
+        film_grain,
+        ..StreamOptions::default()
+    };
+    decode_stream_with_op(codec, stream, input, output)
 }
 
 fn decode_stream_with_op<R: BufRead>(
     codec: Codec,
-    film_grain: FilmGrain,
-    operating_point: Option<u8>,
-    all_layers: bool,
+    options: StreamOptions,
     input: &mut R,
     output: &mut impl FnMut(&Shown) -> Result<(), String>,
 ) -> Result<u64, String> {
     let mut decoder = Decoder::new(codec);
-    if film_grain == FilmGrain::Skip {
+    if options.film_grain == FilmGrain::Skip {
         decoder.skip_film_grain();
     }
+    if options.unbounded {
+        decoder.lift_size_limit();
+    }
     decoder
-        .set_operating_point(operating_point)
+        .set_operating_point(options.operating_point)
         .map_err(|e| e.to_string())?;
     let mut shown = 0;
     match codec {
@@ -675,7 +786,7 @@ fn decode_stream_with_op<R: BufRead>(
             write_more(&mut decoder, &mut shown, output)?;
         }
         Codec::Av1 | Codec::Vp9 | Codec::Av2 => {
-            decode_ivf_stream(&mut decoder, codec, all_layers, input, &mut shown, output)?;
+            decode_ivf_stream(&mut decoder, codec, options, input, &mut shown, output)?;
             decoder.finish();
             write_more(&mut decoder, &mut shown, output)?;
         }
@@ -684,10 +795,12 @@ fn decode_stream_with_op<R: BufRead>(
                 unreachable!("HEVC decoder for HEVC input");
             };
             let mut write = |hevc: &mut nc_hevc::Decoder| -> Result<(), String> {
+                // 4:0:0 is written as luma alone, as HM writes it.
+                let planes = if hevc.is_monochrome() { 1 } else { 3 };
                 while let Some(picture) = hevc.next_output() {
                     shown += 1;
                     // Dropped after writing, the buffer returns to the decoder.
-                    output(&Shown::hevc(picture)?)?;
+                    output(&Shown::decoded(picture, planes)?)?;
                 }
                 Ok(())
             };
@@ -805,7 +918,7 @@ const MAX_OBU_STREAM_BYTES: u64 = 1 << 31;
 fn decode_ivf_stream<R: BufRead>(
     decoder: &mut Decoder,
     codec: Codec,
-    all_layers: bool,
+    options: StreamOptions,
     input: &mut R,
     shown: &mut u64,
     output: &mut impl FnMut(&Shown) -> Result<(), String>,
@@ -819,16 +932,22 @@ fn decode_ivf_stream<R: BufRead>(
         // written at its own size.
         // Written buffers serve later pictures.
         let mut spare = Vec::new();
-        if all_layers {
-            for layer in decoder
+        if options.all_layers {
+            for mut layer in decoder
                 .decode_all(frame.packet)
                 .map_err(|e| e.to_string())?
             {
+                if !options.monochrome_chroma {
+                    layer.drop_grey_chroma();
+                }
                 *shown += 1;
                 output(&layer)?;
                 spare.extend(layer.into_owned());
             }
-        } else if let Some(frame) = decoder.decode(frame.packet).map_err(|e| e.to_string())? {
+        } else if let Some(mut frame) = decoder.decode(frame.packet).map_err(|e| e.to_string())? {
+            if !options.monochrome_chroma {
+                frame.drop_grey_chroma();
+            }
             *shown += 1;
             output(&frame)?;
             spare.extend(frame.into_owned());
@@ -864,9 +983,13 @@ mod tests {
     fn decode_flags_are_explicit_and_validated() {
         let args = strings(&["--codec", "av1", "--input", "in.ivf", "--output", "out.yuv"]);
         assert_eq!(parse(&args).unwrap().codec, Codec::Av1);
-        assert_eq!(parse(&args).unwrap().film_grain, FilmGrain::Apply);
+        assert_eq!(parse(&args).unwrap().stream, StreamOptions::default());
         let skip = [&args[..], &strings(&["--film-grain", "0"])].concat();
-        assert_eq!(parse(&skip).unwrap().film_grain, FilmGrain::Skip);
+        assert_eq!(parse(&skip).unwrap().stream.film_grain, FilmGrain::Skip);
+        let unbounded = [&args[..], &strings(&["--unbounded", "1"])].concat();
+        assert!(parse(&unbounded).unwrap().stream.unbounded);
+        let luma = [&args[..], &strings(&["--monochrome-chroma", "0"])].concat();
+        assert!(!parse(&luma).unwrap().stream.monochrome_chroma);
         let bench = strings(&["--codec", "h264", "--input", "a", "--bench", "3"]);
         assert_eq!(parse(&bench).unwrap().bench, Some(3));
         for bad in [
@@ -876,12 +999,19 @@ mod tests {
             strings(&["--input", "a", "--input", "b"]),
             strings(&["--unknown", "a"]),
             [&args[..], &strings(&["--film-grain", "2"])].concat(),
+            [&args[..], &strings(&["--unbounded", "2"])].concat(),
             [&args[..], &strings(&["--bench", "3"])].concat(),
             strings(&["--codec", "h264", "--input", "a", "--bench", "0"]),
             [
                 &strings(&["--codec", "vp9"]),
                 &args[2..],
                 &strings(&["--film-grain", "0"]),
+            ]
+            .concat(),
+            [
+                &strings(&["--codec", "vp9"]),
+                &args[2..],
+                &strings(&["--unbounded", "1"]),
             ]
             .concat(),
         ] {

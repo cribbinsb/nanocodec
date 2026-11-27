@@ -300,7 +300,7 @@ fn write_modelled(
 }
 
 /// Read one transform block (layout as for [`write()`]) of a
-/// [`Kind::DCT_ONLY`] frame.
+/// [`Kind::DCT_ONLY`] frame into `coefficients`, which it clears first.
 /// # Errors
 /// As [`read_typed`], and rejects non-DCT transform types.
 pub fn read(
@@ -310,24 +310,44 @@ pub fn read(
     ctx: Context,
     qindex: u8,
 ) -> Result<()> {
-    match read_typed(
+    coefficients.fill(0);
+    let block = read_typed(
         r,
         coefficients,
         tx,
         ctx,
         qindex,
         (Kind::DCT_ONLY.set, LevelCoding::Plain),
-    )? {
+    )?;
+    match block.tx_type {
         TxType::DctDct => Ok(()),
         _ => Err(DecodeError::Unsupported("AV2 non-DCT transform type")),
     }
 }
 
+/// What [`read_typed`] learns of a transform block while reading it, so
+/// the decoder needs no further pass over its levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadBlock {
+    /// The transform type (`DCT_DCT` when all coefficients are zero).
+    pub tx_type: TxType,
+    /// The coded end of block, which is [`end_of_block`] of the levels
+    /// (the level at the end of block is nonzero by definition); 0 for an
+    /// all-zero block.
+    pub eob: usize,
+    /// The block's [`entropy_context`], gathered while reading.
+    pub context: u8,
+}
+
 /// Read one transform block into `coefficients` (layout as for
 /// [`write_typed`]) of a frame with transform set `set` coding luma levels
-/// as `levels`, returning its transform type (`DCT_DCT` when all
-/// coefficients are zero). The coefficients are the coded levels; a TCQ
-/// transform dequantizes them with [`tcq::dequantize`].
+/// as `levels`. The coefficients are the coded levels; a TCQ transform
+/// dequantizes them with [`tcq::dequantize`].
+///
+/// `coefficients` must be all zero: only the positions up to the end of
+/// block are written, so a decoder clears just the blocks it used rather
+/// than every block before reading it (the clear and a scan for nonzero
+/// levels cost 3.0% of decoding our 1080p AV2 stream).
 /// # Errors
 /// Rejects invalid contexts, unsupported combinations, a wrongly sized slice,
 /// level overflow and exhausted input.
@@ -338,17 +358,24 @@ pub fn read_typed(
     ctx: Context,
     qindex: u8,
     (set, levels): (TxSetMode, LevelCoding),
-) -> Result<TxType> {
+) -> Result<ReadBlock> {
     validate(tx, ctx, qindex, coefficients.len())?;
-    coefficients.fill(0);
+    debug_assert!(coefficients.iter().all(|&c| c == 0));
     let source = Source {
         levels: &NO_SOURCE[..tx.coded_len()],
         eob: 0,
         tx_type: TxType::DctDct,
     };
     let block = Block::new(tx, ctx, qindex, (set, levels));
-    code(r, block, source, |pos, value| {
+    let mut context = EntropyContext::default();
+    let (tx_type, eob) = code(r, block, source, |pos, value| {
         coefficients[pos] = value;
+        context.add(pos, value);
+    })?;
+    Ok(ReadBlock {
+        tx_type,
+        eob,
+        context: context.value(),
     })
 }
 
@@ -447,7 +474,7 @@ struct Source<'a> {
     tx_type: TxType,
 }
 
-/// Code one block, returning its transform type. The writer takes every
+/// Code one block, returning its transform type and end of block. The writer takes every
 /// symbol from `source`; the reader reports each nonzero coefficient to
 /// `store`.
 fn code<C: SymbolCoder>(
@@ -455,9 +482,9 @@ fn code<C: SymbolCoder>(
     block: Block,
     source: Source<'_>,
     store: impl FnMut(usize, i32),
-) -> Result<TxType> {
+) -> Result<(TxType, usize)> {
     let Some((eob, tx_type)) = code_block_symbols(coder, block, source)? else {
-        return Ok(TxType::DctDct);
+        return Ok((TxType::DctDct, 0));
     };
     // One walk per level coding, so the plain walk (most blocks of every
     // frame) carries neither the parity tally nor the TCQ state.
@@ -468,7 +495,7 @@ fn code<C: SymbolCoder>(
     } else {
         code_levels::<C, PLAIN_WALK>(coder, block, (source.levels, eob), store)?;
     }
-    Ok(tx_type)
+    Ok((tx_type, eob))
 }
 
 /// Code the all-zero flag and, for a block with levels, its end of block

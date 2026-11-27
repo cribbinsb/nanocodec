@@ -10,6 +10,12 @@
 //! both reference or both not); the frame is output once both are decoded.
 //! A field left unpaired is output as JM writes one: the other field's rows
 //! mid-grey.
+//!
+//! Separately coded colour planes (`separate_colour_plane_flag`, §7.4.2.1.1)
+//! are three monochrome pictures in one: each plane's slices decode into
+//! its own plane with its own macroblock states (`mbs` holds one picture's
+//! worth per plane), are deblocked as luma, and predict from the same plane
+//! of the references.
 
 use std::sync::Arc;
 
@@ -21,9 +27,10 @@ use nc_dsp::Dsp;
 use super::cabac::Cabac;
 use super::cabac_syntax::CabacSyntax;
 use super::cavlc::{CavlcSyntax, CavlcTables};
-use super::deblock::{DeblockContext, RowDeblocker, SliceFilter};
-use super::direct::{DirectContext, dist_scale_factor};
-use super::dpb::{Dpb, ListPicture, NewReference, RefPicture};
+use super::chroma::ChromaArray;
+use super::deblock::{DeblockContext, RowDeblocker, SliceFilter, filter_mbaff};
+use super::direct::{Current, DirectContext, dist_scale_factor};
+use super::dpb::{Dpb, ListPicture, NewReference, RefPicture, field_list};
 use super::inter::{IMPLICIT_LOG2_DENOM, InterContext, InterKernels, Weighting};
 use super::mb::{MbExtra, SliceParams};
 use super::mbstate::MbState;
@@ -36,8 +43,8 @@ use super::reader::Reader;
 use super::recon::ReconContext;
 use super::sample::H264Sample;
 use super::scaling::{self, LevelScale};
-use super::slice::{self, SliceHeader, SliceType};
-use super::slice_data::SliceDecoder;
+use super::slice::{self, SliceHeader, SliceType, WeightTable};
+use super::slice_data::{FieldMbContexts, SliceDecoder};
 use super::slice_groups::MapUnits;
 use super::sps::Sps;
 #[cfg(feature = "analysis")]
@@ -50,9 +57,14 @@ use super::{DecodeError, Planes, Result};
 const REFERENCE_BORDER: usize = 64;
 
 /// The views of `picture`'s planes.
-fn planes<T: H264Sample>(picture: &mut Picture<T>) -> Planes<'_, T> {
+/// The views of `picture`'s planes, colour plane `colour_plane` first (0
+/// unless the planes are coded separately: the plane a monochrome slice
+/// decodes into).
+fn planes<T: H264Sample>(picture: &mut Picture<T>, colour_plane: usize) -> Planes<'_, T> {
     let [y, u, v] = picture.planes_mut();
-    [y.view_mut(), u.view_mut(), v.view_mut()]
+    let mut views = [y.view_mut(), u.view_mut(), v.view_mut()];
+    views.rotate_left(colour_plane);
+    views
 }
 
 /// The output of a decoded first field, kept until its frame is complete.
@@ -110,9 +122,23 @@ struct CurrentPicture<T: H264Sample> {
     first_slice: u32,
     /// Deblocking control of each slice, by `MbState::slice - first_slice`.
     slices: Vec<SliceFilter>,
-    /// The macroblock rows filtered so far.
-    deblocker: RowDeblocker,
-    decoded: usize,
+    /// The macroblock rows filtered so far, per coded colour plane.
+    deblockers: [RowDeblocker; MAX_PLANES],
+    /// Macroblocks decoded so far, per coded colour plane.
+    decoded: [usize; MAX_PLANES],
+}
+
+/// Colour planes a picture may code separately.
+const MAX_PLANES: usize = 3;
+
+impl<T: H264Sample> CurrentPicture<T> {
+    /// Whether every macroblock of every coded plane is decoded.
+    fn complete(&self) -> bool {
+        let mbs = self.sps.picture_mbs(self.header.structure);
+        self.decoded[..self.sps.coded_planes()]
+            .iter()
+            .all(|&n| n == mbs)
+    }
 }
 
 /// The visible window of a decoded picture.
@@ -312,7 +338,7 @@ impl<T: H264Sample> Core<T> {
         }
         self.decode_slice_data(&pps, &header, source)?;
         let current = self.current.as_ref().expect("picture in progress");
-        if current.decoded < current.sps.picture_mbs(current.header.structure) {
+        if !current.complete() {
             return Ok(false);
         }
         self.finish_picture()?;
@@ -379,7 +405,7 @@ impl<T: H264Sample> Core<T> {
         // (and the serials) only for a new size or before serials could
         // wrap. Otherwise a 2 MB rewrite per 1080p picture, which also
         // evicted the reference blocks from the caches.
-        let picture_mbs = sps.picture_mbs(header.structure);
+        let picture_mbs = sps.picture_mbs(header.structure) * sps.coded_planes();
         let picture_slices = u32::try_from(picture_mbs).unwrap_or(u32::MAX);
         if self.slice_serial > u32::MAX - picture_slices {
             // Serials restart: states of earlier pictures must not look
@@ -389,7 +415,7 @@ impl<T: H264Sample> Core<T> {
             self.slice_serial = 0;
         }
         if self.mbs.len() != picture_mbs {
-            let states = self.free_motion(picture_mbs, sps.mbs());
+            let states = self.free_motion(picture_mbs, sps.mbs() * sps.coded_planes());
             let previous = core::mem::replace(&mut self.mbs, states);
             if !previous.is_empty() {
                 self.motion_pool.push(Arc::new(previous));
@@ -405,17 +431,19 @@ impl<T: H264Sample> Core<T> {
             slice_groups,
             first_slice: self.slice_serial + 1,
             slices: Vec::new(),
-            deblocker: RowDeblocker::default(),
-            decoded: 0,
+            deblockers: Default::default(),
+            decoded: [0; MAX_PLANES],
         });
         Ok(())
     }
 
     /// A frame buffer for a new frame or first field.
     fn new_frame(&mut self, sps: &Sps) -> Result<Picture<T>> {
-        let mut picture =
-            self.pool
-                .take(sps.width_mbs * 16, sps.height_mbs * 16, REFERENCE_BORDER)?;
+        let mut picture = self.pool.take_with_format(
+            (sps.width_mbs * 16, sps.height_mbs * 16),
+            sps.format,
+            REFERENCE_BORDER,
+        )?;
         if sps.monochrome {
             // 4:0:0 is output with mid-grey chroma (`1 << (BitDepthC − 1)`).
             let grey = T::from_i32(sps.depths.chroma.mid());
@@ -438,9 +466,11 @@ impl<T: H264Sample> Core<T> {
             Ok(picture) => return Ok(picture),
             Err(shared) => shared,
         };
-        let mut picture = self
-            .pool
-            .take(shared.width(), shared.height(), REFERENCE_BORDER)?;
+        let mut picture = self.pool.take_with_format(
+            (shared.width(), shared.height()),
+            shared.chroma_format(),
+            REFERENCE_BORDER,
+        )?;
         for plane in PlaneIndex::ALL {
             let source = shared.plane(plane).view().every_other_row(parity.index());
             picture
@@ -458,9 +488,11 @@ impl<T: H264Sample> Core<T> {
         let mut picture = match self.pool.reclaim(first.picture) {
             Ok(picture) => picture,
             Err(shared) => {
-                let mut copy = self
-                    .pool
-                    .take(shared.width(), shared.height(), REFERENCE_BORDER)?;
+                let mut copy = self.pool.take_with_format(
+                    (shared.width(), shared.height()),
+                    shared.chroma_format(),
+                    REFERENCE_BORDER,
+                )?;
                 for plane in PlaneIndex::ALL {
                     copy.plane_mut(plane)
                         .view_mut()
@@ -488,6 +520,27 @@ impl<T: H264Sample> Core<T> {
         Ok(())
     }
 
+    /// Record a new slice of the current picture (its deblocking control)
+    /// and return its serial number.
+    fn begin_slice(&mut self, pps: &Pps, header: &SliceHeader) -> Result<u32> {
+        let current = self.current.as_mut().expect("picture in progress");
+        current.slices.push(SliceFilter::new(
+            header.deblock,
+            pps.chroma_qp_offset,
+            header.slice_type == SliceType::B,
+            header.switching.is_some(),
+            current.sps.depths,
+        ));
+        // Within the picture's budget (`start_picture`) unless the stream
+        // has more slices than macroblocks.
+        let coded_planes = current.sps.coded_planes();
+        if current.slices.len() > current.sps.picture_mbs(current.header.structure) * coded_planes {
+            return Err(DecodeError::Malformed("more slices than macroblocks"));
+        }
+        self.slice_serial += 1;
+        Ok(self.slice_serial)
+    }
+
     /// Decode the macroblocks of one slice into the current picture.
     fn decode_slice_data(
         &mut self,
@@ -495,24 +548,11 @@ impl<T: H264Sample> Core<T> {
         header: &SliceHeader,
         source: SliceSource<'_>,
     ) -> Result<()> {
+        let slice_no = self.begin_slice(pps, header)?;
         let current = self.current.as_mut().expect("picture in progress");
         let sps = current.sps.clone();
         let structure = current.header.structure;
         let picture_mbs = sps.picture_mbs(structure);
-        current.slices.push(SliceFilter::new(
-            header.deblock,
-            pps.chroma_qp_offset,
-            header.slice_type == SliceType::B,
-            header.switching.is_some(),
-            sps.depths,
-        ));
-        // Within the picture's budget (`start_picture`) unless the stream
-        // has more slices than macroblocks.
-        if current.slices.len() > picture_mbs {
-            return Err(DecodeError::Malformed("more slices than macroblocks"));
-        }
-        self.slice_serial += 1;
-        let slice_no = self.slice_serial;
         let poc = current.poc.value();
         let coded_size = (current.picture.width(), current.picture.height());
         let list_picture = ListPicture {
@@ -521,22 +561,27 @@ impl<T: H264Sample> Core<T> {
             poc,
         };
         let lists = ref_lists(&self.dpb, header, &list_picture, coded_size)?;
-        let ref_ids: [Vec<Option<u32>>; 2] = lists
-            .each_ref()
-            .map(|list| list.iter().map(|r| r.as_ref().map(|r| r.id)).collect());
-        let direct = (header.slice_type == SliceType::B)
-            .then(|| {
-                DirectContext::new(
-                    (header.direct_spatial, sps.direct_8x8_inference),
-                    [&lists[0], &lists[1]],
-                    &ref_ids[0],
-                    (structure, poc),
-                    (sps.width_mbs, picture_mbs),
-                )
-            })
+        let ref_ids = lists.each_ref().map(|list| ids_of(list));
+        let kind = Current::of(structure, header.mbaff);
+        let size = (sps.width_mbs, picture_mbs);
+        let colour_plane = header.colour_plane;
+        let plane = (colour_plane, sps.coded_planes());
+        let direct = direct_context(header, &sps, (&lists, &ref_ids), (kind, poc), (size, plane))?;
+        let frame_weighting = weighting(
+            header.weights.as_ref(),
+            (header.slice_type, pps),
+            &lists,
+            poc,
+        );
+        let dequantiser = dequantiser(&sps, pps, colour_plane);
+        // MBAFF: the field macroblocks' references by parity.
+        let field_mbs = header
+            .mbaff
+            .then(|| FieldMbLists::new(&lists, header, [current.poc.top, current.poc.bottom]));
+        let field_direct = field_mbs
+            .as_ref()
+            .map(|fields| fields.direct(header, &sps, size))
             .transpose()?;
-        let weighting = weighting(header, pps, &lists, poc);
-        let dequantiser = dequantiser(&sps, pps);
         let params = SliceParams {
             slice_type: header.slice_type,
             num_ref_idx_active: header.num_ref_idx_active,
@@ -544,10 +589,11 @@ impl<T: H264Sample> Core<T> {
             direct: direct.as_ref(),
             transform_8x8_mode: pps.transform_8x8_mode,
             constrained_intra_pred: pps.constrained_intra_pred,
-            monochrome: sps.monochrome,
+            chroma: sps.chroma,
             switching: header.switching.is_some(),
             dequantiser: &dequantiser,
             qp_bd_offset: 6 * sps.depths.luma.above_eight() as i32,
+            transform_bypass: sps.transform_bypass,
             pcm_bits: [sps.depths.luma.bits(), sps.depths.chroma.bits()],
         };
         let recon = ReconContext {
@@ -555,23 +601,36 @@ impl<T: H264Sample> Core<T> {
             inter: InterContext::new(
                 (&self.kernels, &self.dsp),
                 ([&lists[0], &lists[1]], structure),
-                weighting,
-                sps.monochrome,
+                frame_weighting,
+                (sps.chroma, colour_plane),
                 sps.depths,
             ),
             constrained_intra_pred: pps.constrained_intra_pred,
-            monochrome: sps.monochrome,
+            chroma: sps.chroma,
             switching: header.switching,
             depths: sps.depths,
         };
+        let plane_mbs = picture_mbs * colour_plane..picture_mbs * (colour_plane + 1);
+        let pair_fields = field_mbs
+            .as_ref()
+            .zip(field_direct.as_ref())
+            .map(|(fields, directs)| {
+                fields.contexts(
+                    &params,
+                    directs,
+                    (&self.kernels, &self.dsp),
+                    (header, pps, &sps),
+                )
+            });
         let mut decoder = SliceDecoder {
             params,
             recon,
-            planes: picture_planes(planes(&mut current.picture), structure),
+            pair_fields,
+            planes: picture_planes(planes(&mut current.picture, colour_plane), structure),
             slices: &current.slices,
             first_slice: current.first_slice,
-            deblocker: &mut current.deblocker,
-            mbs: &mut self.mbs,
+            deblocker: &mut current.deblockers[colour_plane],
+            mbs: &mut self.mbs[plane_mbs],
             slice_groups: current.slice_groups.as_deref(),
             width_mbs: sps.width_mbs,
             field: structure.is_field(),
@@ -585,8 +644,8 @@ impl<T: H264Sample> Core<T> {
             #[cfg(feature = "analysis")]
             cabac: pps.cabac,
         };
-        decode_macroblocks(&mut decoder, source, (pps, header), &self.cavlc)?;
-        current.decoded += decoder.decoded;
+        decode_macroblocks(&mut decoder, source, (pps, header, sps.chroma), &self.cavlc)?;
+        current.decoded[colour_plane] += decoder.decoded;
         Ok(())
     }
 
@@ -603,7 +662,7 @@ impl<T: H264Sample> Core<T> {
             first_field,
             first_slice,
             slices,
-            mut deblocker,
+            mut deblockers,
             ..
         } = self.current.take().expect("picture in progress");
         #[cfg(feature = "analysis")]
@@ -612,22 +671,28 @@ impl<T: H264Sample> Core<T> {
             s.finish();
         }
         let structure = header.structure;
-        let ctx = DeblockContext {
-            dsp: &self.dsp,
-            mbs: &self.mbs,
-            width_mbs: sps.width_mbs,
-            first_slice,
-            slices: &slices,
-            monochrome: sps.monochrome,
-            depths: sps.depths,
-            field: structure.is_field(),
-        };
         let last_row = sps.picture_height_mbs(structure) - 1;
-        deblocker.filter_through(
-            last_row,
-            &mut picture_planes(planes(&mut picture), structure),
-            &ctx,
-        );
+        let picture_mbs = sps.picture_mbs(structure);
+        for (colour_plane, deblocker) in deblockers.iter_mut().enumerate().take(sps.coded_planes())
+        {
+            let ctx = DeblockContext {
+                dsp: &self.dsp,
+                mbs: &self.mbs[picture_mbs * colour_plane..picture_mbs * (colour_plane + 1)],
+                width_mbs: sps.width_mbs,
+                first_slice,
+                slices: &slices,
+                chroma: sps.chroma,
+                depths: sps.depths,
+                field: structure.is_field(),
+            };
+            if header.mbaff {
+                // Filtered whole, pair by pair (`deblock::filter_mbaff`).
+                filter_mbaff(&mut planes(&mut picture, colour_plane), &ctx);
+            } else {
+                let planes = &mut picture_planes(planes(&mut picture, colour_plane), structure);
+                deblocker.filter_through(last_row, planes, &ctx);
+            }
+        }
         let reset = header.marking.resets();
         if header.reference {
             picture.extend_borders();
@@ -645,6 +710,7 @@ impl<T: H264Sample> Core<T> {
                 picture: picture.clone(),
                 poc: [poc.top, poc.bottom],
                 motion,
+                mbaff: header.mbaff,
             };
             self.dpb
                 .mark(header.frame_num, reference, &header.marking)?;
@@ -703,23 +769,37 @@ impl<T: H264Sample> Core<T> {
 fn decode_macroblocks<T: H264Sample>(
     decoder: &mut SliceDecoder<'_, T>,
     source: SliceSource<'_>,
-    (pps, header): (&Pps, &SliceHeader),
+    (pps, header, chroma): (&Pps, &SliceHeader, ChromaArray),
     cavlc: &CavlcTables,
 ) -> Result<()> {
+    let first = header.first_mb;
     match source {
         SliceSource::Whole(reader) if pps.cabac => {
-            let engine = Cabac::new(
-                reader.remaining_bytes(),
-                header.slice_type,
-                header.cabac_init_idc,
-                header.qp,
-            )?;
-            decoder.cabac(&mut CabacSyntax::new(engine), header.first_mb)?;
+            let data = reader.remaining_bytes();
+            let init = (header.slice_type, header.cabac_init_idc);
+            let engine = Cabac::new(data, init, header.qp, chroma.is_444())?;
+            let mut syntax = CabacSyntax::new(engine, chroma);
+            if header.mbaff {
+                decoder.cabac_pairs(&mut syntax, first)?;
+            } else {
+                decoder.cabac(&mut syntax, first)?;
+            }
         }
         SliceSource::Whole(reader) => {
-            decoder.cavlc(&mut CavlcSyntax::<T>::new(reader, cavlc), header.first_mb)?;
+            let mut syntax = CavlcSyntax::<T>::new(reader, cavlc, chroma);
+            if header.mbaff {
+                decoder.cavlc_pairs(&mut syntax, first)?;
+            } else {
+                decoder.cavlc(&mut syntax, first)?;
+            }
+        }
+        SliceSource::Partitioned(_) if header.mbaff => {
+            return Err(DecodeError::Unsupported(
+                "H264 MBAFF frames with data partitioning",
+            ));
         }
         SliceSource::Partitioned(readers) => {
+            // Data partitioning is the Extended profile's: 4:2:0 (A.2.3).
             let cip = pps.constrained_intra_pred;
             let mut syntax = PartitionedCavlc::<T>::new(readers, cavlc, cip);
             decoder.cavlc(&mut syntax, header.first_mb)?;
@@ -760,12 +840,12 @@ fn residual_reader<'a>(rbsp: Option<&'a [u8]>, pps: &Pps) -> Result<Reader<'a>> 
 
 /// The weighting of a slice's predictions (§8.4.2.3).
 fn weighting<'a, T: H264Sample>(
-    header: &'a SliceHeader,
-    pps: &Pps,
+    table: Option<&'a WeightTable>,
+    (slice_type, pps): (SliceType, &Pps),
     lists: &[Vec<Option<RefPicture<T>>>; 2],
     poc: i64,
 ) -> Weighting<'a> {
-    match (&header.weights, header.slice_type) {
+    match (table, slice_type) {
         (Some(table), _) => Weighting::Explicit(table),
         (None, SliceType::B) if pps.weighted_bipred == BipredWeights::Implicit => {
             Weighting::Implicit(implicit_weights(lists, poc))
@@ -774,14 +854,151 @@ fn weighting<'a, T: H264Sample>(
     }
 }
 
-/// The scaling of the active parameter sets (§7.4.2.1.1.1, §8.5.9).
-fn dequantiser(sps: &Sps, pps: &Pps) -> Dequantiser {
+/// A slice's two reference lists.
+type Lists<T> = [Vec<Option<RefPicture<T>>>; 2];
+/// The identities of their pictures.
+type ListIds = [Vec<Option<u32>>; 2];
+
+/// The references of the field macroblocks of an MBAFF slice, by parity
+/// (§8.4.2.1): their lists, the lists' identities, the current frame's
+/// field order counts and the explicit weights by field reference index
+/// (`refIdx >> 1`, §8.4.2.3).
+struct FieldMbLists<T: H264Sample> {
+    lists: [Lists<T>; 2],
+    ids: [ListIds; 2],
+    pocs: [i64; 2],
+    weights: Option<WeightTable>,
+}
+
+impl<T: H264Sample> FieldMbLists<T> {
+    fn new(frame_lists: &Lists<T>, header: &SliceHeader, pocs: [i64; 2]) -> Self {
+        let lists = Parity::BOTH.map(|p| frame_lists.each_ref().map(|list| field_list(list, p)));
+        let ids = lists
+            .each_ref()
+            .map(|by_list| by_list.each_ref().map(|list| ids_of(list)));
+        Self {
+            lists,
+            ids,
+            pocs,
+            weights: header.weights.as_ref().map(WeightTable::by_field),
+        }
+    }
+
+    /// Each parity's direct prediction.
+    fn direct(
+        &self,
+        header: &SliceHeader,
+        sps: &Sps,
+        size: (usize, usize),
+    ) -> Result<[Option<DirectContext<'_>>; 2]> {
+        let [top, bottom] = [0, 1].map(|p| {
+            direct_context(
+                header,
+                sps,
+                (&self.lists[p], &self.ids[p]),
+                (Current::PairField(Parity::BOTH[p]), self.pocs[p]),
+                // One coded plane (`slice::check_mbaff`).
+                (size, (0, 1)),
+            )
+        });
+        Ok([top?, bottom?])
+    }
+
+    /// The field macroblocks' slice parameters and reconstruction, from
+    /// the frame macroblocks' `frame` ones.
+    fn contexts<'a>(
+        &'a self,
+        frame: &SliceParams<'a>,
+        directs: &'a [Option<DirectContext<'a>>; 2],
+        (kernels, dsp): (&'a InterKernels, &'a Dsp),
+        (header, pps, sps): (&SliceHeader, &Pps, &Sps),
+    ) -> FieldMbContexts<'a, T> {
+        let params = |p: usize| SliceParams {
+            num_ref_idx_active: header.num_ref_idx_active.map(|n| 2 * n),
+            ref_ids: [&self.ids[p][0], &self.ids[p][1]],
+            direct: directs[p].as_ref(),
+            ..*frame
+        };
+        let recon = |p: usize| ReconContext {
+            dsp,
+            inter: InterContext::new(
+                (kernels, dsp),
+                (
+                    [&self.lists[p][0], &self.lists[p][1]],
+                    Structure::Field(Parity::BOTH[p]),
+                ),
+                weighting(
+                    self.weights.as_ref(),
+                    (header.slice_type, pps),
+                    &self.lists[p],
+                    self.pocs[p],
+                ),
+                // MBAFF frames are 4:2:0 or 4:0:0 here (`slice::parse`).
+                (sps.chroma, 0),
+                sps.depths,
+            ),
+            constrained_intra_pred: pps.constrained_intra_pred,
+            chroma: sps.chroma,
+            depths: sps.depths,
+            switching: header.switching,
+        };
+        FieldMbContexts {
+            params: [params(0), params(1)],
+            recon: [recon(0), recon(1)],
+        }
+    }
+}
+
+/// The identities of a list's pictures (`None`: no picture).
+fn ids_of<T: H264Sample>(list: &[Option<RefPicture<T>>]) -> Vec<Option<u32>> {
+    list.iter().map(|r| r.as_ref().map(|r| r.id)).collect()
+}
+
+/// The direct prediction of a B slice's `kind` of picture or macroblock
+/// with order count `poc` from `lists` (identities `ids`); `None` for other
+/// slices.
+fn direct_context<'a, T: H264Sample>(
+    header: &SliceHeader,
+    sps: &Sps,
+    (lists, ids): (&'a Lists<T>, &'a ListIds),
+    (kind, poc): (Current, i64),
+    (size, plane): ((usize, usize), (usize, usize)),
+) -> Result<Option<DirectContext<'a>>> {
+    (header.slice_type == SliceType::B)
+        .then(|| {
+            DirectContext::new(
+                (header.direct_spatial, sps.direct_8x8_inference),
+                [&lists[0], &lists[1]],
+                &ids[0],
+                (kind, poc),
+                size,
+                plane,
+            )
+        })
+        .transpose()
+}
+
+/// The scaling of the active parameter sets (§7.4.2.1.1.1, §8.5.9) for
+/// colour plane `colour_plane` (0 unless coded separately).
+fn dequantiser(sps: &Sps, pps: &Pps, colour_plane: usize) -> Dequantiser {
     let scaling = match &pps.scaling {
         Some(parsed) => scaling::resolve(parsed, sps.scaling_present.then_some(&sps.scaling)),
         None => sps.scaling,
     };
     let depths = [sps.depths.luma, sps.depths.chroma];
-    Dequantiser::new(LevelScale::new(&scaling), pps.chroma_qp_offset, depths)
+    // The 8x8 lists of each component that codes with them.
+    let lists_8x8 = scaling::LISTS_8X8_PER_PLANE
+        * if sps.chroma.is_444() || sps.separate_planes {
+            MAX_PLANES
+        } else {
+            1
+        };
+    Dequantiser::new(
+        LevelScale::new(&scaling, lists_8x8),
+        pps.chroma_qp_offset,
+        depths,
+        (sps.chroma, colour_plane),
+    )
 }
 
 /// The reference lists of a slice of picture `current` (§8.2.4), whose

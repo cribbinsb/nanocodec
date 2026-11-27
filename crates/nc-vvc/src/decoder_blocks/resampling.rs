@@ -50,11 +50,17 @@ pub(crate) struct Geometry {
 impl Geometry {
     /// The geometry of pictures coded with `parameters` of `sequence`.
     pub fn of(sequence: &Sequence, parameters: &PictureParameters) -> Self {
-        // SubWidthC and SubHeightC: 2 in 4:2:0, 1 in 4:0:0 (Table 2).
-        let unit = if sequence.chroma { 2 } else { 1 };
+        // Offsets in units of SubWidthC and SubHeightC (Table 2).
+        let units = sequence.crop_units().map(|v| v as i32);
+        let w = parameters.scaling_window;
         Self {
             size: parameters.dimensions.map(|v| v as i32),
-            window: parameters.scaling_window.map(|v| v * unit),
+            window: [
+                w[0] * units[0],
+                w[1] * units[0],
+                w[2] * units[1],
+                w[3] * units[1],
+            ],
         }
     }
 
@@ -124,24 +130,32 @@ impl Scaling {
         }
     }
 
-    /// The scaled reference position of sample `position` of a plane with
-    /// subsampling `shift` on `axis`, moved by `vector` (1/16 luma sample),
-    /// in 1/1024 samples of the reference plane (§8.5.6.3.1 `refxSbL`...,
+    /// The scaled reference position of sample `position` on `axis` of a
+    /// plane with subsampling `shift` there (0 or 1), moved by `vector`
+    /// (1/16 luma samples, or with `chroma` 1/32 chroma samples), in 1/1024
+    /// samples of the reference plane (§8.5.6.3.1 `refxSbL`, `refxSbC`...,
     /// VTM `x0Int`).
-    fn origin(self, axis: usize, position: usize, vector: i32, shift: u32) -> i64 {
+    fn origin(
+        self,
+        axis: usize,
+        position: usize,
+        vector: i32,
+        (shift, chroma): (u32, bool),
+    ) -> i64 {
         let ratio = i64::from(self.ratio[axis]);
         let position = (((position as i64) << shift) - i64::from(self.current[axis])) >> shift;
         // Chroma sample positions not collocated with luma move by half a
         // luma sample's worth of the ratio's change.
-        let offset = if shift > 0 && !self.collocated[axis] {
+        let offset = if chroma && !self.collocated[axis] {
             8 * (ratio - i64::from(UNIT_RATIO))
         } else {
             0
         };
-        let scaled = ((position << (MV_BITS + shift)) + i64::from(vector)) * ratio + offset;
+        let vector_bits = MV_BITS + u32::from(chroma);
+        let scaled = ((position << vector_bits) + i64::from(vector)) * ratio + offset;
         // From 1/16 (luma) or 1/32 (chroma) samples times the ratio to
         // 1/1024 samples, rounding half away from zero.
-        let bits = RATIO_BITS + MV_BITS + shift - VVC_RPR_POSITION_BITS;
+        let bits = RATIO_BITS + vector_bits - VVC_RPR_POSITION_BITS;
         let magnitude = (scaled.abs() + (1 << (bits - 1))) >> bits;
         let rounded = if scaled < 0 { -magnitude } else { magnitude };
         rounded + (i64::from(self.reference[axis]) << (VVC_RPR_POSITION_BITS - shift))
@@ -171,17 +185,17 @@ pub(super) fn predict<T: Pixel>(
     dsp: DepthKernels<'_>,
     reference: &Plane<T>,
     (scaling, vector): (Scaling, crate::motion::Mv16),
-    region: Region,
+    (region, (sx, sy)): (Region, (usize, usize)),
     (luma, half, affine): (bool, bool, bool),
     area: Option<[i32; 4]>,
     out: &mut [i16],
 ) {
-    let shift = u32::from(!luma);
+    let shifts = [(sx as u32, !luma), (sy as u32, !luma)];
     let step = scaling.ratio.map(|ratio| (ratio + 8) >> 4);
     // The anchor's position, then whole steps to the region (as one
     // prediction of the whole block would place them).
     let origin = |axis: usize, anchor: usize, position: usize, vector: i32| {
-        let start = scaling.origin(axis, anchor, vector, shift)
+        let start = scaling.origin(axis, anchor, vector, shifts[axis])
             + (position - anchor) as i64 * i64::from(step[axis]);
         start.clamp(-ORIGIN_LIMIT, ORIGIN_LIMIT) as i32
     };
@@ -252,10 +266,12 @@ mod tests {
             .unwrap()
             .unwrap();
         // Luma sample 8 moved by one sample: reference sample 18.
-        assert_eq!(double.origin(0, 8, 16, 0), 18 * unit);
+        assert_eq!(double.origin(0, 8, 16, (0, false)), 18 * unit);
         // Chroma sample 4 moved by half a chroma sample: 9, plus the offset
         // of the sited chroma (horizontal) but not the collocated (vertical).
-        assert_eq!(double.origin(0, 4, 16, 1), 9 * unit + unit / 4);
-        assert_eq!(double.origin(1, 4, 16, 1), 9 * unit);
+        assert_eq!(double.origin(0, 4, 16, (1, true)), 9 * unit + unit / 4);
+        assert_eq!(double.origin(1, 4, 16, (1, true)), 9 * unit);
+        // 4:4:4 chroma (vector in 1/32 samples) lands where luma does.
+        assert_eq!(double.origin(1, 8, 32, (0, true)), 18 * unit);
     }
 }

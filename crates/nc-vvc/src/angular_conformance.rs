@@ -219,6 +219,7 @@ impl ForcedFrame {
                 &ChromaQpTable::identity(),
                 headers::Tools::default(),
                 None,
+                0,
             ),
             &mut packet,
         );

@@ -40,8 +40,11 @@
 //! off, the model's strength and a short shared ladder on sparser rows.
 
 use nc_common::decode::{BitReader, DecodeError, Result};
-use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, CdefBlock, CdefLines, CdefSets, CdefSource, CdefStrengths, CdefUnit, Dsp};
+use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView, PlaneViewMut, Sample};
+use nc_dsp::{
+    BlockSize, CdefBlock, CdefLines, CdefSets, CdefSource, CdefStrengths, CdefUnit, DepthKernels,
+    Dsp, Pixel,
+};
 
 use crate::block_state::BlockState;
 use crate::cdf_models::TileCdfs;
@@ -626,8 +629,8 @@ fn filtered_units(
 /// The reusable buffers of [`filter_picture`]: nc-dsp's staged band state
 /// and one band's unit list.
 #[derive(Debug, Default)]
-pub(crate) struct PictureFilterScratch {
-    lines: CdefLines,
+pub(crate) struct PictureFilterScratch<T: Sample = u8> {
+    lines: CdefLines<T>,
     units: Vec<CdefUnit>,
 }
 
@@ -637,12 +640,16 @@ pub(crate) struct PictureFilterScratch {
 /// strength set of the 8×8 unit at a luma position, or `None` where the
 /// unit is left alone ([`skipped_or_set`] for our block layer: the
 /// selection of [`filtered_units`], directions found by the driver).
-pub(crate) fn filter_picture(
-    picture: &mut Picture,
+///
+/// Deeper pictures (the general decoder's) filter at `kernels`' depth:
+/// strengths and damping scale with it there (dav2d `cdef_slice`'s
+/// `bitdepth_min_8`).
+pub(crate) fn filter_picture<T: Pixel>(
+    picture: &mut Picture<T>,
     unit_set: impl Fn(usize, usize) -> Option<u8>,
     params: CdefParams,
-    dsp: &Dsp,
-    scratch: &mut PictureFilterScratch,
+    kernels: DepthKernels<'_>,
+    scratch: &mut PictureFilterScratch<T>,
 ) {
     if !params.filters() {
         return;
@@ -671,7 +678,7 @@ pub(crate) fn filter_picture(
                 }
             }
         }
-        dsp.cdef_filter_band(lines, picture, rows, units, &sets);
+        kernels.cdef_filter_band(lines, picture, rows, units, &sets);
     }
 }
 

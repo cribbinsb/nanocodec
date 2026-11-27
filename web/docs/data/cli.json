@@ -11,7 +11,7 @@
     {"flag": "--timestamps", "value": "FILE", "help": "Capture time of each frame (mkvmerge timestamp format v2); rate control budgets the real frame intervals."},
     {"flag": "--resize", "value": "FRAME:WxH", "help": "The input's frames have this size from FRAME on (a key frame with new headers); repeatable."}]},
    {"title": "Output", "options": [
-    {"flag": "--output", "value": "PATH", "help": "The stream: IVF for AV1, VP9 and AV2, Annex-B for H.264, HEVC and VVC; `-` writes stdout."},
+    {"flag": "--output", "value": "PATH", "help": "The stream: IVF for AV1, VP9 and AV2, Annex-B for H.264, HEVC and VVC; `-` writes stdout. A path ending .mp4/.m4v (MP4), .mkv (Matroska) or .webm (VP9, AV1) writes that container, with every coded frame's time (held frames included) and key-frame index (not AV2)."},
     {"flag": "--recon", "value": "PATH", "help": "The reconstruction of every coded frame (I420)."},
     {"flag": "--display-recon", "value": "PATH", "help": "One picture per input frame, as a decoder shows it: a frame left uncoded repeats the last one."},
     {"flag": "--timestamps-out", "value": "FILE", "help": "The time of every coded frame."},
@@ -39,7 +39,7 @@
    {"title": "Key frames and resilience", "options": [
     {"flag": "--intra-period", "value": "N", "help": "A key frame every N frames (default: every 10 seconds of video)."},
     {"flag": "--keyframe", "value": "FRAME", "help": "Code input frame FRAME as a key frame, as a receiver's request would; repeatable."},
-    {"flag": "--intra-refresh", "value": "FRAMES", "help": "Intra refresh sweep over this many frames in place of periodic key frames (`refresh.period`). With --temporal-layers 2|3 or --scalability LxT2/T3 the layers are fixed and the sweep runs on the base layer. Not with spatial layers, VP9 or AV2."},
+    {"flag": "--intra-refresh", "value": "FRAMES", "help": "Intra refresh sweep over this many frames in place of periodic key frames (`refresh.period`). With --temporal-layers 2|3 or --scalability LxT2/T3 the layers are fixed and the sweep runs on the base layer. Not with spatial layers, VP9 or AV2. Each sweep's first frame is a recovery point (H.264/HEVC SEI, VVC GDR picture); VVdeC-based players skip the first refresh sweep after a stream start (spec-conformant per H.266 §8.1.1/§8.1.2)."},
     {"flag": "--ltr-interval", "value": "FRAMES", "help": "Mark a long-term reference every N frames, for loss recovery (`ltr.interval`)."},
     {"flag": "--temporal-layers", "value": "1|2|3", "help": "Hierarchical-P temporal layers; the top layer is droppable. Not with --scalability."},
     {"flag": "--scalability", "value": "LxTy[_KEY]", "help": "Scalability mode L1T1..L3T3: spatial layers (L2, L3: 2:1 steps) and temporal layers in one stream; `_KEY` codes K-SVC."}]},
@@ -78,7 +78,9 @@
     {"flag": "--bench", "value": "N", "help": "Time N in-process decodes of the stream in memory (JSON lines)."},
     {"flag": "--film-grain", "value": "0|1", "help": "AV1: 0 shows frames without film grain."},
     {"flag": "--operating-point", "value": "N", "help": "AV1 or VP9 operating point to decode."},
-    {"flag": "--all-layers", "value": "0|1", "help": "AV1 or VP9: 1 writes every spatial layer's picture."}]}]},
+    {"flag": "--all-layers", "value": "0|1", "help": "AV1 or VP9: 1 writes every spatial layer's picture."},
+    {"flag": "--unbounded", "value": "0|1", "help": "AV1: 1 decodes frames beyond the level 6.3 size bound (conformance streams)."},
+    {"flag": "--monochrome-chroma", "value": "0|1", "help": "AV1: 0 writes monochrome pictures as luma only (aomdec --rawvideo, dav1d)."}]}]},
   {"name": "extract", "about": "Keep a temporal or spatial sub-stream of a stream, without re-encoding.", "groups": [
    {"title": "Options", "options": [
     {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format. Required."},
@@ -106,7 +108,9 @@
     {"flag": "--output", "value": "PATH", "help": "IVF (AV1, VP9) or Annex B."},
     {"flag": "--payload-type", "value": "PT", "help": "Keep only this payload type."},
     {"flag": "--dd-id", "value": "ID|none", "help": "Dependency Descriptor extension id (AV1 default 1, others none)."},
-    {"flag": "--layers", "value": "S:T", "help": "Forward only spatial layers 0..S and temporal layers 0..T first, by the Dependency Descriptor, as a forwarding server would."},
+    {"flag": "--layers", "value": "S:T", "help": "Forward only spatial layers 0..S and temporal layers 0..T first, by the Dependency Descriptor (VP9 without one: its payload descriptor), as a forwarding server would."},
+    {"flag": "--inter-layer", "value": "full|key", "help": "VP9 --layers: upper layers predict from the layer below on every picture (full, default) or on key pictures only (key: K-SVC)."},
+    {"flag": "--forward", "value": "PATH", "help": "With --layers: also write the forwarded packets (pcap for .pcap, otherwise RFC 4571)."},
     {"flag": "--deliver-after-loss", "value": "", "help": "Keep delivering after a loss instead of waiting for a key frame."}]}]},
   {"name": "session", "about": "Encoder and receiver stepped by commands on stdin (encode options, no --output).", "groups": [
    {"title": "Options", "options": [

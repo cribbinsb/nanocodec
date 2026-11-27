@@ -1,12 +1,15 @@
 //! H.266 SPS coding-tool flags and their conditionally present parameters.
 use super::{DecodeError, Reader, Result, rpl};
-use nc_common::BitDepth;
+use nc_common::{BitDepth, ChromaFormat};
 
 /// The largest QP (`QpY`, chroma QPs) at every depth (H.266 §7.4.3.4).
 const MAX_QP: i32 = 63;
-/// The deepest `QpBdOffset` of the Main 10 profiles (10 bits): the chroma
-/// QP tables hold `−QP_TABLE_LOW ..= 63`.
-pub(crate) const QP_TABLE_LOW: i32 = 12;
+/// The deepest `QpBdOffset` (16 bits, Main 16 4:4:4): the chroma QP
+/// tables hold `−QP_TABLE_LOW ..= 63`.
+pub(crate) const QP_TABLE_LOW: i32 = 48;
+/// `MaxTbLog2SizeY` with `sps_max_luma_transform_size_64_flag`, which
+/// excludes the adaptive colour transform (§7.3.2.4).
+const MAX_TRANSFORM_LOG2: u8 = 6;
 /// Entries of a chroma QP table.
 const QP_TABLE_SIZE: usize = (QP_TABLE_LOW + MAX_QP + 1) as usize;
 
@@ -148,14 +151,24 @@ pub(crate) struct Tools {
     pub mrl: bool,
     pub mip: bool,
     pub cclm: bool,
+    /// `sps_chroma_horizontal_collocated_flag` and
+    /// `sps_chroma_vertical_collocated_flag` (both 1 unless 4:2:0 says
+    /// otherwise, §7.4.3.4).
     pub chroma_collocated: [bool; 2],
     pub palette: bool,
+    /// `sps_act_enabled_flag`: the adaptive colour transform (4:4:4 only).
+    pub act: bool,
     pub min_qp_ts: u8,
     pub ibc: bool,
     pub max_ibc_merge: u8,
     pub ladf: Vec<(u16, i8)>,
     pub scaling_list: bool,
     pub scaling_lfnst_disabled: bool,
+    /// With ACT, the scaling matrices apply in one colour space only: the
+    /// value of `sps_scaling_matrix_designated_colour_space_flag` (`Some`
+    /// when `sps_scaling_matrix_for_alternative_colour_space_disabled_flag`
+    /// is set), compared with a CU's `cu_act_enabled_flag` (§8.7.3).
+    pub act_scaling: Option<bool>,
     pub dependent_quant: bool,
     pub sign_hiding: bool,
     pub virtual_boundaries: bool,
@@ -163,15 +176,17 @@ pub(crate) struct Tools {
     pub boundaries: [Vec<u32>; 2],
 }
 impl Tools {
+    /// `format`: the chroma format, `None` when monochrome.
     pub fn parse(
         r: &mut Reader<'_>,
-        (chroma, depth): (bool, BitDepth),
+        (format, depth, max_transform_log2): (Option<ChromaFormat>, BitDepth, u8),
         ctu_log2: u32,
         poc_bits: u32,
         dimensions: [u32; 2],
         transforms: &Transforms,
         refers_to_vps: bool,
     ) -> Result<Self> {
+        let chroma = format.is_some();
         let mut t = Self::default();
         t.sao = r.flag()?;
         t.alf = r.flag()?;
@@ -237,11 +252,7 @@ impl Tools {
         t.isp = r.flag()?;
         t.mrl = r.flag()?;
         t.mip = r.flag()?;
-        t.cclm = chroma && r.flag()?;
-        if chroma {
-            t.chroma_collocated = [r.flag()?, r.flag()?];
-        }
-        t.palette = r.flag()?;
+        t.parse_chroma_tools(r, format, max_transform_log2)?;
         if transforms.skip_log2.is_some() || t.palette {
             t.min_qp_ts = r.ue(8, "VVC minimum transform skip QP")? as u8;
         }
@@ -252,6 +263,11 @@ impl Tools {
         t.parse_ladf(r, depth)?;
         t.scaling_list = r.flag()?;
         t.scaling_lfnst_disabled = t.scaling_list && transforms.lfnst && r.flag()?;
+        if t.act && t.scaling_list && r.flag()? {
+            // sps_scaling_matrix_for_alternative_colour_space_disabled_flag,
+            // then sps_scaling_matrix_designated_colour_space_flag.
+            t.act_scaling = Some(r.flag()?);
+        }
         t.dependent_quant = r.flag()?;
         t.sign_hiding = r.flag()?;
         t.virtual_boundaries = r.flag()?;
@@ -274,21 +290,43 @@ impl Tools {
         }
         Ok(t)
     }
+    /// CCLM, the chroma sample siting, palette and ACT flags (H.266
+    /// §7.3.2.4): siting is coded only for 4:2:0, ACT only for 4:4:4 without
+    /// 64-sample transforms.
+    fn parse_chroma_tools(
+        &mut self,
+        r: &mut Reader<'_>,
+        format: Option<ChromaFormat>,
+        max_transform_log2: u8,
+    ) -> Result<()> {
+        self.cclm = format.is_some() && r.flag()?;
+        self.chroma_collocated = if format == Some(ChromaFormat::Yuv420) {
+            [r.flag()?, r.flag()?]
+        } else {
+            [true; 2]
+        };
+        self.palette = r.flag()?;
+        self.act = format == Some(ChromaFormat::Yuv444)
+            && max_transform_log2 != MAX_TRANSFORM_LOG2
+            && r.flag()?;
+        Ok(())
+    }
     /// The LADF intervals (H.266 §7.3.2.4): lower bounds are sample levels
     /// of `depth` (`sps_ladf_delta_threshold_minus1` up to `2^BitDepth − 3`).
     fn parse_ladf(&mut self, r: &mut Reader<'_>, depth: BitDepth) -> Result<()> {
         if r.flag()? {
             let count = r.bits(2)? + 2;
             self.ladf.push((0, r.se(-63, 63, "VVC LADF offset")? as i8));
-            let mut lower = 0;
-            let largest = depth.max() as u16;
+            // The sum is checked in 32 bits: two 16-bit deltas overflow u16.
+            let mut lower = 0u32;
+            let largest = depth.max() as u32;
             for _ in 1..count {
                 let offset = r.se(-63, 63, "VVC LADF offset")? as i8;
-                lower += r.ue(u32::from(largest) - 2, "VVC LADF threshold")? as u16 + 1;
+                lower += r.ue(largest - 2, "VVC LADF threshold")? + 1;
                 if lower > largest {
                     return Err(DecodeError::Malformed("VVC LADF interval"));
                 }
-                self.ladf.push((lower, offset));
+                self.ladf.push((lower as u16, offset));
             }
         }
         Ok(())

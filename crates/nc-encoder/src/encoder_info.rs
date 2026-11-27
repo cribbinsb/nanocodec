@@ -10,8 +10,12 @@
 //! carries the sequence headers ([`crate::CodecBackend::set_encoder_info`]):
 //! the headers are repeated at every key so a receiver can start there, and
 //! the message rides with them (about 100-250 bytes per key; x264 writes
-//! its much longer one on the first frame only). VP9 has no SEI or metadata
-//! syntax, so its streams carry none.
+//! its much longer one on the first frame only). AV1 and AV2 write it with
+//! the first key frame's sequence header only (again after the settings
+//! change, a rate change say): their message is a metadata
+//! OBU of a private type, which dav1d logs at every occurrence ("Unknown
+//! Metadata OBU type 6"), and libaom and SVT-AV1 write none. VP9 has no SEI
+//! or metadata syntax, so its streams carry none.
 //!
 //! The text is deterministic (no time, host or commit), so identical
 //! settings code identical streams on every build of one release: stream
@@ -37,7 +41,7 @@
 
 use std::fmt::Write as _;
 
-use crate::config::{Codec, EncoderConfig};
+use crate::config::{Codec, EncoderConfig, StreamRate};
 use crate::params::{ParamOverrides, SpatialParams, StreamParams};
 use crate::presets::{preset_params, speeds};
 use crate::rate_control::RateControlConfig;
@@ -93,6 +97,12 @@ impl EncoderInfo {
     /// Note the rate control now in force (`None`: a fixed quantizer).
     pub fn set_rate(&mut self, rate: Option<RateControlConfig>) {
         self.rate = rate;
+    }
+
+    /// The delivery rate of the rate control in force, `None` at a fixed
+    /// quantizer.
+    pub fn stream_rate(&self) -> Option<StreamRate> {
+        self.rate.as_ref().map(RateControlConfig::stream_rate)
     }
 
     /// The message payload for a stream coded at fixed `quantizer` (when

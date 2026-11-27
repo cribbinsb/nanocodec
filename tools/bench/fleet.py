@@ -14,7 +14,8 @@ the jobs' frames, `box.py`, `score.py` and the `nceval` modules they import).
 must run in a memory-capped scope). The jobs wait in one queue (`WorkQueue`); each slot
 launches a box (c8i.2xlarge spot by default, its zones taken in turn), which takes small
 units of one clip's jobs from its inbox. Every POLL_S the driver checkpoints the box's new
-records and streams to the PC and tops up its inbox with about INBOX_SECONDS of work. A job is
+records and streams to the PC (`Session.download_new`: tar batches over parallel ssh links)
+and tops up its inbox with about INBOX_SECONDS of work. A job is
 settled only when its record, with its stream's SHA-256 (and the stream itself, unless a
 re-timing), is on the PC and a timing reference follows it on the same box, so a double run
 is harmless. A box that is reclaimed, stalls, gets a spot notice (box.py then stops and codes
@@ -945,6 +946,9 @@ def score_box(run: Path, series: str, index: int, a, stop: threading.Event | Non
     else:
         done = scored(base)
         encodes = [r for r in encodes if needs_score(r, done, a.rescore)]
+    # timing check jobs (`check-...|family|clip|rate`) are timed, never scored: their id has the
+    # family where a clip belongs, and a box staged them as clips (2026-11-27)
+    encodes = [r for r in encodes if not r["id"].startswith("check")]
     clips = sorted({r["id"].split("|")[1] for r in encodes})
     mine = set(clips[index::a.boxes])  # whole clips per box: only its clips are uploaded
     # a replacement box skips what this slot's earlier boxes already scored (checkpointed)
@@ -1344,17 +1348,18 @@ def require_capped_scope() -> None:
 
 
 def score(a) -> None:
-    """Spot scoring boxes as threads of this process, then the scores merged; with `--local`,
-    this PC's GPU scoring service instead (`localscore`, BP-4.0 D16)."""
+    """This PC's GPU scoring service (`localscore`, BP-4.0 D16), by default; with `--cloud`
+    (an explicit choice, never a fallback: D16's labelled cloud CPU scoring, and V27's parity
+    sample), spot scoring boxes as threads of this process, then the scores merged."""
     require_capped_scope()
     check_free_disk(a.run)
     base = a.run / "series" / a.series
     with open(base / "score-passes.jsonl", "a") as f:
         f.write(json.dumps({"tag": a.tag, "commit": commit(),
-                            "backend": "vmafx" if a.local else "libvmaf",
-                            "types": None if a.local else a.types,
+                            "backend": "libvmaf" if a.cloud else "vmafx",
+                            "types": a.types if a.cloud else None,
                             "score_bin": str(a.score_bin or "stage/bin")}) + "\n")
-    if a.local:
+    if not a.cloud:
         localscore.score_local(a, scored, needs_score, score)
         return
     logs = {i: base / f"score{a.tag}{i}.log" for i in range(a.boxes)}
@@ -2395,11 +2400,13 @@ def add_run_args(rn) -> None:
     rn.add_argument("--discard-streams", action="store_true",
                     help="(run) a re-timing run: hashes and sizes only, no streams kept")
     rn.add_argument("--rescore", help="(score) score these families again (fnmatch)")
-    rn.add_argument("--local", action="store_true",
-                    help="(score) on this PC's GPU scoring service (BP-4.0 D16); refuses a "
-                         "scorer build not verified by tools/bench/verify_scorer.py (D19)")
+    rn.add_argument("--cloud", action="store_true",
+                    help="(score) on spot cloud CPU boxes (libvmaf), an explicit choice only "
+                         "(BP-4.0 D16's labelled fallback). Default: this PC's GPU scoring "
+                         "service, which refuses a scorer build not verified by "
+                         "tools/bench/verify_scorer.py (D19) and never falls back to the cloud")
     rn.add_argument("--follow", type=float, default=0, metavar="MINUTES",
-                    help="(score --local) repeat passes while streams arrive; stop after this "
+                    help="(score on the PC) repeat passes while streams arrive; stop after this "
                          "many minutes with nothing new")
     rn.add_argument("--verify-scorer", action="store_true", help=argparse.SUPPRESS)
     rn.add_argument("--tag", default="", help="(score) a name for this scoring pass's dirs")

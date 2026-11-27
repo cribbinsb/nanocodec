@@ -345,6 +345,9 @@ mod tests {
         expected.set("rate.first_key_model", 2.0);
         // Fast pins in-frame steering off (medium adopted it in Brief 21, 2026-11-24).
         expected.set("rate.in_frame", 0.0);
+        // Fast keeps the reuse offsets on keys (the Default's 0 is not
+        // screened on it, 2026-11-27).
+        expected.set("persist.reuse_keys", 2.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected

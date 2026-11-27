@@ -29,7 +29,7 @@ use nc_dsp::BlockSize;
 use nc_encoder::{Block, CodecBackend, FinalCandidate, Mv, PredictionMode, ReferenceChoice};
 
 use super::{HevcBackend, bi_motion, cost, transform_units};
-use crate::inter::{predict_bi_into, predict_luma, predict_samples};
+use crate::inter::{Component, predict_bi_into, predict_luma, predict_samples};
 use crate::mvpred::Motion;
 use crate::predict::{self, ModeCode};
 use crate::transform::MAX_COEFFS;
@@ -247,7 +247,7 @@ impl HevcBackend {
             (block.x, block.y),
             (side, side),
             first_mv,
-            false,
+            Component::Luma,
             &mut self.bi_first,
         );
         let mut view = PlaneViewMut::new(&mut scratch, side, side, side).expect("CU prediction");
@@ -256,7 +256,7 @@ impl HevcBackend {
             references[1].plane(PlaneIndex::Y),
             (block.x, block.y),
             second.0,
-            false,
+            Component::Luma,
             &self.bi_first[..side * side],
             &mut view,
         );

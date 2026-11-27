@@ -258,6 +258,7 @@ pub fn write_residual(
 
 /// Greater-1/greater-2 flags, signs and remaining levels of one sub-block.
 /// `magnitudes` are in reverse scan order (as coded).
+#[inline]
 fn write_levels(
     w: &mut impl BinSink,
     ctx: &mut Contexts,
@@ -436,10 +437,11 @@ pub(crate) const fn sig_ctx_inc(
         },
         _ => 2,
     };
-    // 8x8 blocks use offset 9 (diagonal scan) or 15; larger ones 21 (luma)
-    // or 12.
+    // 8x8 blocks use offset 9 (chroma, and luma's diagonal scan) or 15
+    // (luma's horizontal and vertical scans; chroma has them in 4:4:4);
+    // larger ones 21 (luma) or 12.
     let offset = if log2 == 3 {
-        if matches!(kind, ScanKind::Diagonal) {
+        if !luma || matches!(kind, ScanKind::Diagonal) {
             9
         } else {
             15

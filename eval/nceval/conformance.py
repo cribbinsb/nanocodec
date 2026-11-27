@@ -97,6 +97,11 @@ class _Decoder:
     name: str
 
     tool = ""  # the executable, located with find_tool
+    # Withholds the output of the first GDR picture's recovering pictures
+    # even after an IDR picture (VVdeC, as VTM: `DecLibParser.cpp`
+    # `m_gdrRecovered`), where H.266 §8.1.1/§8.1.2 output them: its frames
+    # are the others' with that one sweep left out (`withheld_sweep`).
+    withholds_first_gdr_sweep = False
 
     def binary(self, paths: Paths) -> Path:
         return find_tool(self.tool, paths)
@@ -154,6 +159,7 @@ class _Hm(_Decoder):
 
 class _Vvdec(_Decoder):
     tool = "vvdecapp"
+    withholds_first_gdr_sweep = True
 
     def binary(self, paths: Paths) -> Path:
         # The pinned VVdeC build (build_anchors.sh vvdec), never one on $PATH.
@@ -311,6 +317,11 @@ def gate_stream(bitstream: Path, codec: Codec, fmt: YuvFormat, expected_frames: 
         errors.update(_run_decoders(bitstream, codec, output_fmt, paths, group,
                                    len(group) + extra_threads if hold_slots else 0))
     decoded = {name: sink.digests for name, sink in hashes.items()}
+    # A decoder that withholds the first GDR sweep is checked apart, against
+    # the first other decoder (module `withheld_sweep`).
+    withholding = {name: decoded.pop(name) for name, decoder, _ in decoders
+                   if getattr(decoder, "withholds_first_gdr_sweep", False)
+                   and name in decoded and has_gdr_picture(bitstream, codec)}
     for name, digests in decoded.items():
         if errors.get(name):
             return GateResult(False, f"{name}: {errors[name]}")
@@ -331,6 +342,13 @@ def gate_stream(bitstream: Path, codec: Codec, fmt: YuvFormat, expected_frames: 
         mismatch = first_mismatch(first, digests)
         if mismatch is not None:
             return GateResult(False, f"{first_name} and {name} differ at frame {mismatch}")
+    for name, digests in withholding.items():
+        if errors.get(name):
+            return GateResult(False, f"{name}: {errors[name]}")
+        if withheld_sweep(first, digests) is None:
+            mismatch = first_mismatch(first, digests)
+            return GateResult(False, f"{first_name} and {name} differ at frame {mismatch} "
+                                     f"(beyond the first GDR sweep {name} withholds)")
     coded = None
     if expected_hashes is not None:
         coded = shown_frames(first, expected_hashes)
@@ -348,6 +366,36 @@ def gate_stream(bitstream: Path, codec: Codec, fmt: YuvFormat, expected_frames: 
 # output (a stream gated without its reconstruction): this mark keeps them
 # apart from grain-free hashes.
 AV1_GRAIN_FREE_MARK = "grain=off"
+
+
+# VVC `nal_unit_type` of a GDR picture (H.266 Table 5).
+VVC_GDR_NUT = 10
+
+
+def has_gdr_picture(bitstream: Path, codec: Codec) -> bool:
+    """Whether the VVC Annex-B `bitstream` has a GDR picture: a NAL unit
+    after a start code whose header (two bytes) says `GDR_NUT`."""
+    if codec is not Codec.VVC:
+        return False
+    data = Path(bitstream).read_bytes()
+    at = data.find(b"\x00\x00\x01")
+    while at != -1 and at + 4 < len(data):
+        if data[at + 4] >> 3 == VVC_GDR_NUT:
+            return True
+        at = data.find(b"\x00\x00\x01", at + 3)
+    return False
+
+
+def withheld_sweep(reference: list[str], digests: list[str]) -> int | None:
+    """How many frames `digests` lacks as one contiguous run of `reference`
+    left out (0 when they are equal), or None when it is anything else."""
+    missing = len(reference) - len(digests)
+    if missing < 0:
+        return None
+    start = first_mismatch(reference, digests)
+    if start is None:
+        return 0
+    return missing if reference[start + missing:] == digests[start:] and missing else None
 
 
 def _decoder_identity(codec: Codec, paths: Paths) -> str:
@@ -881,7 +929,8 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
     `--all-layers 1` on the unstripped stream) bit-exact against `--layer-md5`
     across `vpxdec`, `ffmpeg-decode`, and `nanocodec decode` with zero YUV files on disk.
     `standard=False` skips the two standard decoders (`OperatingPointCache`)."""
-    from .svcbase import VP9_SHOW_FRAME_BIT, ivf_frames, vp9_coded_layers
+    from .svcbase import (VP9_ERROR_RESILIENT_BIT, VP9_SHOW_FRAME_BIT, ivf_frames,
+                          vp9_coded_layers)
 
     tus: dict[int, list[tuple[int, int, int, int, str, int, int, str]]] = {}
     with layer_md5.open(newline="") as handle:
@@ -908,14 +957,26 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
     first_pkts = ivf_frames(bitstream.read_bytes())
     first_coded = vp9_coded_layers(first_pkts[0][1]) if first_pkts else []
     top_is_hidden = len(first_coded) > 1 and not bool(first_coded[-1][0] & VP9_SHOW_FRAME_BIT)
+    # Our spatial SVC shows every layer frame and codes it error resilient
+    # (nc-vp9 superframe.rs), as libvpx's does: the extractor then strips any
+    # lower layer the selected frame does not reach, and ffmpeg outputs every
+    # frame of a unit (vpxdec and ours its last). Older streams hid the lower
+    # layers.
+    every_layer_shown = bool(first_coded) and all(f[0] & VP9_SHOW_FRAME_BIT for f in first_coded)
+    top_is_resilient = bool(first_coded) and bool(first_coded[-1][0] & VP9_ERROR_RESILIENT_BIT)
     vpxdec = find_tool("vpxdec", paths)
     ffmpeg = find_anchor_tool("ffmpeg-decode", paths)
 
-    def expected_for_op(op_idx: int) -> tuple[list[tuple[int, int, str]], list[tuple[int, int, str]]]:
+    def expected_for_op(op_idx: int):
+        """Per unit of operating point `op_idx`: the picture a decoder of the
+        whole stream and of the extracted stream shows (vpxdec, ours), and
+        every shown frame of each (ffmpeg)."""
         bit = 1 << op_idx
         max_s = op_tops[op_idx]
         shown: list[tuple[int, int, str]] = []
         ext_shown: list[tuple[int, int, str]] = []
+        shown_all: list[tuple[int, int, str]] = []
+        ext_all: list[tuple[int, int, str]] = []
         stripped_lower_since_key = False
         for layers in ordered_tus:
             kept = [entry for entry in layers if (entry[5] & bit) != 0]
@@ -924,6 +985,7 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
             if kept[0][0] == 0 and kept[0][7] == "Key":
                 stripped_lower_since_key = False
             shown.append((kept[-1][2], kept[-1][3], kept[-1][4]))
+            shown_all.extend((e[2], e[3], e[4]) for e in (layers if every_layer_shown else kept[-1:]))
             sel = next((e for e in kept if e[0] == max_s), None)
             if sel is None:
                 if stripped_lower_since_key:
@@ -933,7 +995,8 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                     continue
                 sel = below[-1]
             below_kept = [e for e in kept if e[0] <= sel[0]]
-            if (sel[0] + 1 < num_spatial) or top_is_hidden:
+            ext_frames = below_kept
+            if (sel[0] + 1 < num_spatial) or top_is_hidden or top_is_resilient:
                 chain = [sel]
                 cur = sel
                 while cur[6] != 0 and cur[0] > 0:
@@ -944,8 +1007,10 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                     cur = prev
                 if len(chain) < len(below_kept):
                     stripped_lower_since_key = True
+                ext_frames = chain[::-1]
             ext_shown.append((sel[2], sel[3], sel[4]))
-        return shown, ext_shown
+            ext_all.extend((e[2], e[3], e[4]) for e in (ext_frames if every_layer_shown else [sel]))
+        return shown, ext_shown, shown_all, ext_all
 
     with cpu_slots(1), tempdirs.temp_dir("vp9-op") as tmp_dir:
         tmp = Path(tmp_dir)
@@ -969,7 +1034,7 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                 return GateResult(False, f"nanocodec vp9 all-layers: MD5 mismatch at picture {bad}")
 
             for sp_op in range(num_spatial):
-                _, sp_ext_shown = expected_for_op(view_ops[sp_op])
+                _, sp_ext_shown, _, _ = expected_for_op(view_ops[sp_op])
                 sp_md5s = [m for _, _, m in sp_ext_shown]
                 res_sp = subprocess.run(
                     [str(own_decoder), "decode", "--codec", "vp9",
@@ -1000,17 +1065,14 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                     )
 
         for op_idx in range(num_ops):
-            shown, ext_shown = expected_for_op(op_idx)
-            shown_dims = [(w, h) for w, h, _ in shown]
-            shown_md5s = [m for _, _, m in shown]
-            ext_dims = [(w, h) for w, h, _ in ext_shown]
+            shown, ext_shown, shown_all, ext_all = expected_for_op(op_idx)
             ext_md5s = [m for _, _, m in ext_shown]
 
             if own_decoder is None:
                 if op_idx > 0:
                     continue
                 op_ivf = bitstream
-                ivf_targets = [(f"op={op_idx}", op_ivf, shown_dims, shown_md5s)]
+                ivf_targets = [(f"op={op_idx}", op_ivf, shown, shown_all)]
             else:
                 op_ivf = tmp / f"op{op_idx}.ivf"
                 ext = subprocess.run(
@@ -1061,23 +1123,25 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                             False,
                             f"nanocodec extract vp9 --base-only differs from sidecar op={op_idx}",
                         )
-                ivf_targets = [(f"op={op_idx}", op_ivf, ext_dims, ext_md5s)]
+                ivf_targets = [(f"op={op_idx}", op_ivf, ext_shown, ext_all)]
                 if (op_idx == 0 and op_ivf != bitstream and len(shown) == len(ordered_tus)
                         and op_ivf.read_bytes() != bitstream.read_bytes()):
-                    ivf_targets.insert(0, ("unstripped", bitstream, shown_dims, shown_md5s))
+                    ivf_targets.insert(0, ("unstripped", bitstream, shown, shown_all))
 
-            for tag, target_ivf, target_dims, target_md5s in ivf_targets if standard else ():
-                for label, cmd in (
+            for tag, target_ivf, last_frames, every_frame in ivf_targets if standard else ():
+                for label, cmd, expected in (
                     (f"vpxdec {tag}",
                      [str(vpxdec), "--codec=vp9", "--rawvideo", "--i420", "--threads=1",
-                      "-o", "-", str(target_ivf)]),
+                      "-o", "-", str(target_ivf)], last_frames),
                     (f"ffmpeg-vp9 {tag}",
                      [str(ffmpeg), "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
                       "-filter_threads", "1", "-threads", "1", "-f", "ivf", "-c:v", "vp9",
                       "-i", str(target_ivf), "-fps_mode", "passthrough", "-threads", "1",
-                      "-noautoscale", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]),
+                      "-noautoscale", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"],
+                     every_frame),
                 ):
-                    err, got = _pipe_i420_md5s(cmd, target_dims)
+                    target_md5s = [m for _, _, m in expected]
+                    err, got = _pipe_i420_md5s(cmd, [(w, h) for w, h, _ in expected])
                     if err:
                         return GateResult(False, f"{label}: {err}")
                     bad = first_mismatch(got, target_md5s)

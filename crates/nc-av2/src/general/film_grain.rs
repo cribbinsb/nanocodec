@@ -12,9 +12,11 @@
 use std::rc::Rc;
 
 use nc_common::decode::{BitReader, DecodeError, Result};
-use nc_common::{Picture, PlaneIndex};
+use nc_common::{BitDepth, Picture, PlaneIndex};
 use nc_dsp::Dsp;
 use nc_dsp::av1_film_grain::{Av1FilmGrainParams, Av1ScalingPoints};
+
+use super::sample::Av2Sample;
 
 /// Film grain model ids (`fgm_id`): one bit each in the OBU's mask.
 pub const MAX_MODELS: usize = 8;
@@ -24,8 +26,10 @@ pub type Models = [Option<Rc<GrainModel>>; MAX_MODELS];
 
 /// Bits of the OBU's model mask.
 const MASK_BITS: u32 = 8;
-/// `chroma_format_idc` of 4:2:0 (the only layout the decoder takes).
+/// `chroma_format_idc` of 4:2:0 and of monochrome (the layouts the
+/// decoder takes).
 const CHROMA_FORMAT_420: u32 = 0;
+const CHROMA_FORMAT_400: u32 = 1;
 /// Bits of a plane's point count, and the most points it may have.
 const POINT_COUNT_BITS: u32 = 4;
 const MAX_POINTS: usize = 14;
@@ -89,8 +93,15 @@ impl OutputGrain {
         Ok(model.changes_picture().then_some(Self { model, seed }))
     }
 
-    /// Lay the grain over `input` into `output`, a picture of its size.
-    pub fn apply(&self, dsp: &Dsp, input: &Picture, output: &mut Picture) {
+    /// Lay the grain over `input` (samples of `depth`) into `output`, a
+    /// picture of its size.
+    pub fn apply<T: Av2Sample>(
+        &self,
+        dsp: &Dsp,
+        input: &Picture<T>,
+        output: &mut Picture<T>,
+        depth: BitDepth,
+    ) {
         let params = Av1FilmGrainParams {
             grain_seed: self.seed,
             ..self.model.params
@@ -98,16 +109,16 @@ impl OutputGrain {
         let size = (input.width(), input.height());
         let [y, u, v] = PlaneIndex::ALL.map(|plane| input.plane(plane).view());
         let [out_y, out_u, out_v] = output.planes_mut();
-        dsp.av2_add_film_grain(
-            &params,
-            self.model.large_blocks,
-            [&y, &u, &v],
-            size,
+        T::add_film_grain(
+            dsp,
+            (&params, self.model.large_blocks),
+            ([&y, &u, &v], size),
             [
                 &mut out_y.view_mut(),
                 &mut out_u.view_mut(),
                 &mut out_v.view_mut(),
             ],
+            depth,
         );
     }
 }
@@ -115,34 +126,41 @@ impl OutputGrain {
 /// Parse an FGM OBU (dav2d `parse_fgm_hdr`) into `models`: each id in its
 /// mask takes a new parameter set.
 /// # Errors
-/// Rejects malformed syntax and layouts other than 4:2:0.
-pub fn parse(payload: &[u8], models: &mut Models) -> Result<()> {
+/// Rejects malformed syntax and a layout other than the sequence's
+/// (`monochrome` or 4:2:0).
+pub fn parse(payload: &[u8], monochrome: bool, models: &mut Models) -> Result<()> {
     let mut bits = BitReader::new(payload);
     let mask = bits.read_bits(MASK_BITS)?;
-    if bits.read_uvlc()? != CHROMA_FORMAT_420 {
+    let layout = if monochrome {
+        CHROMA_FORMAT_400
+    } else {
+        CHROMA_FORMAT_420
+    };
+    if bits.read_uvlc()? != layout {
         return Err(DecodeError::Malformed(
             "AV2 film grain model of another chroma format",
         ));
     }
     for (id, model) in models.iter_mut().enumerate() {
         if mask & (1 << id) != 0 {
-            *model = Some(Rc::new(parse_model(&mut bits)?));
+            *model = Some(Rc::new(parse_model(&mut bits, monochrome)?));
         }
     }
     bits.trailing_bits()
 }
 
-/// One parameter set, 4:2:0.
-fn parse_model(bits: &mut BitReader<'_>) -> Result<GrainModel> {
+/// One parameter set: monochrome codes luma's points alone, so every
+/// chroma field after them is absent too.
+fn parse_model(bits: &mut BitReader<'_>, monochrome: bool) -> Result<GrainModel> {
     let mut p = Av1FilmGrainParams {
         ar_coeffs_y_plus_128: [COEFFICIENT_BIAS as u8; 24],
         ar_coeffs_cb_plus_128: [COEFFICIENT_BIAS as u8; 25],
         ar_coeffs_cr_plus_128: [COEFFICIENT_BIAS as u8; 25],
         ..Av1FilmGrainParams::default()
     };
-    p.chroma_scaling_from_luma = bits.read_bit()?;
+    p.chroma_scaling_from_luma = !monochrome && bits.read_bit()?;
     p.y_points = scaling_points(bits)?;
-    if !p.chroma_scaling_from_luma {
+    if !monochrome && !p.chroma_scaling_from_luma {
         p.cb_points = scaling_points(bits)?;
         p.cr_points = scaling_points(bits)?;
     }

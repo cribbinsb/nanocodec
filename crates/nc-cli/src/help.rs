@@ -84,7 +84,9 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "--output",
                 "PATH",
                 "The stream: IVF for AV1, VP9 and AV2, Annex-B for H.264, HEVC and VVC; `-` \
-                 writes stdout.",
+                 writes stdout. A path ending .mp4/.m4v (MP4), .mkv (Matroska) or .webm (VP9, \
+                 AV1) writes that container, with every coded frame's time (held frames \
+                 included) and key-frame index (not AV2).",
             ),
             opt(
                 "--recon",
@@ -240,7 +242,9 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "Intra refresh sweep over this many frames in place of periodic key frames \
                  (`refresh.period`). With --temporal-layers 2|3 or --scalability LxT2/T3 the \
                  layers are fixed and the sweep runs on the base layer. Not with spatial layers, \
-                 VP9 or AV2.",
+                 VP9 or AV2. Each sweep's first frame is a recovery point (H.264/HEVC SEI, VVC GDR \
+                 picture); VVdeC-based players skip the first refresh sweep after a stream start \
+                 (spec-conformant per H.266 §8.1.1/§8.1.2).",
             ),
             opt(
                 "--ltr-interval",
@@ -440,6 +444,16 @@ pub const COMMANDS: &[CommandDoc] = &[
                     "0|1",
                     "AV1 or VP9: 1 writes every spatial layer's picture.",
                 ),
+                opt(
+                    "--unbounded",
+                    "0|1",
+                    "AV1: 1 decodes frames beyond the level 6.3 size bound (conformance streams).",
+                ),
+                opt(
+                    "--monochrome-chroma",
+                    "0|1",
+                    "AV1: 0 writes monochrome pictures as luma only (aomdec --rawvideo, dav1d).",
+                ),
             ],
         }],
     },
@@ -532,7 +546,20 @@ pub const COMMANDS: &[CommandDoc] = &[
                     "--layers",
                     "S:T",
                     "Forward only spatial layers 0..S and temporal layers 0..T first, by the \
-                     Dependency Descriptor, as a forwarding server would.",
+                     Dependency Descriptor (VP9 without one: its payload descriptor), as a \
+                     forwarding server would.",
+                ),
+                opt(
+                    "--inter-layer",
+                    "full|key",
+                    "VP9 --layers: upper layers predict from the layer below on every picture \
+                     (full, default) or on key pictures only (key: K-SVC).",
+                ),
+                opt(
+                    "--forward",
+                    "PATH",
+                    "With --layers: also write the forwarded packets (pcap for .pcap, \
+                     otherwise RFC 4571).",
                 ),
                 opt(
                     "--deliver-after-loss",

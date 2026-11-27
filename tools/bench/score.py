@@ -26,7 +26,7 @@ the encode stage's records and streams; nothing is re-encoded. Per stream:
 Two metric backends give the same numbers (procedure section 7, V27); every score record names
 the one it used:
   - `libvmaf` (a scoring box): libvmaf 3.2.1 on the CPU, PSNR per plane, VMAF v1 and MS-SSIM;
-  - `vmafx` (the PC, `fleet.py score --local`): the existing GPU scoring service of the dev
+  - `vmafx` (the PC, `fleet.py score`, the default): the existing GPU scoring service of the dev
     tools (`nceval.metrics`: VMAF v1 and MS-SSIM in one VMAFx CUDA run on a shared server,
     VMAF v1 rounded to libvmaf's printed precision; PSNR per plane from exact squared-error
     sums with libvmaf's 60 dB cap). It imports `nceval` from the repository.

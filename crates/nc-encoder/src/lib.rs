@@ -118,6 +118,7 @@ mod shape;
 mod skip_budget;
 mod source_scale;
 pub mod spatial;
+mod split_override;
 mod split_selector;
 mod startup_lookahead;
 mod still_camera;
@@ -157,7 +158,9 @@ pub use chroma_offset::{
     plane_error_ratio,
 };
 pub use coded_groups::CodedGroups;
-pub use config::{Codec, ConfigError, EncoderConfig, FrameRate, StreamSignal, TimingSignal};
+pub use config::{
+    Codec, ConfigError, EncoderConfig, FrameRate, StreamRate, StreamSignal, TimingSignal,
+};
 pub use effort_class::LIGHT_PREFIX;
 pub use encoder::{
     EncodedFrame, Encoder, FrameMetadata, LayerFrameMetadata, SpatialReferenceStats,

@@ -14,7 +14,6 @@
 //! make a requested rate unattainable; counters expose that fact. With
 //! [`RateControlConfig::frame_drop`] the encoder skips inter frames that would
 //! overflow the buffer even at the maximum quantizer ([`RateController::should_drop`]).
-use crate::FrameRate;
 use crate::layer::LayerPosition;
 use crate::moving_camera::camera_motion_share;
 use crate::params::RateParams;
@@ -29,6 +28,7 @@ use crate::refinement_gain::RefinementGain;
 use crate::skip_budget::{self, SkipBudget};
 use crate::still_rate::StillRate;
 use crate::still_refine::{KEY_RUN_UP_FRAMES, KeyQuality, RefineCost};
+use crate::{FrameRate, StreamRate};
 use std::fmt;
 
 /// Runtime target and low-delay controller tuning; quantizer bounds are actual QP/qindex.
@@ -115,6 +115,25 @@ impl RateControlConfig {
             frame_drop: false,
             strict_buffer: false,
             temporal_noise_stat: false,
+        }
+    }
+
+    /// The peak drain rate: `peak_bps`, else twice the target.
+    #[must_use]
+    pub const fn peak_rate_bps(&self) -> u64 {
+        match self.peak_bps {
+            Some(peak) => peak,
+            None => self.target_bps.saturating_mul(2),
+        }
+    }
+
+    /// The peak rate and buffer size the stream's level must allow (the
+    /// buffer at the target rate, as rate control sizes it).
+    #[must_use]
+    pub const fn stream_rate(&self) -> StreamRate {
+        StreamRate {
+            peak_bps: self.peak_rate_bps(),
+            buffer_bits: self.target_bps.saturating_mul(self.buffer_ms as u64) / 1000,
         }
     }
 }
@@ -481,9 +500,7 @@ impl Settings {
         {
             return Err(RateControlError("invalid bootstrap bits/pixel"));
         }
-        let peak = config
-            .peak_bps
-            .unwrap_or(config.target_bps.saturating_mul(2));
+        let peak = config.peak_rate_bps();
         if peak < config.target_bps || peak > 100_000_000_000 {
             return Err(RateControlError("peak bitrate must cover target"));
         }
@@ -832,6 +849,7 @@ pub(crate) struct RateController {
     /// `rate.key_cap_buffer`, `rate.key_cap_buffer_first` and
     /// `rate.key_cap_gop` (`key_bits_cap`).
     key_caps: KeyCaps,
+    key_cap_buffer_still: f64,
     /// `rate.key_level_mean`: share of `level_mean_offset` a key takes.
     key_level_mean: f64,
     /// The key settings that follow the key interval (`rate.key_level_finer`,
@@ -1035,6 +1053,7 @@ impl RateController {
             phase_repay_seconds: f64::from(params.key_repay_seconds),
             first_key_replan_at: None,
             key_caps: KeyCaps::of(params),
+            key_cap_buffer_still: f64::from(params.key_cap_buffer_still),
             key_level_mean: f64::from(params.key_level_mean),
             key_interval: KeyIntervalTerms::of(params),
             key_quality_match: f64::from(params.key_quality_match),
@@ -1302,7 +1321,16 @@ impl RateController {
     /// (`rate.key_cap_buffer_first`) before any frame, every later key's
     /// (`rate.key_cap_buffer`) after.
     fn key_cap_buffer(&self) -> f64 {
-        self.key_caps.buffer(self.stats.frames == 0)
+        if self.stats.frames == 0 {
+            self.key_caps.buffer(true)
+        } else {
+            let base = self.key_caps.buffer(false);
+            if base > 0. && self.key_cap_buffer_still > base && self.still_frames > 0 {
+                base + (self.key_cap_buffer_still - base) * fixed_camera(self.still_share)
+            } else {
+                base
+            }
+        }
     }
     /// Most bits a key may take (`rate.key_cap_buffer`: a share of the
     /// buffer; `rate.key_cap_gop`: a share of its repayment phase's bits);
@@ -3313,6 +3341,7 @@ mod tests {
         params.set("rate.first_key_boost_scale", 1.);
         params.set("rate.recode_overflow", 0.);
         params.set("rate.key_cap_buffer", 0.);
+        params.set("rate.key_cap_buffer_first", 0.);
         params.set("rate.debit", 0.);
         for &(name, value) in overrides {
             params.set(name, value);
@@ -4434,5 +4463,32 @@ mod tests {
             q_tref > q_base,
             "high t/s must start coarser: {q_tref} vs {q_base}"
         );
+    }
+
+    #[test]
+    fn periodic_key_cap_lifts_on_fixed_camera() {
+        let mut r = controller_with(
+            500_000,
+            &[
+                ("rate.key_cap_buffer", 0.4),
+                ("rate.key_cap_buffer_first", 1.0),
+                ("rate.key_cap_buffer_still", 1.0),
+            ],
+        );
+        // Frame 0 uses key_cap_buffer_first (1.0), unaffected by periodic cap.
+        assert!((r.key_cap_buffer() - 1.0).abs() < 1e-6);
+        r.stats.frames = 100;
+        r.still_frames = 100;
+        // Moving / crowd scene (still_share <= 0.80) keeps the tight 0.40 cap.
+        r.still_share = 0.50;
+        assert!((r.key_cap_buffer() - 0.4).abs() < 1e-6);
+        r.still_share = 0.80;
+        assert!((r.key_cap_buffer() - 0.4).abs() < 1e-6);
+        // Seated talking head (still_share = 0.85 -> fixed_camera = 0.25) lifts to 0.55.
+        r.still_share = 0.85;
+        assert!((r.key_cap_buffer() - 0.55).abs() < 1e-6);
+        // Frozen static camera (still_share = 1.0 -> fixed_camera = 1.0) lifts to 1.0.
+        r.still_share = 1.0;
+        assert!((r.key_cap_buffer() - 1.0).abs() < 1e-6);
     }
 }

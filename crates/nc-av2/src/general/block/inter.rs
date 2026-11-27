@@ -3,10 +3,13 @@
 //! prediction and residual, and what later blocks' contexts read of it.
 use super::context::NO_DIRECTION;
 use super::inter_pred::InterPrediction;
-use super::inter_record::{CompoundType, InterMode, InterRecord, NO_REFERENCE, TIP_FRAME};
+use super::inter_record::{
+    CompoundType, InterMode, InterRecord, NO_REFERENCE, Reference, TIP_FRAME,
+};
 use super::inter_syntax::TIP_WEIGHTS;
 use super::intra::{IntraModes, mode};
-use super::motion::Mv;
+use super::motion::vector::RefPair;
+use super::motion::{InterMotion, Mv, WedgeSides};
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::syntax::Neighbours;
@@ -14,9 +17,10 @@ use super::transform::{LumaTransforms, TxPartition};
 use super::{Tile, context};
 use crate::general::filters::edges::NO_SUB_PU;
 use crate::general::frame_header::{TIP_FRAME_MODE, filter_mode};
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Decode an inter block; returns its luma transform layout for the
     /// loop filters.
     pub(super) fn inter_block(
@@ -34,7 +38,10 @@ impl Tile<'_, '_> {
         let wedge = (inter.compound == CompoundType::Wedge).then(|| {
             let (bw4, bh4) = size.units();
             let luma = ((bw4 << 2) as usize, (bh4 << 2) as usize);
-            masks.wedge_tmvp(luma, inter.wedge_index as usize)
+            WedgeSides {
+                sides: masks.wedge_tmvp(luma, inter.wedge_index as usize),
+                sign: inter.wedge_sign,
+            }
         });
         let motion = self.resolve_motion(depth, record, &mut inter, wedge)?;
         let prediction = InterPrediction {
@@ -142,7 +149,9 @@ impl Tile<'_, '_> {
         (self.chroma_row, self.chroma_column) = (self.row, self.column);
         let record = BlockRecord {
             luma: Some(root),
-            chroma: Some(root),
+            chroma: (!self.sequence.monochrome).then_some(root),
+            block_chroma: (!self.sequence.monochrome).then_some(root),
+            shared_tree: true,
             row: self.row,
             column: self.column,
             chroma_row: self.row,
@@ -188,5 +197,70 @@ impl Tile<'_, '_> {
             self.record_qindex();
         }
         Ok(())
+    }
+    /// A block of a bridge frame: its only reference at zero motion with
+    /// the sharp filter and no residual, the vector kept for later frames'
+    /// motion fields (AVM `bru_set_default_inter_mb_mode_info` and
+    /// `bridge_frame_is_valid_inter`; the partition takes only the splits
+    /// the frame edge implies, `read_partition`).
+    pub(super) fn bridge_block(
+        &mut self,
+        luma: Option<BlockSize>,
+        chroma: Option<BlockSize>,
+        shared_tree: bool,
+    ) -> Result<()> {
+        let size = luma.ok_or(DecodeError::Malformed("AV2 bridge block without luma"))?;
+        let record = BlockRecord {
+            luma,
+            chroma,
+            block_chroma: chroma,
+            shared_tree,
+            row: self.row,
+            column: self.column,
+            chroma_row: self.chroma_row,
+            chroma_column: self.chroma_column,
+            skip_mode: false,
+            intra: false,
+            intrabc: false,
+            skip_txfm: true,
+            qindex: self.qindex,
+        };
+        let reference: Reference = 0;
+        let inter = InterRecord {
+            references: [reference, NO_REFERENCE],
+            mode: InterMode::New,
+            filter: filter_mode::SHARP,
+            ..InterRecord::default()
+        };
+        if let Some(store) = &mut self.motion {
+            store.record_inter(&InterMotion {
+                row: record.row,
+                column: record.column,
+                size,
+                refs: RefPair::single(reference),
+                mv: [Mv::default(); 2],
+                global_mode: false,
+                warps: None,
+                cwp: 0,
+                wedge: None,
+                keep_temporal: true,
+            });
+        }
+        self.inter_prediction = Some(InterPrediction {
+            inter,
+            mv: [Mv::default(); 2],
+            warp: [None, None],
+            size,
+        });
+        let modes = IntraModes {
+            y_mode: inter.mode as u8,
+            uv_mode: mode::DC,
+            direction: NO_DIRECTION,
+            ..IntraModes::default()
+        };
+        let transforms = LumaTransforms::Partition(TxPartition::None);
+        let reconstructed = self.reconstruct(0, &record, &modes, transforms);
+        self.inter_prediction = None;
+        reconstructed
     }
 }

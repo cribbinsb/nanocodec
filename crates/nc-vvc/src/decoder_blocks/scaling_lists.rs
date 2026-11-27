@@ -50,9 +50,12 @@ pub(super) fn factors(
     out.clear();
     let size_class = width.max(height).ilog2() as usize - 1;
     let id = match size_class {
-        // 2x2 chroma blocks are never intra; 64-sample blocks are luma only.
+        // 2x2 chroma blocks are never intra.
         0 => plane.saturating_sub(1),
-        5 => FIRST_ID[5] + usize::from(!intra),
+        // Luma has its own 64-sample pair; 4:4:4 chroma of 64 samples
+        // takes its 32-sample matrices (Table 38).
+        5 if plane == 0 => FIRST_ID[5] + usize::from(!intra),
+        5 => FIRST_ID[4] + 3 * usize::from(!intra) + plane,
         _ => FIRST_ID[size_class] + 3 * usize::from(!intra) + plane,
     };
     let matrix = &lists.matrices[id];

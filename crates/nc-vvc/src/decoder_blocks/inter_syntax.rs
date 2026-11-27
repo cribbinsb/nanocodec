@@ -63,11 +63,7 @@ impl Parser<'_> {
             .iter()
             .filter(|u| u.is_some_and(|u| u.skip))
             .count();
-        let intra_context = usize::from(
-            neighbours
-                .iter()
-                .any(|u| u.is_some_and(|u| u.inter.is_none())),
-        );
+        let intra_context = usize::from(neighbours.iter().any(|u| u.is_some_and(Unit::intra)));
         unit.skip = r.bin(&mut self.contexts.skip[skip_context])?;
         if !unit.skip
             && constraint != Constraint::Inter
@@ -92,7 +88,7 @@ impl Parser<'_> {
                 self.neighbour(n.x + n.width - 1, n.y.wrapping_sub(1), 0),
             ]
             .into_iter()
-            .filter(|u| u.is_some_and(|u| u.inter.is_none()))
+            .filter(|u| u.is_some_and(Unit::intra))
             .count() as u8;
         }
         Ok(())

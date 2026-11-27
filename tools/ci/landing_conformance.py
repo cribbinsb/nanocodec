@@ -505,9 +505,13 @@ def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
                 *(["--rate-log", str(rate_log)] if rate_log else []), *extra, "--output", str(stream), "--display-recon", recon]
     repro = " ".join(command("recon.yuv"))
     spec = StreamSpec(reference=clip, fmt=shape.fmt, frames=shape.frames, fps=FPS, paths=None)
+    # A VP9 spatial stream shows every layer's frame (ffmpeg outputs them all,
+    # vpxdec a unit's last): the standard decoders check it, whole and at each
+    # operating point, in gate_vp9_operating_points; here ours alone.
+    vp9_spatial = case.is_spatial and case.codec is Codec.VP9
     try:
         result = run_point(command, stream, case.codec, spec, paths, own_decoder=binary,
-                           rate_log=rate_log, layer_md5=layer_md5)
+                           rate_log=rate_log, layer_md5=layer_md5, standard=not vp9_spatial)
     except ProcessFailed as err:
         return Outcome(case, False, f"encode: {err}", repro)
     uncoded = 0

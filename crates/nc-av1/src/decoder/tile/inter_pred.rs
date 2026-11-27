@@ -44,6 +44,9 @@ const WARP_MIN_SIDE: usize = 8;
 /// overlap (half of a 64-sample side).
 const OBMC_MIN_PREDICTION: usize = 4;
 const OBMC_MAX_OVERLAP: usize = 32;
+/// Chroma blocks blend their above neighbours only when their width and
+/// height add up to this many samples.
+const OBMC_MIN_ABOVE_CHROMA: usize = 16;
 /// Nominal angles of the vertical and horizontal inter-intra modes.
 const VERTICAL_ANGLE: u16 = 90;
 const HORIZONTAL_ANGLE: u16 = 180;
@@ -272,12 +275,19 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let (w, h) = scale.map_or((self.header.size.width, self.header.size.height), |s| {
             (s.reference.0 as usize, s.reference.1 as usize)
         });
-        let ss = usize::from(plane != PlaneIndex::Y);
+        let (ss_x, ss_y) = self.subsampling(plane);
         Ok(PlaneReference {
             plane: picture.plane(plane),
-            size: ((w + ss) >> ss, (h + ss) >> ss),
+            size: ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y),
             scale,
         })
+    }
+
+    /// Whether `plane` is subsampled horizontally and vertically.
+    #[inline]
+    fn plane_sub(&self, plane: PlaneIndex) -> (bool, bool) {
+        let (ss_x, ss_y) = self.subsampling(plane);
+        (ss_x == 1, ss_y == 1)
     }
 
     /// `is_scaled` of reference name `name`.
@@ -385,7 +395,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         };
         let kernels = self.kernels();
         for &plane in planes {
-            let ss = usize::from(plane != PlaneIndex::Y);
+            let (ss_x, ss_y) = self.subsampling(plane);
             let (origin, size) = Self::plane_block(block, plane);
             let target = self.recon.plane_mut(plane);
             let stride = target.stride();
@@ -394,7 +404,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 .ok_or(DecodeError::Malformed("AV1 prediction rectangle"))?;
             let reference = PlaneReference {
                 plane: picture.plane(plane),
-                size: ((width + ss) >> ss, (height + ss) >> ss),
+                size: ((width + ss_x) >> ss_x, (height + ss_y) >> ss_y),
                 scale: None,
             };
             translate_unscaled(
@@ -404,7 +414,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 origin,
                 size,
                 modes.mv[0],
-                (ss == 1, ss == 1),
+                (ss_x == 1, ss_y == 1),
                 modes.filters,
                 (dst, stride),
             );
@@ -427,7 +437,8 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
     }
 
     /// The plane block of `block`: its plane sample position and size (4x4
-    /// chroma at least, starting a unit up or left for 4-sample sides).
+    /// chroma at least, starting a unit up or left for 4-sample sides
+    /// along a subsampled axis).
     pub(super) fn plane_block(
         block: BlockPos,
         plane: PlaneIndex,
@@ -438,13 +449,14 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 (block.size.width(), block.size.height()),
             );
         }
-        let col = block.mi_col - usize::from(block.size.width_mi() == 1);
-        let row = block.mi_row - usize::from(block.size.height_mi() == 1);
+        let (ss_x, ss_y) = block.plane_subsampling(plane);
+        let col = block.mi_col - usize::from(ss_x == 1 && block.size.width_mi() == 1);
+        let row = block.mi_row - usize::from(ss_y == 1 && block.size.height_mi() == 1);
         (
-            (col * MI_SIZE / 2, row * MI_SIZE / 2),
+            ((col * MI_SIZE) >> ss_x, (row * MI_SIZE) >> ss_y),
             (
-                (block.size.width() / 2).max(MI_SIZE),
-                (block.size.height() / 2).max(MI_SIZE),
+                (block.size.width() >> ss_x).max(MI_SIZE),
+                (block.size.height() >> ss_y).max(MI_SIZE),
             ),
         )
     }
@@ -459,7 +471,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         plane: PlaneIndex,
     ) -> Result<(), DecodeError> {
         let (origin, size) = Self::plane_block(block, plane);
-        let sub = plane != PlaneIndex::Y;
+        let sub = self.plane_sub(plane);
         let warp = self.warp(block, modes, local, size);
         let reference = self.plane_reference(modes.refs[0], plane)?;
         let kernels = self.kernels();
@@ -481,7 +493,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                     (&warp.params, warp.shear),
                     origin,
                     size,
-                    (sub, sub),
+                    sub,
                     &mut dst,
                 );
             }
@@ -492,7 +504,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 origin,
                 size,
                 modes.mv[0],
-                (sub, sub),
+                sub,
                 modes.filters,
                 &mut dst,
             ),
@@ -536,7 +548,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let kernels = self.kernels();
         for plane in PlaneIndex::ALL {
             let (origin, size) = Self::plane_block(block, plane);
-            let sub = plane != PlaneIndex::Y;
+            let (sub_x, sub_y) = self.plane_sub(plane);
             let samples = size.0 * size.1;
             if general {
                 for list in 0..2 {
@@ -580,14 +592,14 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                             .mask(luma, sign, usize::from(index))
                             .ok_or(DecodeError::Malformed("AV1 wedge size"))?,
                         stride: luma.0,
-                        sub_x: sub,
-                        sub_y: sub,
+                        sub_x,
+                        sub_y,
                     };
                     kernels.av1_blend_mask((p0, p1), mask, size, &mut dst);
                 }
                 CompoundType::DifferenceWeighted { inverse } => {
                     // The luma predictions set the mask of every plane.
-                    if !sub {
+                    if plane == PlaneIndex::Y {
                         scratch.mask.clear();
                         scratch.mask.resize(luma.0 * luma.1, 0);
                         kernels.av1_difference_weight_mask(
@@ -600,8 +612,8 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                     let mask = Av1Mask {
                         data: &scratch.mask,
                         stride: luma.0,
-                        sub_x: sub,
-                        sub_y: sub,
+                        sub_x,
+                        sub_y,
                     };
                     kernels.av1_blend_mask((p0, p1), mask, size, &mut dst);
                 }
@@ -621,11 +633,11 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         plane: PlaneIndex,
         (origin, size): ((usize, usize), (usize, usize)),
     ) {
-        let sub = plane != PlaneIndex::Y;
-        let ss = usize::from(sub);
+        let sub = self.plane_sub(plane);
+        let (ss_x, ss_y) = self.subsampling(plane);
         let plane_size = (
-            (self.header.size.width + ss) >> ss,
-            (self.header.size.height + ss) >> ss,
+            (self.header.size.width + ss_x) >> ss_x,
+            (self.header.size.height + ss_y) >> ss_y,
         );
         let kernels = self.kernels();
         let scratch = &mut self.maps.prediction;
@@ -634,7 +646,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let span = (size.0 + AV1_FILTER_TAPS - 1, size.1 + AV1_FILTER_TAPS - 1);
         for (buf, (picture, mv)) in compound.iter_mut().zip(pictures.into_iter().zip(modes.mv)) {
             let source = picture.plane(plane);
-            let ((x0, y0), fracs) = unscaled_window(origin, mv, (sub, sub));
+            let ((x0, y0), fracs) = unscaled_window(origin, mv, sub);
             let dst = (&mut buf[..samples], size.0);
             if let Some(src) = source.samples_at(x0, y0, span.0, span.1) {
                 kernels.av1_prep_samples(modes.filters, (src, source.stride()), size, fracs, dst);
@@ -667,7 +679,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         plane: PlaneIndex,
         (origin, size): ((usize, usize), (usize, usize)),
     ) -> Result<(), DecodeError> {
-        let sub = plane != PlaneIndex::Y;
+        let sub = self.plane_sub(plane);
         let reference = self.plane_reference(modes.refs[list], plane)?;
         let warp = (size.0 >= WARP_MIN_SIDE
             && size.1 >= WARP_MIN_SIDE
@@ -693,7 +705,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                     (&warp.params, warp.shear),
                     origin,
                     size,
-                    (sub, sub),
+                    sub,
                     (dst, size.0),
                 );
             }
@@ -704,7 +716,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 origin,
                 size,
                 modes.mv[list],
-                (sub, sub),
+                sub,
                 modes.filters,
                 dst,
             ),
@@ -712,12 +724,14 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         Ok(())
     }
 
-    /// Whether the chroma of a block 4 samples wide or high is predicted
-    /// piecewise from every block its chroma covers: all must be inter
-    /// (libaom `is_sub8x8_inter`).
+    /// Whether the chroma of a block 4 samples wide or high along a
+    /// subsampled axis is predicted piecewise from every block its chroma
+    /// covers: all must be inter (libaom `is_sub8x8_inter`).
     #[inline]
     fn sub8x8_chroma(&self, block: BlockPos) -> bool {
-        let (narrow, short) = (block.size.width_mi() == 1, block.size.height_mi() == 1);
+        let (ss_x, ss_y) = block.plane_subsampling(PlaneIndex::U);
+        let narrow = ss_x == 1 && block.size.width_mi() == 1;
+        let short = ss_y == 1 && block.size.height_mi() == 1;
         (narrow || short) && self.covered_blocks_inter(block, (narrow, short))
     }
 
@@ -739,7 +753,8 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         plane: PlaneIndex,
     ) -> Result<(), DecodeError> {
         let (origin, size) = Self::plane_block(block, plane);
-        let piece = (block.size.width() / 2, block.size.height() / 2);
+        let (ss_x, ss_y) = self.subsampling(plane);
+        let piece = (block.size.width() >> ss_x, block.size.height() >> ss_y);
         let first = (
             block.mi_row + 1 - size.1 / piece.1,
             block.mi_col + 1 - size.0 / piece.0,
@@ -762,7 +777,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                     at,
                     piece,
                     cell.mv[0],
-                    (true, true),
+                    (ss_x == 1, ss_y == 1),
                     cell.filters(),
                     &mut dst,
                 );
@@ -809,13 +824,13 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             EdgeNeeds::of(kind, (w, h)),
         );
         let kernels = self.kernels();
+        let (sub_x, sub_y) = self.plane_sub(plane);
         let edges = &self.maps.intra_edges;
         let scratch = &mut self.maps.prediction;
         scratch.block.clear();
         scratch.block.resize(w * h, T::default());
         let mut intra = PlaneViewMut::new(&mut scratch.block, w, w, h).expect("block buffer");
         kernels.av1_intra_predict_block(edges, kind, &mut intra);
-        let sub = plane != PlaneIndex::Y;
         let mask = if let Some(index) = interintra.wedge {
             debug_assert!(wedge_used(block.size));
             let wedges = scratch.wedges.get_or_insert_with(Default::default);
@@ -825,8 +840,8 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                     .mask(luma, false, usize::from(index))
                     .ok_or(DecodeError::Malformed("AV1 wedge size"))?,
                 stride: luma.0,
-                sub_x: sub,
-                sub_y: sub,
+                sub_x,
+                sub_y,
             }
         } else {
             scratch.mask.clear();
@@ -887,34 +902,38 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         (offset, units): (usize, usize),
         neighbour: &MotionCell,
     ) -> Result<(), DecodeError> {
-        let ss = usize::from(plane != PlaneIndex::Y);
+        let (ss_x, ss_y) = self.subsampling(plane);
         let (bw, bh) = (block.size.width(), block.size.height());
-        // Chroma 4x4, 8x4 and 4x8 blends only from the left (libaom
-        // `av1_skip_u4x4_pred_in_obmc`).
-        let small_chroma = matches!((bw >> 1, bh >> 1), (4 | 8, 4) | (4, 8));
-        if ss == 1 && edge == Av1ObmcEdge::Above && small_chroma {
+        // Chroma blocks whose sides add up to less than 16 samples (4x4,
+        // 8x4 and 4x8) blend only from the left (libaom
+        // `av1_skip_u4x4_pred_in_obmc`, dav1d `obmc`).
+        let small_chroma = (bw >> ss_x) + (bh >> ss_y) < OBMC_MIN_ABOVE_CHROMA;
+        if plane != PlaneIndex::Y && edge == Av1ObmcEdge::Above && small_chroma {
             return Ok(());
         }
-        // (predicted, blended) samples across the edge.
-        let across = |side: usize| {
+        // (predicted, blended) samples across the edge, along an axis
+        // subsampled by `ss`.
+        let across = |side: usize, ss: usize| {
             (
                 (side >> (ss + 1)).clamp(OBMC_MIN_PREDICTION, OBMC_MAX_OVERLAP >> ss),
                 side.min(2 * OBMC_MAX_OVERLAP) >> (1 + ss),
             )
         };
-        let along = (units * MI_SIZE) >> ss;
-        let along_start = (offset * MI_SIZE) >> ss;
         let (x, y) = (
-            (block.mi_col * MI_SIZE) >> ss,
-            (block.mi_row * MI_SIZE) >> ss,
+            (block.mi_col * MI_SIZE) >> ss_x,
+            (block.mi_row * MI_SIZE) >> ss_y,
         );
         let ((px, py), (pw, ph), (ow, oh)) = match edge {
             Av1ObmcEdge::Above => {
-                let (predicted, overlap) = across(bh);
+                let along = (units * MI_SIZE) >> ss_x;
+                let along_start = (offset * MI_SIZE) >> ss_x;
+                let (predicted, overlap) = across(bh, ss_y);
                 ((x + along_start, y), (along, predicted), (along, overlap))
             }
             Av1ObmcEdge::Left => {
-                let (predicted, overlap) = across(bw);
+                let along = (units * MI_SIZE) >> ss_y;
+                let along_start = (offset * MI_SIZE) >> ss_y;
+                let (predicted, overlap) = across(bw, ss_x);
                 ((x, y + along_start), (predicted, along), (overlap, along))
             }
         };
@@ -932,7 +951,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             (px, py),
             (pw, ph),
             neighbour.mv[0],
-            (ss == 1, ss == 1),
+            (ss_x == 1, ss_y == 1),
             neighbour.filters(),
             &mut prediction,
         );

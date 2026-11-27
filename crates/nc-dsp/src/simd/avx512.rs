@@ -16,8 +16,8 @@ use core::arch::x86_64::{
     _mm512_mask_sub_epi32, _mm512_maskz_set1_epi32, _mm512_max_epi32, _mm512_min_epi32,
     _mm512_mullo_epi32, _mm512_or_si512, _mm512_set1_epi32, _mm512_setzero_si512,
     _mm512_shuffle_i32x4, _mm512_sll_epi32, _mm512_sra_epi32, _mm512_srl_epi32,
-    _mm512_storeu_si512, _mm512_sub_epi32, _mm512_unpackhi_epi32, _mm512_unpackhi_epi64,
-    _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
+    _mm512_storeu_si512, _mm512_sub_epi32, _mm512_test_epi32_mask, _mm512_unpackhi_epi32,
+    _mm512_unpackhi_epi64, _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
 };
 use core::arch::x86_64::{
     _mm256_castsi256_si128, _mm256_extracti128_si256, _mm512_broadcast_i64x4,
@@ -40,6 +40,30 @@ impl WordPairLanes for I32x16 {
     #[inline(always)]
     fn word_pairs(self, high: Self) -> WordPairs16 {
         I32x16::word_pairs(self, high)
+    }
+
+    #[inline(always)]
+    fn checked_word_pairs<const N: usize>(values: &[Self; N]) -> Option<[WordPairs16; N]> {
+        // SAFETY: lane values exist only inside AVX-512F/BW/VL kernels.
+        unsafe {
+            let zero = _mm512_setzero_si512();
+            let bias = _mm512_set1_epi32(32768);
+            let mut combined = zero;
+            let mut pairs = [WordPairs16(zero); N];
+            for (out, [lo, hi]) in pairs.iter_mut().zip(values.as_chunks::<2>().0) {
+                let lo_biased = _mm512_add_epi32(lo.0, bias);
+                let hi_biased = _mm512_add_epi32(hi.0, bias);
+                combined = _mm512_or_si512(combined, _mm512_or_si512(lo_biased, hi_biased));
+                *out = lo.word_pairs(*hi);
+            }
+            // As on AVX2, the bias moves the entire signed word range into
+            // the low 16 bits, so any set high bit requires wide products.
+            if _mm512_test_epi32_mask(combined, _mm512_set1_epi32(-65536)) == 0 {
+                Some(pairs)
+            } else {
+                None
+            }
+        }
     }
 
     #[inline(always)]

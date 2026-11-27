@@ -1,16 +1,19 @@
-//! Sequence and picture parameter sets of Main-profile streams (H.265
-//! §7.3.2.2, §7.3.2.3), their short-term reference picture sets (§7.3.7,
-//! §7.4.8) and scaling lists (§7.3.4, §7.4.5).
+//! Sequence and picture parameter sets (H.265 §7.3.2.2, §7.3.2.3) with
+//! their range extensions (§7.3.2.2.2, §7.3.2.3.2), short-term reference
+//! picture sets (§7.3.7, §7.4.8) and scaling lists (§7.3.4, §7.4.5).
 //!
-//! The decoder supports what the Main, Main 10 and Main Still Picture
-//! profiles allow (A.3.2, A.3.3, A.3.5): 4:2:0 at 8 to 10 bits (luma and
-//! chroma may differ) and no range, multilayer, 3D or SCC extension tools;
-//! anything else is rejected as unsupported. The VPS carries nothing
+//! The decoder supports the Main, Main 10 and Main Still Picture profiles
+//! (A.3.2 to A.3.4) and the format range extensions profiles (A.3.5, A.3.6):
+//! 4:0:0, 4:2:0, 4:2:2 and 4:4:4 at 8 to 16 bits (luma and chroma may
+//! differ) with every range extension tool; inter prediction above 12 bits
+//! (Monochrome 16 only; the other 16-bit profiles are intra) is refused in
+//! the slice header. Separate colour planes and the SCC
+//! extension tools are rejected as unsupported; the multilayer and 3D
+//! extensions do not change the base layer. The VPS carries nothing
 //! single-layer decoding needs and is not parsed.
 
-use nc_common::colour::read_video_signal_type;
 use nc_common::decode::{BitReader, DecodeError};
-use nc_common::{BitDepth, BitDepths, ColourInfo};
+use nc_common::{BitDepth, BitDepths, ChromaFormat, ColourInfo};
 
 use crate::scan::up_right_diagonal;
 
@@ -38,8 +41,9 @@ const MAX_TILE_ROWS: u32 = 22;
 /// Largest log2 size difference in the SPS block-size syntax: the 64x64 CTB
 /// over the 8x8 minimum coding block (§7.4.3.2.1).
 const MAX_LOG2_DIFF: u32 = 3;
-/// The deepest samples decoded: Main 10 (A.3.3: `bit_depth_*_minus8` <= 2).
-pub(super) const MAX_BIT_DEPTH: u32 = 10;
+/// The deepest samples a format range extensions profile codes (Main 4:4:4
+/// 16 Intra, A.3.5): the depth arithmetic is sized for it.
+pub(super) const MAX_BIT_DEPTH: u32 = 16;
 /// `QpBdOffset` per bit above 8 (eq. 7-4, 7-6).
 const QP_BD_OFFSET_PER_BIT: i32 = 6;
 /// `QpBdOffset` at [`MAX_BIT_DEPTH`].
@@ -52,10 +56,18 @@ pub(super) fn qp_bd_offset(depth: BitDepth) -> i32 {
     QP_BD_OFFSET_PER_BIT * depth.above_eight() as i32
 }
 
+/// `QpC` of `qPi` (§8.6.1, §8.7.2.5.5): Table 8-10 in 4:2:0,
+/// `Min(qPi, 51)` in the other formats.
+pub(super) fn chroma_qp(format: ChromaFormat, qpi: i32) -> i32 {
+    if format == ChromaFormat::Yuv420 {
+        crate::quant::chroma_qp_table(qpi)
+    } else {
+        qpi.min(MAX_QP)
+    }
+}
+
 /// Largest `delta_poc_s*_minus1` / `abs_delta_rps_minus1` (§7.4.8).
 const MAX_DELTA_POC_MINUS1: u32 = (1 << 15) - 1;
-/// `aspect_ratio_idc` that carries an explicit sample aspect ratio.
-const EXTENDED_SAR: u32 = 255;
 
 /// One short-term reference picture set (§7.4.8): POC deltas relative to
 /// the current picture and whether the current picture uses each.
@@ -76,8 +88,9 @@ impl ShortTermSet {
 /// `ScalingFactor` of every size and matrix (§7.4.5), row-major.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ScalingLists {
-    /// Index `[sizeId][matrixId]`: 4x4, 8x8, 16x16, 32x32 (only matrices 0
-    /// and 3 of size 3 exist).
+    /// Index `[sizeId][matrixId]`: 4x4, 8x8, 16x16, 32x32. The 32x32
+    /// chroma matrices (4:4:4 only) are the 16x16 ones upsampled
+    /// (§7.4.5, equation 7-44 with `ChromaArrayType` 3).
     factors: [[Vec<u8>; 6]; 4],
 }
 
@@ -97,18 +110,17 @@ const DEFAULT_INTER: [u8; 64] = [
 ];
 /// Flat scaling factor (`m[x][y]` without scaling lists, §8.6.4.2).
 pub(super) const FLAT_SCALE: u8 = 16;
-/// Matrices per size; sizeId 3 has only intra and inter luma (§7.3.4).
+/// Matrices per size; sizeId 3 codes only intra and inter luma (§7.3.4).
 const MATRICES: usize = 6;
 const SIZES: usize = 4;
+/// `sizeId` of 32x32: its chroma lists are the 16x16 ones (§7.4.5).
+const CHROMA_32X32_SIZE: usize = 3;
 
 impl ScalingLists {
     /// `ScalingFactor[sizeId][matrixId]` for a `2^log2` transform
     /// (`matrixId`: 0..2 intra Y/Cb/Cr, 3..5 inter).
     pub fn factors(&self, log2: u8, matrix: usize) -> &[u8] {
-        let size = usize::from(log2 - 2);
-        // 32x32 chroma never occurs in 4:2:0; its matrix is the luma one.
-        let matrix = if size == 3 { matrix / 3 * 3 } else { matrix };
-        &self.factors[size][matrix]
+        &self.factors[usize::from(log2 - 2)][matrix]
     }
 
     /// The default lists (Table 7-5, 7-6), used when scaling lists are
@@ -143,6 +155,9 @@ impl ScalingLists {
                     };
                 }
             }
+        }
+        for matrix in [1, 2, 4, 5] {
+            lists[CHROMA_32X32_SIZE][matrix] = lists[CHROMA_32X32_SIZE - 1][matrix].clone();
         }
         Ok(Self::expand(&lists))
     }
@@ -224,9 +239,12 @@ fn explicit_list(r: &mut BitReader<'_>, size: usize) -> Result<(Vec<u8>, u8), De
 }
 
 /// The range and SCC extension flags among the eight extension presence
-/// flags (`pps_range_extension_flag` first, then multilayer, 3D, SCC; §7.3.2.3.1).
+/// flags of an SPS or PPS (`*_range_extension_flag` first, then
+/// multilayer, 3D, SCC; §7.3.2.2.1, §7.3.2.3.1).
 const RANGE_EXTENSION_FLAG: u32 = 0x80;
 const SCC_EXTENSION_FLAG: u32 = 0x10;
+/// Bits of the extension presence flags.
+const EXTENSION_FLAG_BITS: u32 = 8;
 /// `general_profile_idc` of the screen content profiles (A.3.7: Screen-Extended
 /// Main, Main 10, Main 4:4:4, Main 4:4:4 10, and A.3.8 High Throughput 4:4:4
 /// 14 with SCC).
@@ -235,25 +253,150 @@ const SCC_PROFILES: [u32; 2] = [9, 11];
 /// decodes (A.3.2 to A.3.4).
 const MAIN_PROFILES: [u32; 3] = [1, 2, 3];
 
-/// `pps_range_extension()` and `pps_scc_extension()` are outside Main: their
-/// presence flags must be 0.
-fn no_extensions(r: &mut BitReader<'_>) -> Result<(), DecodeError> {
-    if r.read_bit()? {
-        let flags = r.read_bits(8)?;
-        // pps_range_extension_flag is the first of the eight.
-        if flags & RANGE_EXTENSION_FLAG != 0 {
-            return Err(DecodeError::Unsupported("range extension"));
-        }
-        // pps_scc_extension_flag (§7.3.2.3.1) enables intra block copy,
-        // adaptive colour transform and palette predictor initialisers,
-        // which change the slice and CU syntax: decoding on would be wrong.
-        if flags & SCC_EXTENSION_FLAG != 0 {
-            return Err(DecodeError::Unsupported("HEVC screen content coding"));
-        }
-        // The multilayer and 3D extensions do not affect decoding the base
-        // layer; their data is ignored (§7.4.3.3.1: decoders shall ignore it).
+/// The extension presence flags after `*_extension_present_flag`
+/// (§7.3.2.2.1, §7.3.2.3.1): whether the range extension follows. The
+/// SCC extension enables intra block copy, adaptive colour transform and
+/// palettes, which change the slice and CU syntax: decoding on would be
+/// wrong. The multilayer and 3D extensions do not affect decoding the base
+/// layer; their data is ignored (§7.4.3.3.1: decoders shall ignore it).
+fn extensions(r: &mut BitReader<'_>) -> Result<bool, DecodeError> {
+    if !r.read_bit()? {
+        return Ok(false);
     }
-    Ok(())
+    let flags = r.read_bits(EXTENSION_FLAG_BITS)?;
+    if flags & SCC_EXTENSION_FLAG != 0 {
+        return Err(DecodeError::Unsupported("HEVC screen content coding"));
+    }
+    Ok(flags & RANGE_EXTENSION_FLAG != 0)
+}
+
+/// `sps_range_extension()` (§7.3.2.2.2, semantics §7.4.3.2.2); all off
+/// when absent.
+#[allow(clippy::struct_excessive_bools, reason = "one field per SPS flag")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct SpsRange {
+    pub transform_skip_rotation: bool,
+    pub transform_skip_context: bool,
+    pub implicit_rdpcm: bool,
+    pub explicit_rdpcm: bool,
+    pub extended_precision: bool,
+    pub intra_smoothing_disabled: bool,
+    pub high_precision_offsets: bool,
+    pub persistent_rice_adaptation: bool,
+    pub cabac_bypass_alignment: bool,
+}
+
+impl SpsRange {
+    /// Whether a tool of residual coding or reconstruction is on: blocks
+    /// then take the range extension instance of the residual parser.
+    pub fn residual_tools(&self) -> bool {
+        self.transform_skip_rotation
+            || self.transform_skip_context
+            || self.implicit_rdpcm
+            || self.explicit_rdpcm
+            || self.extended_precision
+            || self.persistent_rice_adaptation
+            || self.cabac_bypass_alignment
+    }
+
+    fn parse(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let mut flag = || r.read_bit();
+        Ok(Self {
+            transform_skip_rotation: flag()?,
+            transform_skip_context: flag()?,
+            implicit_rdpcm: flag()?,
+            explicit_rdpcm: flag()?,
+            extended_precision: flag()?,
+            intra_smoothing_disabled: flag()?,
+            high_precision_offsets: flag()?,
+            persistent_rice_adaptation: flag()?,
+            cabac_bypass_alignment: flag()?,
+        })
+    }
+}
+
+/// The chroma QP offset lists of `pps_range_extension()` (§7.4.3.3.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ChromaQpOffsets {
+    /// `diff_cu_chroma_qp_offset_depth`.
+    pub depth: u8,
+    /// `cb_qp_offset_list[i]`, `cr_qp_offset_list[i]` (each in −12..=12).
+    pub list: Vec<[i32; 2]>,
+}
+
+/// `pps_range_extension()` (§7.3.2.3.2, semantics §7.4.3.3.2); the
+/// defaults when absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpsRange {
+    /// `Log2MaxTransformSkipSize` (2: 4x4 only, as in version 1).
+    pub log2_max_transform_skip: u8,
+    pub cross_component_prediction: bool,
+    /// `chroma_qp_offset_list_enabled_flag` and its lists.
+    pub chroma_qp_offsets: Option<ChromaQpOffsets>,
+    /// `log2_sao_offset_scale_luma`, `log2_sao_offset_scale_chroma`.
+    pub log2_sao_offset_scale: [u8; 2],
+}
+
+impl Default for PpsRange {
+    fn default() -> Self {
+        Self {
+            log2_max_transform_skip: MIN_TRANSFORM_SKIP_LOG2,
+            cross_component_prediction: false,
+            chroma_qp_offsets: None,
+            log2_sao_offset_scale: [0; 2],
+        }
+    }
+}
+
+/// `Log2MaxTransformSkipSize` without the range extension.
+const MIN_TRANSFORM_SKIP_LOG2: u8 = 2;
+/// Most entries of the chroma QP offset lists (§7.4.3.3.2:
+/// `chroma_qp_offset_list_len_minus1` in 0..=5).
+const MAX_CHROMA_QP_OFFSET_LIST: u32 = 6;
+/// `cb_qp_offset_list` / `cr_qp_offset_list` range (§7.4.3.3.2).
+const CHROMA_QP_OFFSET_RANGE: std::ops::RangeInclusive<i32> = -12..=12;
+
+impl PpsRange {
+    /// `transform_skip`: `transform_skip_enabled_flag`.
+    fn parse(r: &mut BitReader<'_>, transform_skip: bool) -> Result<Self, DecodeError> {
+        let log2_max_transform_skip = if transform_skip {
+            // §7.4.3.3.2: at most MaxTbLog2SizeY, checked against the SPS
+            // where both are known (`Pps::check`).
+            r.read_ue_max(3, "log2_max_transform_skip_block_size_minus2")? as u8
+                + MIN_TRANSFORM_SKIP_LOG2
+        } else {
+            MIN_TRANSFORM_SKIP_LOG2
+        };
+        let cross_component_prediction = r.read_bit()?;
+        let chroma_qp_offsets = if r.read_bit()? {
+            let depth = r.read_ue_max(3, "diff_cu_chroma_qp_offset_depth")? as u8;
+            let len = r.read_ue_max(
+                MAX_CHROMA_QP_OFFSET_LIST - 1,
+                "chroma_qp_offset_list_len_minus1",
+            )? + 1;
+            let mut list = Vec::with_capacity(len as usize);
+            for _ in 0..len {
+                let offsets = [r.read_se()?, r.read_se()?];
+                if !offsets.iter().all(|o| CHROMA_QP_OFFSET_RANGE.contains(o)) {
+                    return Err(DecodeError::Malformed("chroma QP offset list"));
+                }
+                list.push(offsets);
+            }
+            Some(ChromaQpOffsets { depth, list })
+        } else {
+            None
+        };
+        // §7.4.3.3.2: each is at most Max(0, BitDepth − 10), checked
+        // against the SPS (`Pps::check`).
+        let luma = r.read_ue_max(MAX_BIT_DEPTH - 10, "log2_sao_offset_scale_luma")? as u8;
+        let chroma = r.read_ue_max(MAX_BIT_DEPTH - 10, "log2_sao_offset_scale_chroma")? as u8;
+        Ok(Self {
+            log2_max_transform_skip,
+            cross_component_prediction,
+            chroma_qp_offsets,
+            log2_sao_offset_scale: [luma, chroma],
+        })
+    }
 }
 
 /// A sequence parameter set (§7.4.3.2.1).
@@ -263,6 +406,9 @@ pub(super) struct Sps {
     pub max_sub_layers: usize,
     pub width: usize,
     pub height: usize,
+    /// `ChromaArrayType` (§7.4.3.2.1): the chroma planes' format, `None`
+    /// for monochrome (4:0:0).
+    pub chroma: Option<ChromaFormat>,
     /// Conformance window in luma samples: left, right, top, bottom.
     pub crop: [usize; 4],
     /// `BitDepthY`, `BitDepthC`.
@@ -289,6 +435,21 @@ pub(super) struct Sps {
     pub temporal_mvp: bool,
     pub strong_intra_smoothing: bool,
     pub colour: ColourInfo,
+    pub range: SpsRange,
+}
+
+/// `chroma_format_idc` of 4:4:4, the one that codes
+/// `separate_colour_plane_flag` (Table 6-1).
+const CHROMA_444_IDC: u32 = 3;
+
+/// `ChromaArrayType` of `chroma_format_idc` (Table 6-1).
+fn chroma_format(idc: u32) -> Option<ChromaFormat> {
+    match idc {
+        1 => Some(ChromaFormat::Yuv420),
+        2 => Some(ChromaFormat::Yuv422),
+        CHROMA_444_IDC => Some(ChromaFormat::Yuv444),
+        _ => None,
+    }
 }
 
 /// PCM parameters (§7.4.3.2.1).
@@ -320,9 +481,11 @@ impl Sps {
         if id >= MAX_SPS {
             return Err(DecodeError::Malformed("sps_seq_parameter_set_id"));
         }
-        if r.read_ue()? != 1 {
-            return Err(DecodeError::Unsupported("chroma format other than 4:2:0"));
+        let chroma_format_idc = r.read_ue_max(CHROMA_444_IDC, "chroma_format_idc")?;
+        if chroma_format_idc == CHROMA_444_IDC && r.read_bit()? {
+            return Err(DecodeError::Unsupported("separate colour planes"));
         }
+        let chroma = chroma_format(chroma_format_idc);
         let width = r.read_ue()?;
         let height = r.read_ue()?;
         if width == 0
@@ -335,11 +498,13 @@ impl Sps {
         }
         let mut crop = [0usize; 4];
         if r.read_bit()? {
-            for c in &mut crop {
-                // Offsets count chroma samples (SubWidthC = SubHeightC = 2).
-                // Bounded before doubling, so the sums below cannot wrap a
-                // 32-bit `usize` (WASM) into a valid-looking window.
-                *c = 2 * r.read_ue_max(width.max(height), "conf_win_offset")? as usize;
+            // Offsets count chroma samples: SubWidthC, SubHeightC (1 for
+            // 4:0:0, eq. 7-1). Bounded before scaling, so the sums below
+            // cannot wrap a 32-bit `usize` (WASM) into a valid-looking window.
+            let (sx, sy) = chroma.map_or((0, 0), ChromaFormat::subsampling);
+            for (i, c) in crop.iter_mut().enumerate() {
+                let shift = if i < 2 { sx } else { sy };
+                *c = (r.read_ue_max(width.max(height), "conf_win_offset")? as usize) << shift;
             }
         }
         if crop[0] + crop[1] >= width as usize || crop[2] + crop[3] >= height as usize {
@@ -349,9 +514,9 @@ impl Sps {
             // bit_depth_luma_minus8 / bit_depth_chroma_minus8.
             let bits = r.read_ue()?.saturating_add(8);
             if bits > MAX_BIT_DEPTH {
-                return Err(DecodeError::Unsupported("bit depth above 10"));
+                return Err(DecodeError::Malformed("bit depth"));
             }
-            Ok(BitDepth::new(bits).expect("8..=10 bits"))
+            Ok(BitDepth::new(bits).expect("8..=16 bits"))
         };
         let depths = BitDepths {
             luma: depth()?,
@@ -464,12 +629,15 @@ impl Sps {
         let temporal_mvp = r.read_bit()?;
         let strong_intra_smoothing = r.read_bit()?;
         let colour = if r.read_bit()? {
-            vui_colour(&mut r)?
+            super::vui::parse(&mut r, max_sub_layers)?
         } else {
             ColourInfo::default()
         };
-        // Everything after the colour description (timing, HRD, bitstream
-        // restriction, extensions) is informative for Main decoding.
+        let range = if extensions(&mut r)? {
+            SpsRange::parse(&mut r)?
+        } else {
+            SpsRange::default()
+        };
         Ok((
             id,
             Self {
@@ -495,6 +663,8 @@ impl Sps {
                 temporal_mvp,
                 strong_intra_smoothing,
                 colour,
+                chroma,
+                range,
             },
         ))
     }
@@ -546,22 +716,6 @@ fn profile_tier_level(r: &mut BitReader<'_>, sub_layers_minus1: usize) -> Result
         }
     }
     Ok(())
-}
-
-/// The colour description of `vui_parameters()` (§E.2.1); the fields
-/// before it are skipped.
-fn vui_colour(r: &mut BitReader<'_>) -> Result<ColourInfo, DecodeError> {
-    if r.read_bit()? && r.read_bits(8)? == EXTENDED_SAR {
-        r.skip_bits(32)?; // sar_width, sar_height
-    }
-    if r.read_bit()? {
-        r.read_bit()?; // overscan_appropriate_flag
-    }
-    if r.read_bit()? {
-        read_video_signal_type(r)
-    } else {
-        Ok(ColourInfo::default())
-    }
 }
 
 /// `st_ref_pic_set(stRpsIdx)` (§7.3.7) with the derivation of §7.4.8.
@@ -767,6 +921,7 @@ pub(super) struct Pps {
     pub lists_modification: bool,
     pub log2_parallel_merge_level: u8,
     pub slice_header_extension: bool,
+    pub range: PpsRange,
 }
 
 impl Pps {
@@ -859,7 +1014,11 @@ impl Pps {
         // §7.4.3.3: Log2ParMrgLevel is at most CtbLog2SizeY (6).
         let log2_parallel_merge_level = r.read_ue_max(4, "log2_parallel_merge_level_minus2")? + 2;
         let slice_header_extension = r.read_bit()?;
-        no_extensions(&mut r)?;
+        let range = if extensions(&mut r)? {
+            PpsRange::parse(&mut r, transform_skip)?
+        } else {
+            PpsRange::default()
+        };
         Ok((
             id,
             Self {
@@ -888,8 +1047,26 @@ impl Pps {
                 lists_modification,
                 log2_parallel_merge_level: log2_parallel_merge_level as u8,
                 slice_header_extension,
+                range,
             },
         ))
+    }
+}
+
+impl Pps {
+    /// The limits of the range extension that depend on the active SPS
+    /// (§7.4.3.3.2): `Log2MaxTransformSkipSize` at most `MaxTbLog2SizeY`,
+    /// each SAO offset scale at most `Max(0, BitDepth − 10)`.
+    pub fn check(&self, sps: &Sps) -> Result<(), DecodeError> {
+        let range = &self.range;
+        let scale_limit = |depth: BitDepth| depth.bits().saturating_sub(10);
+        if range.log2_max_transform_skip > sps.log2_max_tb
+            || u32::from(range.log2_sao_offset_scale[0]) > scale_limit(sps.depths.luma)
+            || u32::from(range.log2_sao_offset_scale[1]) > scale_limit(sps.depths.chroma)
+        {
+            return Err(DecodeError::Malformed("pps_range_extension"));
+        }
+        Ok(())
     }
 }
 
@@ -981,12 +1158,11 @@ mod tests {
         assert_eq!(ptl(1, &[1, 2]), None);
         // pps_extension_present_flag, then pps_scc_extension_flag alone.
         let pps_scc = [0b1000_1000, 0];
-        assert_eq!(no_extensions(&mut BitReader::new(&pps_scc)).err(), scc);
+        assert_eq!(extensions(&mut BitReader::new(&pps_scc)).err(), scc);
         let pps_multilayer = [0b1010_0000, 0];
-        assert_eq!(
-            no_extensions(&mut BitReader::new(&pps_multilayer)).err(),
-            None
-        );
+        assert_eq!(extensions(&mut BitReader::new(&pps_multilayer)), Ok(false));
+        let pps_range = [0b1100_0000, 0];
+        assert_eq!(extensions(&mut BitReader::new(&pps_range)), Ok(true));
     }
 
     /// Values near `u32::MAX` used to wrap in `+ 4` and in the window sums

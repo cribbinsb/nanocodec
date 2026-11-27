@@ -361,6 +361,23 @@ param_group! {
         /// vector test alone opened the floor on natural clips too.
         inter_floor_sad_ratio: 1.0, [0.0, 1.0],
             "with the motion-gated floor on, it opens only where the quadrants' own motion-search SADs sum to at most this fraction of the block's (1: no SAD test): lower opens it only where the quadrants' own vectors predict them much better",
+        /// One test for every early no-split exit (`split_override.rs`):
+        /// the floors, depth removal, the selector-off split decision and
+        /// H.264's partition gates. On for every codec and preset: the demo's
+        /// scrolling-text scene gained 5-10 dB luma on every rung with an
+        /// inter floor (ledger `shared-split-override-past-early-no-split-exits`).
+        split_override: 1.0, [0.0, 1.0],
+            "1 splits any block whose quadrants' motion-search vectors differ by `planner.split_override_samples` whole samples and whose quadrants at their own vectors have at most `planner.split_override_sad_share` of its SAD, past the inter floor, depth removal, the split decision and H.264's partition gates (`split_override.rs`): screen text whose rows snap apart; 0 leaves those exits as they are",
+        split_override_samples: 1.0, [1.0, 16.0],
+            "with `planner.split_override`: whole samples two quadrant vectors must differ by: higher opens only on larger relative motion",
+        split_override_sad_share: 0.1, [0.0, 1.0],
+            "with `planner.split_override`: largest share of the block's one-vector SAD the quadrants' summed SADs may be: higher opens more often (camera noise and texture above about 0.25)",
+        split_override_min_gain: 0.0, [0.0, 16.0],
+            "with `planner.split_override`: smallest SAD per sample the quadrants' own vectors must save over the block's one vector: higher keeps flat, static and noisy areas closed",
+        split_override_force: 0.0, [0.0, 1.0],
+            "with `planner.split_override`: 1 splits every block above one whose quadrants move apart, 0 offers their split to the selector's evidence instead: 0 changes fewer camera blocks",
+        split_override_share_per_step: 0.0, [0.0, 1.0],
+            "with `planner.split_override`: share added per quantizer step of the block's one-vector SAD per sample (capped at 0.9): higher lets blocks whose residual is large against the step split at a smaller relative gain",
         /// 2 vs fixed 16x16 (with `av1.keyframe_chroma_scaled`), AV1 TRAIN6
         /// 150f: PSNR-YUV/V1 BD −3.78%/−5.04%, every clip better on both;
         /// about +110–215M instructions per 720p key frame.
@@ -1004,6 +1021,9 @@ param_group! {
         /// 2 since rc-key-budget (2026-11-21; final-check per codec and preset
         /// in docs/handoff/rate-control.md "Reuse offsets on keys"); the SVC
         /// presets pin 1: `ReuseTerm::key_cells`.
+        /// H.264, HEVC, AV1 and VP9 Default set 0 (2026-11-27, their
+        /// `DEFAULT_PARAMS`); AV2 and VVC keep 2: the same final check read
+        /// AV2 +0.20% [+0.02, +0.39] and VVC +0.32% [+0.14, +0.53] with 0.
         reuse_keys: 2.0, [0.0, 2.0],
             "the reuse term on keys: 1 codes each still block at the step that keeps its quality (planned against the inter level), 0 codes keys at their own quantizer, 2 does the first unless rate control's allowance bounds the key (its bits are fixed, so the offsets would coarsen the rest)",
         reuse_level_price: 0.0, [0.0, 1.0],
@@ -1372,17 +1392,23 @@ param_group! {
         // DEFAULT_PARAMS).
         // Long single-key runs (1200 f, 3 clips x 4 rungs): AV1 J -1.10 %,
         // H.264 -1.44 %, peak <= 1.15 buffers, no drift.
-        key_cap_buffer: 1.0, [0.0, 4.0],
-            "rate control: most bits any key may take, as a multiple of the buffer (0 = none): lower keeps the first key from filling the receiver's buffer, at a coarser start",
-        /// The first key apart (off by default: 0 is `key_cap_buffer`). Why
-        /// the first key and not a key-distance term: the first key has no
+        key_cap_buffer: 0.4, [0.0, 4.0],
+            "rate control: most bits any periodic key may take, as a multiple of the buffer (0 = none): lower keeps mid-stream keys from filling the receiver's buffer",
+        /// The first key apart (1.0 by default; 0 falls back to `key_cap_buffer`).
+        /// Why the first key and not a key-distance term: the first key has no
         /// inter level to plan against, takes the start-up boost
-        /// (`rate.first_key_boost_scale`) and sets the start-up delay; the
-        /// 150-frame one-key L3 sees only it, and there `key_cap_buffer` 1.0
-        /// cost J on eight rungs whose periodic keys gained at both key
-        /// shares (docs/handoff/rate-control.md "Key distance").
-        key_cap_buffer_first: 0.0, [0.0, 4.0],
+        /// (`rate.first_key_boost_scale`) and `rate.key_cap_frames_first` plus
+        /// causal R2 refinement; keeping `key_cap_buffer_first = 1.0` leaves
+        /// single-key 150-frame streams unchanged while periodic keys use the
+        /// tighter `key_cap_buffer` -> `key_cap_buffer_still` schedule.
+        key_cap_buffer_first: 1.0, [0.0, 4.0],
             "rate control: most bits the stream's first key may take, as a multiple of the buffer (0 = `rate.key_cap_buffer`): lower starts coarser and quicker, apart from the periodic keys' cap",
+        // Stillness-adaptive periodic-key cap (600f 1/150+1/300, n=24, --strict-buffer, 2026-11-27):
+        // 0.40 -> 1.00 via fixed_camera(still_share) vs flat 1.0: AV1 J -0.29% [-0.76, +0.13],
+        // AV2 -0.12% [-0.32, +0.09], HEVC +0.02% [-0.40, +0.43], H.264 +0.15% [-0.25, +0.64],
+        // VVC +0.35% [-0.09, +0.78], VP9 +0.42% [+0.12, +0.75] (0 guards on all 6 codecs).
+        key_cap_buffer_still: 1.0, [0.0, 4.0],
+            "rate control: periodic-key buffer cap lifted linearly toward this multiple on fixed-camera scenes (`still_share > 0.8`, via `fixed_camera(still_share)`) so static GOPs avoid the two-stage re-quantization tax while moving/talking-head scenes keep the tighter `rate.key_cap_buffer` (0 = off)",
         // Causal R2 first-key refinement (L3 n=98, 150f, --strict-buffer, 2026-11-26):
         // H.264 J -1.15% [-1.40, -0.33], VVC -0.83% [-1.15, -0.27], AV1 -0.50% [-0.84, -0.10]
         // (0 guards); HEVC -0.97% [-1.37, -0.28] (1-clip 10s pulse f=450 1-QP boundary flip).

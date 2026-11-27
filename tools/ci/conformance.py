@@ -53,15 +53,30 @@ DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
 # suite here and build its manifest with tools/dev/conformance_manifest.py.
 SUITES = {
     "hevc-v1": ("hevc", ROOT / "tools/ci/hevc_conformance_v1.json", DATA / "conformance/hevc/streams"),
+    "hevc-rext": ("hevc", ROOT / "tools/ci/hevc_conformance_rext.json",
+                  DATA / "conformance/hevc-rext/streams"),
     "vvc-v1": ("vvc", ROOT / "tools/ci/vvc_conformance_v1.json", DATA / "conformance/vvc/streams"),
+    # H.266.1 2nd edition: the 12- and 16-bit range extension profiles
+    # (conformance_fetch.py --suite vvc-rext).
+    "vvc-rext": ("vvc", ROOT / "tools/ci/vvc_conformance_rext.json",
+                 DATA / "conformance/vvc-rext/streams"),
     "av1-libaom": ("av1", ROOT / "tools/ci/av1_conformance_libaom.json", DATA / "conformance/av1/streams"),
     # libaom / SVT-AV1 streams for Main-profile tools the libaom vectors lack
     # (tools/dev/av1_conformance_supplement.sh).
     "av1-supplementary": ("av1", ROOT / "tools/ci/av1_conformance_supplementary.json",
                           DATA / "conformance/av1/supplementary"),
+    # aomenc High/Professional profile streams (tools/dev/av1_profile_streams.sh).
+    "av1-profiles": ("av1", ROOT / "tools/ci/av1_conformance_profiles.json",
+                     DATA / "conformance/av1/profiles"),
     "vp9-libvpx": ("vp9", ROOT / "tools/ci/vp9_conformance_libvpx.json", DATA / "conformance/vp9/streams"),
     # ITU-T H.264.1 (AVCv1, FRExt, High 10): conformance_fetch.py --suite h264.
     "h264": ("h264", ROOT / "tools/ci/h264_conformance.json", DATA / "conformance/h264/streams"),
+    # Their 4:2:2 and 4:4:4 streams: conformance_fetch.py --suite h264-chroma.
+    "h264-chroma": ("h264", ROOT / "tools/ci/h264_conformance_chroma.json",
+                    DATA / "conformance/h264/streams"),
+    # x264 4:2:2 / 4:4:4 and lossless streams (tools/dev/h264_chroma_supplement.sh).
+    "h264-x264-chroma": ("h264", ROOT / "tools/ci/h264_conformance_x264_chroma.json",
+                         DATA / "conformance/h264/supplementary-chroma"),
     # x264 streams for I/P-only High tools (tools/dev/h264_conformance_supplement.sh).
     "h264-x264": ("h264", ROOT / "tools/ci/h264_conformance_x264.json",
                   DATA / "conformance/h264/supplementary"),

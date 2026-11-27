@@ -8,21 +8,24 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, uint32x4_t, vabsq_s16, vabsq_s32, vaddlvq_u16, vaddq_u32, vaddvq_s64,
-    vaddvq_u32, vandq_u32, vdupq_n_s16, vdupq_n_s32, vdupq_n_s64, vdupq_n_u16, vdupq_n_u32,
-    veorq_s16, veorq_s32, vget_low_s16, vget_low_u16, vget_low_u32, vld1_s16, vld1q_s16, vld1q_s32,
-    vmaxq_u32, vmaxvq_u16, vmaxvq_u32, vminq_u16, vminq_u32, vmovl_high_s16, vmovl_high_u16,
-    vmovl_s16, vmovl_u16, vmovn_s32, vmull_high_n_u16, vmull_high_s16, vmull_high_u32, vmull_n_u16,
-    vmull_s16, vmull_u32, vpadalq_s32, vqmovn_high_s32, vqmovn_high_u32, vqmovn_s32, vqmovn_u32,
-    vreinterpretq_s16_s32, vreinterpretq_s16_u16, vreinterpretq_s32_u32, vreinterpretq_u16_s16,
-    vreinterpretq_u32_s32, vreinterpretq_u32_u64, vshlq_u32, vshrq_n_s16, vshrq_n_s32, vst1_s16,
-    vst1q_s16, vst1q_s32, vsubq_s16, vsubq_s32, vsubq_u16, vsubq_u32, vtstq_s16, vtstq_s32,
-    vuzp1q_s16, vuzp2q_u32,
+    int16x8_t, int32x4_t, uint16x8_t, uint32x4_t, vabsq_s16, vabsq_s32, vaddlvq_u16, vaddq_u32,
+    vaddvq_s64, vaddvq_u32, vandq_u32, vdupq_n_s16, vdupq_n_s32, vdupq_n_s64, vdupq_n_u16,
+    vdupq_n_u32, veorq_s16, veorq_s32, vget_low_s16, vget_low_u16, vget_low_u32, vld1_s16,
+    vld1q_s16, vld1q_s32, vmaxq_u32, vmaxvq_u16, vmaxvq_u32, vminq_u16, vminq_u32, vmovl_high_s16,
+    vmovl_high_u16, vmovl_s16, vmovl_u16, vmovn_s32, vmull_high_n_u16, vmull_high_s16,
+    vmull_high_u32, vmull_n_u16, vmull_s16, vmull_u32, vpadalq_s32, vqmovn_high_s32,
+    vqmovn_high_u32, vqmovn_s32, vqmovn_u32, vreinterpretq_s16_s32, vreinterpretq_s16_u16,
+    vreinterpretq_s32_u32, vreinterpretq_u16_s16, vreinterpretq_u32_s32, vreinterpretq_u32_u64,
+    vshlq_u32, vshrq_n_s16, vshrq_n_s32, vst1_s16, vst1q_s16, vst1q_s32, vsubq_s16, vsubq_s32,
+    vsubq_u16, vsubq_u32, vtstq_s16, vtstq_s32, vuzp1q_s16, vuzp2q_u32,
 };
 
 use super::scalar::{fix_dc, quantize_tail};
-use super::{Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, generic};
+use super::{Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, WordQuant, generic};
 use crate::simd::neon::I32x4;
+use core::arch::aarch64::{
+    vaddq_u16, vmull_high_u16, vmull_u16, vreinterpretq_u16_u32, vshlq_u16, vuzp2q_u16,
+};
 
 /// The NEON transform table (NEON is always present on `AArch64`).
 pub(crate) fn txfm_fns() -> TxfmFns {
@@ -47,7 +50,7 @@ pub(crate) fn txfm_fns() -> TxfmFns {
             super::neon_inverse::inverse_64_sparse,
         ],
         coefficient_gain,
-        quantize,
+        quantize: quantize::<false>,
         quantize_from: quantize_from_i16::<i16>,
         quantize_from_wide: quantize_from::<i32, i32>,
         quantize_from_widening: quantize_from_i16::<i32>,
@@ -77,7 +80,9 @@ pub(crate) fn txfm_fns() -> TxfmFns {
 /// Install the SVE2 transforms and out-of-place quantization.
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 pub(crate) fn install_sve2(table: &mut TxfmFns) {
-    table.quantize_from = quantize_from_i16_sve2;
+    table.quantize = quantize::<true>;
+    table.quantize_from = quantize_from_i16_sve2::<i16>;
+    table.quantize_from_widening = quantize_from_i16_sve2::<i32>;
     table.forward_dct_raster_bounded[0] = super::neon_forward::forward_16_bounded_sve2;
     table.forward_dct_low[1] = Some(super::neon_forward::forward_32_low_sve2::<false>);
     table.forward_dct_raster_low[1] = Some(super::neon_forward::forward_32_low_sve2::<true>);
@@ -245,6 +250,70 @@ fn ac_zero_limit(q: &QuantTerms) -> Option<u32> {
         .map(|d| d >> q.input_shift)
 }
 
+/// Quantise an octet in word lanes with the shared exact reciprocal.
+///
+/// # Safety
+/// Source and destination cover `len` values and are disjoint or equal.
+/// If `SVE2` is set, the dispatch must have detected SVE2.
+#[target_feature(enable = "neon")]
+unsafe fn quantize_word_levels<D: Lanes, const SVE2: bool>(
+    src: *const i16,
+    dst: *mut D,
+    len: usize,
+    q: &QuantTerms,
+    terms: WordQuant,
+) -> u32 {
+    // SAFETY: the certificate requires at least sixteen values.
+    let dc = unsafe { i32::from(*src) };
+    let offset = vdupq_n_u16(terms.rounding);
+    let reciprocal = vdupq_n_u16(terms.reciprocal);
+    let shift = vdupq_n_s16(-(terms.shift as i16));
+    let cap = vdupq_n_u16(q.ac.cap as u16);
+    let divisor = (q.ac.divisor >> q.input_shift) as u16;
+    let zero_limit = divisor - terms.rounding - 1;
+    let done = len / 8 * 8;
+    let mut counts = vdupq_n_u16(0);
+    for i in (0..done).step_by(8) {
+        // SAFETY: a whole octet lies in both slices.
+        let raw = unsafe { vld1q_s16(src.add(i)) };
+        let mag = vreinterpretq_u16_s16(vabsq_s16(raw));
+        if vmaxvq_u16(mag) <= zero_limit {
+            // SAFETY: the destination covers the whole octet.
+            unsafe { D::store8_zero(dst.add(i)) };
+            continue;
+        }
+        let numerator = vaddq_u16(mag, offset);
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        let high = if SVE2 {
+            // SAFETY: the SVE2 dispatch checked the ISA.
+            unsafe { crate::simd::sve2::mul_high_words(numerator, reciprocal) }
+        } else {
+            high_word_neon(numerator, reciprocal)
+        };
+        #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+        let high = high_word_neon(numerator, reciprocal);
+        let level = vreinterpretq_s16_u16(vminq_u16(vshlq_u16(high, shift), cap));
+        let sign = vshrq_n_s16::<15>(raw);
+        let signed = vsubq_s16(veorq_s16(level, sign), sign);
+        // SAFETY: the destination covers the whole octet.
+        unsafe { D::store8_i16(dst.add(i), signed) };
+        counts = vsubq_u16(counts, vtstq_s16(signed, signed));
+    }
+    // SAFETY: the tail fits both slices, and the vector pass wrote DC.
+    unsafe {
+        let nonzero = vaddlvq_u16(counts) + quantize_tail(src, dst, done, len, q);
+        fix_dc(dst, dc, nonzero, q)
+    }
+}
+
+#[target_feature(enable = "neon")]
+#[inline]
+fn high_word_neon(numerator: uint16x8_t, reciprocal: uint16x8_t) -> uint16x8_t {
+    let lo = vmull_u16(vget_low_u16(numerator), vget_low_u16(reciprocal));
+    let hi = vmull_high_u16(numerator, reciprocal);
+    vuzp2q_u16(vreinterpretq_u16_u32(lo), vreinterpretq_u16_u32(hi))
+}
+
 /// Quantise 16-bit coefficients in eight-lane 16-bit groups: the all-zero
 /// check runs on `|c|` in 16 bits before any widening, and nonzero groups
 /// narrow, clamp, sign and count in 16 bits. Falls back to [`quantize_levels`]
@@ -262,6 +331,10 @@ unsafe fn quantize_levels_i16<D: Lanes, const SVE2: bool>(
     len: usize,
     q: &QuantTerms,
 ) -> u32 {
+    if let Some(terms) = WordQuant::new(len, q) {
+        // SAFETY: forwarded buffers and dispatch conditions.
+        return unsafe { quantize_word_levels::<D, SVE2>(src, dst, len, q, terms) };
+    }
     let divisor = q.ac.divisor;
     let Some(reciprocal) = Reciprocal::new(divisor) else {
         // SAFETY: forwarded contract.
@@ -411,11 +484,11 @@ unsafe fn quantize_levels<S: Lanes, D: Lanes>(
 
 /// [`quantize_levels_i16`] in place.
 #[target_feature(enable = "neon")]
-unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
+unsafe fn quantize<const SVE2: bool>(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
     let (len, coeffs) = (coeffs.len(), coeffs.as_mut_ptr());
     // SAFETY: source and destination are the same slice; every value is
     // read before its level is written (`quantize_levels_i16`).
-    unsafe { quantize_levels_i16::<i16, false>(coeffs.cast_const(), coeffs, len, q) }
+    unsafe { quantize_levels_i16::<i16, SVE2>(coeffs.cast_const(), coeffs, len, q) }
 }
 
 /// [`quantize_levels_i16`] from `coeffs` into `out`, which keeps `coeffs`.
@@ -428,10 +501,10 @@ unsafe fn quantize_from_i16<D: Lanes>(coeffs: &[i16], q: &QuantTerms, out: &mut 
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[target_feature(enable = "neon")]
-unsafe fn quantize_from_i16_sve2(coeffs: &[i16], q: &QuantTerms, out: &mut [i16]) -> u32 {
+unsafe fn quantize_from_i16_sve2<D: Lanes>(coeffs: &[i16], q: &QuantTerms, out: &mut [D]) -> u32 {
     let out = &mut out[..coeffs.len()];
     // SAFETY: the table checks SVE2 and both slices hold `coeffs.len()` values.
-    unsafe { quantize_levels_i16::<i16, true>(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
+    unsafe { quantize_levels_i16::<D, true>(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
 }
 
 /// [`quantize_levels`] from `coeffs` into `out`, which keeps `coeffs`.
@@ -697,7 +770,7 @@ mod tests {
                         .collect();
                     let mut actual = input;
                     // SAFETY: NEON is mandatory on AArch64; all buffers are valid.
-                    let nonzero = unsafe { quantize(&mut actual, &terms) };
+                    let nonzero = unsafe { quantize::<false>(&mut actual, &terms) };
                     assert_eq!(actual.as_slice(), expected, "{q:?}");
                     assert_eq!(
                         nonzero as usize,

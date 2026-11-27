@@ -64,3 +64,5 @@ decision.subpel_seed_shift_zero_mv = 0
 
 # This rung's own search (above; its final-stage margin is set where slow's is).
 h264.rd_refine = 1
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2

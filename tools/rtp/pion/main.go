@@ -232,6 +232,9 @@ func depay(codec, in, out string) error {
 		writeIVFHeader(&output, codec)
 	}
 	var unit []byte
+	// VP9: where each layer frame of the picture starts (B bit), so a
+	// picture of several frames is written as a superframe (VP9 Annex B).
+	var frameStarts []int
 	var unitTimestamp uint32
 	var firstTimestamp *uint32
 	units := 0
@@ -242,6 +245,10 @@ func depay(codec, in, out string) error {
 		if codec == "av1" && !bytes.HasPrefix(unit, temporalDelimiter) {
 			unit = append(append([]byte{}, temporalDelimiter...), unit...)
 		}
+		if codec == "vp9" && len(frameStarts) > 1 {
+			unit = appendSuperframeIndex(unit, frameStarts)
+		}
+		frameStarts = nil
 		if ivf {
 			if firstTimestamp == nil {
 				t := unitTimestamp
@@ -284,6 +291,9 @@ func depay(codec, in, out string) error {
 		if err != nil {
 			return fmt.Errorf("packet %d: %w", packet.SequenceNumber, err)
 		}
+		if vp9, ok := d.(*codecs.VP9Packet); ok && vp9.B {
+			frameStarts = append(frameStarts, len(unit))
+		}
 		unit = append(unit, piece...)
 		if packet.Marker {
 			flush()
@@ -292,6 +302,22 @@ func depay(codec, in, out string) error {
 	flush()
 	fmt.Fprintf(os.Stderr, "pion depay: %d units\n", units)
 	return os.WriteFile(out, output.Bytes(), 0o644)
+}
+
+// appendSuperframeIndex appends the VP9 superframe index (Annex B) of the
+// frames starting at starts: marker, 4-byte little-endian sizes, marker.
+func appendSuperframeIndex(unit []byte, starts []int) []byte {
+	marker := byte(0xc0 | 3<<3 | (len(starts) - 1))
+	unit = append(unit, marker)
+	frames := len(unit) - 1
+	for i, start := range starts {
+		end := frames
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		unit = binary.LittleEndian.AppendUint32(unit, uint32(end-start))
+	}
+	return append(unit, marker)
 }
 
 func writeIVFHeader(w *bytes.Buffer, codec string) {

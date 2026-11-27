@@ -16,7 +16,9 @@ use super::Result;
 use super::intra::{self, Avail};
 
 /// A scaled transform coefficient.
-pub(super) trait Coefficient: Copy + Default + PartialEq + core::fmt::Debug {
+pub(super) trait Coefficient:
+    Copy + Default + PartialEq + core::fmt::Debug + Into<i32>
+{
     const ZERO: Self;
     /// `value` clamped to the type: a conforming stream stays inside it;
     /// hostile input is clamped rather than wrapped.

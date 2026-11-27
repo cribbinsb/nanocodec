@@ -26,8 +26,9 @@ pub struct SaoCtb {
     pub x1: usize,
     /// The row after the CTB's last.
     pub y1: usize,
-    /// The CTB size in samples of the plane.
-    pub size: usize,
+    /// The CTB width and height in samples of the plane (they differ in
+    /// 4:2:2 chroma).
+    pub size: (usize, usize),
     /// The columns of the plane that may be read.
     pub width: usize,
     /// The rows of the plane (or of the views' window) that may be read.
@@ -77,7 +78,7 @@ pub fn sao_edge_restricted<T: Sample>(
     let exempt = limits.exempt;
     assert!(exempt.is_empty() || exempt.len() == (x1 - x0) * (y1 - y0));
     let [(ax, ay), (bx, by)] = SAO_EO_NEIGHBOURS[usize::from(class)];
-    let region = |v: isize, start: usize| -> usize {
+    let region = |v: isize, start: usize, size: usize| -> usize {
         if v < start as isize {
             0
         } else if v >= (start + size) as isize {
@@ -108,7 +109,7 @@ pub fn sao_edge_restricted<T: Sample>(
                     && yn >= 0
                     && (xn as usize) < width
                     && (yn as usize) < height
-                    && limits.ctbs[region(yn, y0)][region(xn, x0)]
+                    && limits.ctbs[region(yn, y0, size.1)][region(xn, x0, size.0)]
                     && !split(limits.cuts[0], x as isize, xn)
                     && !split(limits.cuts[1], y as isize, yn)
             };
@@ -156,7 +157,7 @@ mod tests {
                 y0: 8,
                 x1: 24,
                 y1: 24,
-                size: 16,
+                size: (16, 16),
                 width: 32,
                 height: 32,
             };
@@ -187,7 +188,7 @@ mod tests {
             y0: 8,
             x1: 24,
             y1: 24,
-            size: 16,
+            size: (16, 16),
             width: 32,
             height: 32,
         };

@@ -235,8 +235,11 @@ rate.cadence_startup_period = 8
 # rate.key_cap_buffer 1.0 for periodic keys (the first key at 0.8) passed nceval.train here
 # (2026-11-23, base 764c45048: final check -1.53 / -0.97 % at 1/150 / 1/300, L3 identical) but
 # failed static_recovery's layered AV1 Veryfast check (frame 28: the starved key's static half
-# 47.65 dB against the undisturbed stream's 51.27, bound 2.5 dB): held at 0.8.
-rate.key_cap_buffer = 0.8
+# 47.65 dB against the undisturbed stream's 51.27, bound 2.5 dB): held at 0.8, now as the
+# first key's cap and the still end of the engine's stillness-adaptive periodic cap (owner
+# 2026-11-27: `rate.key_cap_buffer` 0.4 everywhere).
+rate.key_cap_buffer_first = 0.8
+rate.key_cap_buffer_still = 0.8
 
 # The walk's quarter stage after an unmoved half stage is replaced by the step a parabola
 # through the half stage's costs predicts (adapt.quarter, a switch probing the stage one
@@ -273,3 +276,5 @@ rate.in_frame = 0
 # cycles -0.4 to +0.6% (c8i.2xlarge / c8g.2xlarge). Landed on the owner's order of
 # 2026-11-25 with the L3, final-check and Fixed QP screens curtailed.
 gate.partial_transform_min_quantizer = 0.5
+# The Default's `persist.reuse_keys` 0 (2026-11-27) is not screened on this rung: the engine value.
+persist.reuse_keys = 2

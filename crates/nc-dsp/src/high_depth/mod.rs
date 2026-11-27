@@ -40,7 +40,6 @@ mod vvc_filter;
 mod vvc_recon;
 
 pub use h264::H264Pixel;
-pub(crate) use inverse::whole_block as inverse_whole_block;
 pub use vvc_recon::VvcReconPixel;
 
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
@@ -131,7 +130,7 @@ pub(crate) type GeometricBlend16Fn = unsafe fn(
     VvcGeometric,
     (usize, usize),
     (usize, usize),
-    bool,
+    (usize, usize),
     (&[i16], &[i16]),
     &mut [u16],
     BitDepth,
@@ -569,7 +568,7 @@ pub trait Pixel:
         mask: VvcGeometric,
         origin: (usize, usize),
         size: (usize, usize),
-        chroma: bool,
+        subsampling: (usize, usize),
         sources: (&[i16], &[i16]),
         out: &mut [Self],
     );
@@ -832,13 +831,13 @@ impl Pixel for u8 {
         mask: VvcGeometric,
         origin: (usize, usize),
         size: (usize, usize),
-        chroma: bool,
+        subsampling: (usize, usize),
         sources: (&[i16], &[i16]),
         out: &mut [u8],
     ) {
         kernels
             .dsp
-            .vvc_geometric_blend(mask, origin, size, chroma, sources, out);
+            .vvc_geometric_blend(mask, origin, size, subsampling, sources, out);
     }
 
     fn vvc_dmvr_bilinear(
@@ -1174,7 +1173,7 @@ impl Pixel for u16 {
         mask: VvcGeometric,
         origin: (usize, usize),
         size: (usize, usize),
-        chroma: bool,
+        subsampling: (usize, usize),
         sources: (&[i16], &[i16]),
         out: &mut [u16],
     ) {
@@ -1190,7 +1189,7 @@ impl Pixel for u16 {
                 mask,
                 origin,
                 size,
-                chroma,
+                subsampling,
                 sources,
                 out,
                 kernels.depth,
@@ -1206,6 +1205,12 @@ impl Pixel for u16 {
         out: &mut [i16],
     ) {
         crate::vvc_dmvr::check_bilinear(size, input, phases, out);
+        // The SIMD tiers filter both directions; above 10 bits a whole-sample
+        // column phase must take one vertical pass (the scalar reference).
+        if kernels.depth.bits() > crate::vvc_dmvr::MAX_TWO_PASS_BITS {
+            crate::vvc_dmvr::bilinear_at(size, input, phases, out, kernels.depth);
+            return;
+        }
         // SAFETY: window, phases and output checked; the table matches a
         // supported ISA.
         unsafe { (kernels.dsp.high.vvc_dmvr_bilinear)(size, input, phases, out, kernels.depth) }
@@ -1290,6 +1295,10 @@ impl Pixel for u16 {
         );
         assert_eq!(refs.len(), 3 * n + 1, "HEVC main reference length");
         let out = &mut out[..n * n];
+        if kernels.depth.bits() > crate::hevc_intra::HIGH_SIMD_MAX_BITS {
+            crate::hevc_intra::reference::angular::<u16>(refs, n, angle, out);
+            return;
+        }
         // SAFETY: checked sizes; the table matches a supported ISA.
         unsafe { (kernels.dsp.high.hevc_angular)(refs, n, angle, out) }
     }
@@ -1307,6 +1316,10 @@ impl Pixel for u16 {
             ..*edges
         };
         let out = &mut out[..n * n];
+        if kernels.depth.bits() > crate::hevc_intra::HIGH_SIMD_MAX_BITS {
+            crate::hevc_intra::reference::planar::<u16>(&edges, n, out);
+            return;
+        }
         // SAFETY: as for `hevc_intra_angular`.
         unsafe { (kernels.dsp.high.hevc_planar)(&edges, n, out) }
     }
@@ -1579,11 +1592,11 @@ impl DepthKernels<'_> {
         mask: VvcGeometric,
         origin: (usize, usize),
         size: (usize, usize),
-        chroma: bool,
+        subsampling: (usize, usize),
         sources: (&[i16], &[i16]),
         out: &mut [T],
     ) {
-        T::vvc_geometric_blend(self, mask, origin, size, chroma, sources, out);
+        T::vvc_geometric_blend(self, mask, origin, size, subsampling, sources, out);
     }
 
     /// [`Dsp::vvc_dmvr_bilinear`] at this depth (H.266 §8.5.3.2.2: `shift1 =
@@ -1711,6 +1724,21 @@ impl DepthKernels<'_> {
         dst: &mut PlaneViewMut<'_, T>,
     ) {
         T::hevc_inverse_add(self, transform, coeffs, extent, dst);
+    }
+
+    /// [`Dsp::hevc_inverse`] at this depth: the residual of a whole block,
+    /// the second pass shifting by `20 − BitDepth` (HEVC §8.6.4.2, VVC's
+    /// square DCT-II), for decoders that change the residual before adding
+    /// it (HEVC cross-component prediction and RDPCM).
+    ///
+    /// # Panics
+    /// As [`Dsp::hevc_inverse`].
+    pub fn hevc_inverse(self, transform: HevcTransform, coeffs: &[i16], out: &mut [i16]) {
+        if self.depth == BitDepth::EIGHT {
+            self.dsp.hevc_inverse(transform, coeffs, out);
+        } else {
+            inverse::whole_block(self.dsp, transform, coeffs, out, self.depth);
+        }
     }
 
     /// [`Dsp::hevc_deblock_luma_edge`] at this depth, `tc` and `beta`

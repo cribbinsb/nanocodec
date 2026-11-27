@@ -18,6 +18,8 @@ pub(crate) struct Sources<'a, T: Sample = u8> {
     scalings: [&'a [Option<Scaling>]; 2],
     /// Whether any reference of the slice is scaled.
     rescaled: bool,
+    /// The chroma planes' subsampling (log2 `SubWidthC`, `SubHeightC`).
+    subsampling: (usize, usize),
 }
 
 impl<'a, T: Sample> Sources<'a, T> {
@@ -26,7 +28,7 @@ impl<'a, T: Sample> Sources<'a, T> {
     pub(crate) fn new(
         pictures: [&'a [&'a Picture<T>]; 2],
         header: &'a crate::decoder_headers::SliceHeader,
-        edges: Edges,
+        (edges, subsampling): (Edges, (usize, usize)),
         scalings: [&'a [Option<Scaling>]; 2],
     ) -> Self {
         Self {
@@ -38,7 +40,47 @@ impl<'a, T: Sample> Sources<'a, T> {
                 .iter()
                 .flat_map(|list| list.iter())
                 .any(Option::is_some),
+            subsampling,
         }
+    }
+
+    /// The subsampling of `plane` (log2 `SubWidthC`, `SubHeightC`; none
+    /// for luma).
+    pub(super) fn subsampling(&self, plane: PlaneIndex) -> (usize, usize) {
+        if plane == PlaneIndex::Y {
+            (0, 0)
+        } else {
+            self.subsampling
+        }
+    }
+
+    /// The position and size of luma-sample `block` in samples of `plane`.
+    pub(super) fn plane_rect(
+        &self,
+        plane: PlaneIndex,
+        block: nc_encoder::Block,
+    ) -> ((usize, usize), (usize, usize)) {
+        let (sx, sy) = self.subsampling(plane);
+        (
+            (block.x >> sx, block.y >> sy),
+            (block.width() >> sx, block.height() >> sy),
+        )
+    }
+
+    /// `motion` with the vectors `plane` is predicted with: luma's 1/16
+    /// luma samples, or chroma's 1/32 chroma samples (`mvCLX = mvLX · 2 /
+    /// SubWidthC`, H.266 §8.5.2.13).
+    pub(super) fn plane_motion(&self, mut motion: Motion, plane: PlaneIndex) -> Motion {
+        if plane != PlaneIndex::Y && self.subsampling != (1, 1) {
+            let (sx, sy) = self.subsampling;
+            for vector in motion.lists.iter_mut().flatten() {
+                vector.vector = Mv16 {
+                    x: vector.vector.x << (1 - sx),
+                    y: vector.vector.y << (1 - sy),
+                };
+            }
+        }
+        motion
     }
 
     /// The scaling of reference `index` of `list`, when it is scaled
@@ -64,10 +106,12 @@ impl<'a, T: Sample> Sources<'a, T> {
     /// Where reference samples of `plane` may be read from (the luma edges
     /// divided by the chroma subsampling, §8.5.6.3.4).
     pub(super) fn edges(&self, plane: PlaneIndex) -> Edges {
-        let shift = u32::from(plane != PlaneIndex::Y);
+        let (sx, sy) = self.subsampling(plane);
         Edges {
-            wrap: self.edges.wrap.map(|offset| offset >> shift),
-            area: self.edges.area.map(|area| area.map(|value| value >> shift)),
+            wrap: self.edges.wrap.map(|offset| offset >> sx),
+            area: self.edges.area.map(|[left, top, right, bottom]| {
+                [left >> sx, top >> sy, right >> sx, bottom >> sy]
+            }),
         }
     }
 
@@ -80,9 +124,13 @@ impl<'a, T: Sample> Sources<'a, T> {
             edges: Edges::default(),
             scalings: [&[], &[]],
             rescaled: false,
+            subsampling: (1, 1),
         }
     }
 }
+
+/// The side of an `SbTMVP` subblock in luma samples (H.266 §8.5.5.4).
+const SUBBLOCK_SIDE: usize = 8;
 
 /// Bits of the high-precision prediction samples (14 at every depth): they
 /// carry `shift1 = 14 − BitDepth` fractional bits (H.266 §8.5.6.6.2).
@@ -209,6 +257,7 @@ pub(super) fn predict<T: Pixel>(
     scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
+    let motion = references.plane_motion(motion, plane);
     let luma = plane == PlaneIndex::Y;
     let weighted = (references.weights.is_some() && motion.weight == 0)
         || references.edges != Edges::default()
@@ -359,7 +408,7 @@ pub(super) fn high_precision<T: Pixel>(
             dsp,
             reference,
             (scaling, vector.vector),
-            region,
+            (region, references.subsampling(plane)),
             (luma, half, affine),
             edges.area,
             out,
@@ -453,6 +502,7 @@ fn predict_region_direct<T: Pixel>(
     scratch: &mut InterScratch<T>,
     dst: &mut PlaneViewMut<'_, T>,
 ) {
+    let motion = references.plane_motion(motion, plane);
     let luma = plane == PlaneIndex::Y;
     let weighted = (references.weights.is_some() && motion.weight == 0)
         || references.edges != Edges::default()
@@ -545,41 +595,26 @@ fn affine_direct<T: Pixel>(
     scratch: &mut InterScratch<T>,
     dst: &mut PlaneViewMut<'_, T>,
 ) {
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
+    let chroma = plane != PlaneIndex::Y;
+    let (sx, sy) = references.subsampling(plane);
+    let (position, size) = references.plane_rect(plane, block);
     let n = unit.node;
     let fields = unit.affine_fields;
     for y in (0..size.1).step_by(4) {
         for x in (0..size.0).step_by(4) {
             let (col, row) = (
-                (block.x - n.x + (x << chroma)) / 4,
-                (block.y - n.y + (y << chroma)) / 4,
+                (block.x - n.x + (x << sx)) / 4,
+                (block.y - n.y + (y << sy)) / 4,
             );
             let mut local = motion;
             for (vector, field) in local.lists.iter_mut().zip(fields) {
                 if let (Some(vector), Some(field)) = (vector, field) {
-                    let first = field.at(col, row);
-                    vector.vector = if chroma == 0 {
-                        first
-                    } else {
-                        let last = field.at(col + 1, row + 1);
-                        Mv16 {
-                            x: crate::affine::round_shift(
-                                i64::from(first.x) + i64::from(last.x),
-                                1,
-                            ),
-                            y: crate::affine::round_shift(
-                                i64::from(first.y) + i64::from(last.y),
-                                1,
-                            ),
-                        }
-                    };
+                    vector.vector = affine_vector(field, (col, row), (sx, sy));
                 }
             }
             let mut sub_dst = dst.sub_view_mut(x, y, 4, 4).unwrap();
             let at = (position.0 + x, position.1 + y);
-            if unit.prof && chroma == 0 {
+            if unit.prof && !chroma {
                 super::prof::predict_direct(
                     dsp,
                     references,
@@ -605,6 +640,26 @@ fn affine_direct<T: Pixel>(
     }
 }
 
+/// The vector of the 4x4 subblock `(col, row)` (in luma subblocks) of a
+/// plane with subsampling `(sx, sy)`: luma's own, or the mean of the luma
+/// subblocks a chroma subblock covers, its first and last (H.266
+/// §8.5.5.9: `mvAvgLX`).
+fn affine_vector(
+    field: crate::affine::Field,
+    (col, row): (usize, usize),
+    (sx, sy): (usize, usize),
+) -> Mv16 {
+    let first = field.at(col, row);
+    if (sx, sy) == (0, 0) {
+        return first;
+    }
+    let last = field.at(col + sx, row + sy);
+    Mv16 {
+        x: crate::affine::round_shift(i64::from(first.x) + i64::from(last.x), 1),
+        y: crate::affine::round_shift(i64::from(first.y) + i64::from(last.y), 1),
+    }
+}
+
 /// Predict a non-CIIP, non-GPM inter block directly into `dst`; returns `false`
 /// only for geometric partitioning (`GPM`) so it falls back to `prediction_buf`.
 pub(super) fn try_predict_direct<T: Pixel>(
@@ -619,17 +674,16 @@ pub(super) fn try_predict_direct<T: Pixel>(
     if unit.geometric.is_some() {
         return false;
     }
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
+    let chroma = plane != PlaneIndex::Y;
+    let (sx, sy) = references.subsampling(plane);
+    let (position, size) = references.plane_rect(plane, block);
     if !unit.subblocks.is_empty() {
-        let step = 8 >> chroma;
-        for y in (0..size.1).step_by(step) {
-            for x in (0..size.0).step_by(step) {
+        let step = (SUBBLOCK_SIDE >> sx, SUBBLOCK_SIDE >> sy);
+        for y in (0..size.1).step_by(step.1) {
+            for x in (0..size.0).step_by(step.0) {
                 let motion =
-                    super::motion::at(unit, block.x + (x << chroma), block.y + (y << chroma))
-                        .unwrap();
-                let (w, h) = (step.min(size.0 - x), step.min(size.1 - y));
+                    super::motion::at(unit, block.x + (x << sx), block.y + (y << sy)).unwrap();
+                let (w, h) = (step.0.min(size.0 - x), step.1.min(size.1 - y));
                 let at = (position.0 + x, position.1 + y);
                 let mut sub_dst = dst.sub_view_mut(x, y, w, h).unwrap();
                 predict_region_direct(
@@ -646,7 +700,7 @@ pub(super) fn try_predict_direct<T: Pixel>(
         }
         return true;
     }
-    if !unit.dmvr.is_empty() || (unit.bdof && chroma == 0) {
+    if !unit.dmvr.is_empty() || (unit.bdof && !chroma) {
         super::refinement::predict_direct(dsp, references, unit, plane, block, scratch, dst);
         return true;
     }
@@ -655,7 +709,7 @@ pub(super) fn try_predict_direct<T: Pixel>(
         affine_direct(dsp, references, unit, motion, (plane, block), scratch, dst);
         return true;
     }
-    let anchor = (unit.node.x >> chroma, unit.node.y >> chroma);
+    let anchor = (unit.node.x >> sx, unit.node.y >> sy);
     predict_region_direct(
         dsp,
         references,
@@ -679,9 +733,9 @@ pub(super) fn predict_unit<T: Pixel>(
     scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
+    let chroma = plane != PlaneIndex::Y;
+    let (sx, sy) = references.subsampling(plane);
+    let (position, size) = references.plane_rect(plane, block);
     let mut motion = unit.motion.unwrap();
     // CIIP always averages the two inter predictions before the planar blend;
     // an inherited BCW index remains motion metadata, not a blending weight.
@@ -702,13 +756,12 @@ pub(super) fn predict_unit<T: Pixel>(
         return;
     }
     if !unit.subblocks.is_empty() {
-        let step = 8 >> chroma;
-        for y in (0..size.1).step_by(step) {
-            for x in (0..size.0).step_by(step) {
+        let step = (SUBBLOCK_SIDE >> sx, SUBBLOCK_SIDE >> sy);
+        for y in (0..size.1).step_by(step.1) {
+            for x in (0..size.0).step_by(step.0) {
                 let motion =
-                    super::motion::at(unit, block.x + (x << chroma), block.y + (y << chroma))
-                        .unwrap();
-                let (w, h) = (step.min(size.0 - x), step.min(size.1 - y));
+                    super::motion::at(unit, block.x + (x << sx), block.y + (y << sy)).unwrap();
+                let (w, h) = (step.0.min(size.0 - x), step.1.min(size.1 - y));
                 let mut pixels = [T::default(); 64];
                 let at = (position.0 + x, position.1 + y);
                 predict(
@@ -731,13 +784,13 @@ pub(super) fn predict_unit<T: Pixel>(
         }
         return;
     }
-    if !unit.dmvr.is_empty() || (unit.bdof && chroma == 0) {
+    if !unit.dmvr.is_empty() || (unit.bdof && !chroma) {
         super::refinement::predict(dsp, references, unit, plane, block, scratch, out);
         return;
     }
     if unit.affine_fields.iter().all(Option::is_none) {
         // The whole CU shares its scaled sample positions (§8.5.6.3.1).
-        let anchor = (unit.node.x >> chroma, unit.node.y >> chroma);
+        let anchor = (unit.node.x >> sx, unit.node.y >> sy);
         predict(
             dsp,
             references,
@@ -762,40 +815,25 @@ fn affine<T: Pixel>(
     scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
+    let chroma = plane != PlaneIndex::Y;
+    let (sx, sy) = references.subsampling(plane);
+    let (position, size) = references.plane_rect(plane, block);
     let n = unit.node;
     let fields = unit.affine_fields;
     for y in (0..size.1).step_by(4) {
         for x in (0..size.0).step_by(4) {
             let (col, row) = (
-                (block.x - n.x + (x << chroma)) / 4,
-                (block.y - n.y + (y << chroma)) / 4,
+                (block.x - n.x + (x << sx)) / 4,
+                (block.y - n.y + (y << sy)) / 4,
             );
             let mut local = motion;
             for (vector, field) in local.lists.iter_mut().zip(fields) {
                 if let (Some(vector), Some(field)) = (vector, field) {
-                    let first = field.at(col, row);
-                    vector.vector = if chroma == 0 {
-                        first
-                    } else {
-                        let last = field.at(col + 1, row + 1);
-                        Mv16 {
-                            x: crate::affine::round_shift(
-                                i64::from(first.x) + i64::from(last.x),
-                                1,
-                            ),
-                            y: crate::affine::round_shift(
-                                i64::from(first.y) + i64::from(last.y),
-                                1,
-                            ),
-                        }
-                    };
+                    vector.vector = affine_vector(field, (col, row), (sx, sy));
                 }
             }
             let mut pixels = [T::default(); 16];
-            if unit.prof && chroma == 0 {
+            if unit.prof && !chroma {
                 super::prof::predict(
                     dsp,
                     references,
@@ -835,12 +873,11 @@ fn geometric<T: Pixel>(
     scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
+    let (sx, sy) = references.subsampling(plane);
+    let (position, size) = references.plane_rect(plane, block);
     let n = unit.node;
     let region = Region {
-        anchor: (n.x >> chroma, n.y >> chroma),
+        anchor: (n.x >> sx, n.y >> sy),
         position,
         size,
     };
@@ -848,7 +885,8 @@ fn geometric<T: Pixel>(
     let (s0, s1) = (&mut scratch.s0[..len], &mut scratch.s1[..len]);
     let win = &mut scratch.window[..];
     for (motion, dst) in [pair[0], pair[1]].into_iter().zip([&mut *s0, &mut *s1]) {
-        let (list, vector) = motion
+        let (list, vector) = references
+            .plane_motion(motion, plane)
             .lists
             .into_iter()
             .enumerate()
@@ -870,7 +908,7 @@ fn geometric<T: Pixel>(
         mask,
         (block.x - n.x, block.y - n.y),
         size,
-        chroma != 0,
+        (sx, sy),
         (s0, s1),
         out,
     );

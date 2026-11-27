@@ -1,0 +1,150 @@
+{
+ "commit": "ec8cd468b",
+ "date": "2026-11-27-av1",
+ "notes": [
+  "AV1 only: run on the build box (release builds) on 2026-11-27 at ec8cd468b (branch argon-av1-fix, landed with this record; Argon from a build of the same tree with one clippy-only difference). The other codecs' record is conformance-2026-11-23. Earlier runs of this record (git history): Argon profile 0 790/889 at d489618bb, 889/889 at 7d892c578.",
+  "Argon: all 3343 streams of 18 sets pass: profiles 0, 1 and 2, each with the core, core special, not-Annex-B, not-Annex-B special and stress sets (3008 streams) matching aomdec --rawvideo (our decoder with --unbounded 1 --monochrome-chroma 0), and the error sets (335 invalid streams) decoding robustly: no panic, signal or timeout. The 61 profile 0 mismatches of the first run had two causes, both fixed: lossless blocks' chroma in the loop filter (686d593c1) and intra block copy at the frame edge (ed8b70b46). All profile 1 and 2 streams matched without a change. The large scale tile sets (an exception) were not run."
+ ],
+ "native": {
+  "av1": {
+   "passed": 242,
+   "run": 242,
+   "manifest": 242,
+   "by_bit_depth": {
+    "8": [
+     176,
+     176
+    ],
+    "10": [
+     66,
+     66
+    ]
+   },
+   "reference": "aomdec --i420 (libaom v3.15.3)",
+   "denominator": "libaom v3.15.3 Main-profile test vectors: the 176 av1-1-b8-* and 66 av1-1-b10-* (tools/conformance/av1_manifest.txt), film grain applied",
+   "failing": {}
+  },
+  "av1-supplementary": {
+   "passed": 28,
+   "run": 28,
+   "manifest": 28,
+   "by_bit_depth": {
+    "8": [
+     25,
+     25
+    ],
+    "10": [
+     3,
+     3
+    ]
+   },
+   "reference": "aomdec --i420 (libaom v3.15.3); each stream kept only where aomdec and dav1d 1.5.4 agree on every frame",
+   "denominator": "28 short streams of libaom v3.15.3 (aomenc; svc_encoder_rtc with its ROI map) and SVT-AV1 v4.3.0 for Main-profile tools the libaom vectors lack: quantizer matrices, superblock quantizer and loop filter deltas, segmentation (AQ modes, ROI loop filter / reference / skip features), lossless, odd frame sizes, switch frames (tools/dev/av1_conformance_supplement.sh); not an official suite",
+   "failing": {}
+  },
+  "av1-profiles": {
+   "passed": 27,
+   "run": 27,
+   "manifest": 27,
+   "by_bit_depth": {
+    "8": [
+     14,
+     14
+    ],
+    "10": [
+     5,
+     5
+    ],
+    "12": [
+     8,
+     8
+    ]
+   },
+   "reference": "aomdec (libaom v3.15.3): --i420 for 4:2:0 and monochrome, --rawvideo for 4:2:2 and 4:4:4; dav1d 1.5.4 as a cross-check",
+   "denominator": "27 High and Professional profile streams of aomenc and ffmpeg's libaom (tools/dev/av1_profile_streams.sh); not an official suite",
+   "failing": {}
+  },
+  "av1-argon": {
+   "passed": 3343,
+   "run": 3343,
+   "by_set": {
+    "profile0_core": [
+     764,
+     764
+    ],
+    "profile0_core_special": [
+     55,
+     55
+    ],
+    "profile0_error": [
+     114,
+     114
+    ],
+    "profile0_not_annexb": [
+     15,
+     15
+    ],
+    "profile0_not_annexb_special": [
+     55,
+     55
+    ],
+    "profile0_stress": [
+     88,
+     88
+    ],
+    "profile1_core": [
+     731,
+     731
+    ],
+    "profile1_core_special": [
+     55,
+     55
+    ],
+    "profile1_error": [
+     113,
+     113
+    ],
+    "profile1_not_annexb": [
+     14,
+     14
+    ],
+    "profile1_not_annexb_special": [
+     55,
+     55
+    ],
+    "profile1_stress": [
+     77,
+     77
+    ],
+    "profile2_core": [
+     894,
+     894
+    ],
+    "profile2_core_special": [
+     55,
+     55
+    ],
+    "profile2_error": [
+     108,
+     108
+    ],
+    "profile2_not_annexb": [
+     8,
+     8
+    ],
+    "profile2_not_annexb_special": [
+     55,
+     55
+    ],
+    "profile2_stress": [
+     87,
+     87
+    ]
+   },
+   "reference": "aomdec --rawvideo (libaom v3.15.3) on the same IVF rewrite of each stream, against our decoder's --unbounded 1 --monochrome-chroma 0 output; the *_error sets (invalid streams) check only that our decoder ends without a panic, signal or timeout; the Argon reference MD5s (aomdec --rawvideo --all-layers) are not compared",
+   "denominator": "AOM Argon v2.1.1 (argon_coveragetool_av1_base_and_extended_profiles_v2.1.1.zip): every stream of the sets profile0_core, profile0_core_special, profile0_error, profile0_not_annexb, profile0_not_annexb_special, profile0_stress, profile1_core, profile1_core_special, profile1_error, profile1_not_annexb, profile1_not_annexb_special, profile1_stress, profile2_core, profile2_core_special, profile2_error, profile2_not_annexb, profile2_not_annexb_special, profile2_stress; the large scale tile sets (tile list OBUs, an exception) are not run",
+   "failing": {}
+  }
+ },
+ "wasm": {}
+}

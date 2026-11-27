@@ -8,7 +8,7 @@
 //! decide each leaf's mode, and keep the reconstruction in the slots it
 //! refreshes.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use nc_analysis::motion::{SbSearch, SearchConfig};
 use nc_analysis::preanalysis::PreAnalysis;
@@ -87,6 +87,7 @@ use crate::second_reference::{
 use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 use crate::source_scale::{SourceScaler, scale_source_picture};
 use crate::spatial::SpatialConfig;
+use crate::split_override::{Opening, SplitOverride};
 use crate::startup_lookahead::{StartupLookahead, startup_scene_profile};
 use crate::still_plan::StillPlan;
 use crate::still_skip::StaticSkipTest;
@@ -894,6 +895,7 @@ impl<B: CodecBackend> Encoder<B> {
     fn send_encoder_info(&mut self) {
         self.backend
             .set_encoder_info(self.info.payload(self.config.quantizer));
+        self.backend.set_stream_rate(self.info.stream_rate());
     }
 
     /// What the frame-level filter searches decided on the committed
@@ -3158,6 +3160,9 @@ impl<B: CodecBackend> Encoder<B> {
                         || (planner_params.rd_split >= 0.5
                             && rd_split::stop_reads_inputs(planner_params)),
                     selector_terms: crate::split_selector::selector_terms(planner_params),
+                    split_override: SplitOverride::of(planner_params),
+                    owed: None,
+                    survey: Cell::new(None),
                 };
                 let key_mode = KeyPlanMode::resolve(planner_params.intra_plan, &self.backend);
                 let plan = match inter {
@@ -3908,6 +3913,18 @@ impl<B: CodecBackend> Encoder<B> {
             .fold(ShapeSet::EMPTY, ShapeSet::with)
     }
 
+    /// Whether the split override (`split_override.rs`) opens the leaf
+    /// `node`, for the backend's own partition search
+    /// ([`CodecBackend::sub_block_motion`]).
+    fn override_opens_leaf(&self, frame: &FrameInputs<'_>, node: &Block) -> bool {
+        SplitOverride::of(&self.planner_params).is_some_and(|split| {
+            let step = self.sample_step(self.frame_quantizer) as f32;
+            let square = (node.x, node.y, node.log2_size());
+            let survey = split.survey(frame.motion, square, step);
+            survey.opening(square, false) != Opening::Closed
+        })
+    }
+
     /// The mode of inter-frame leaf `node` and the reference it predicts
     /// from, or
     /// `None` when the backend accepted it as a static skip and has already
@@ -4013,7 +4030,12 @@ impl<B: CodecBackend> Encoder<B> {
                 if let Some(window) = refresh {
                     forbid_sub_block_vectors(window, node, &mut vectors[..count]);
                 }
-                self.backend.sub_block_motion(node, &vectors[..count]);
+                // The split override also opens the backend's own partition
+                // search (H.264's 8x8), on the primary reference it measured.
+                let split =
+                    chosen == ReferenceChoice::Primary && self.override_opens_leaf(frame, node);
+                self.backend
+                    .sub_block_motion(node, &vectors[..count], split);
             }
             // No pricing against the secondary reference (no hint), nor on
             // blocks pre-analysis marks static: there an intra leaf
@@ -5188,7 +5210,7 @@ fn random_inter_leaf<B: CodecBackend>(
         if let Some(window) = refresh {
             forbid_sub_block_vectors(window, node, &mut vectors[..count]);
         }
-        backend.sub_block_motion(node, &vectors[..count]);
+        backend.sub_block_motion(node, &vectors[..count], false);
     }
     mode
 }

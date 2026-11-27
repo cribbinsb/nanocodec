@@ -49,7 +49,7 @@ impl VvcTransformKind {
             size.min(MAX_FREQUENCIES)
         }
     }
-    fn basis(self, size: usize, frequency: usize, sample: usize) -> i32 {
+    pub(crate) fn basis(self, size: usize, frequency: usize, sample: usize) -> i32 {
         if self == Self::Dct2 {
             return if size == 64 {
                 i32::from(tables::DCT64[frequency][sample])

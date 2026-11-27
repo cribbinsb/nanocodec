@@ -68,6 +68,9 @@ const BILINEAR_PHASES: i32 = 16;
 /// `shift1 = BitDepth − 6` (H.266 §8.5.3.2.2): the first pass leaves
 /// 10-bit samples with the taps' four bits, whatever the depth.
 const FIRST_SHIFT_BELOW_DEPTH: u32 = 6;
+/// The deepest samples whose first pass (`shift1` at most 4) is exact, so
+/// that two passes equal one at a whole-sample column phase.
+pub(crate) const MAX_TWO_PASS_BITS: u32 = 10;
 /// `shift2` of H.266 §8.5.3.2.2: the second pass removes the taps' bits.
 const BILINEAR_SECOND_SHIFT: u32 = 4;
 
@@ -108,6 +111,20 @@ pub(crate) fn bilinear_at<T: nc_common::Sample>(
     let (fx, fy) = (phases.0 as i32, phases.1 as i32);
     let shift1 = depth.bits() - FIRST_SHIFT_BELOW_DEPTH;
     let (offset1, offset2) = (1 << (shift1 - 1), 1 << (BILINEAR_SECOND_SHIFT - 1));
+    if fx == 0 {
+        // A whole-sample column phase is one vertical pass shifting by
+        // `shift1` (VTM `filter` with `isFirst` and `isLast`): above 10
+        // bits a horizontal pass first would round away bits.
+        for y in 0..height {
+            let (top, bottom) = (input.row(y), input.row(y + 1));
+            for x in 0..width {
+                out[y * width + x] =
+                    ((top[x].to_i32() * (BILINEAR_PHASES - fy) + bottom[x].to_i32() * fy + offset1)
+                        >> shift1) as i16;
+            }
+        }
+        return;
+    }
     for y in 0..height {
         let top = input.row(y);
         let bottom = input.row(y + 1);

@@ -13,19 +13,21 @@
 
 use core::arch::x86_64::{
     __m256i, _mm_add_epi32, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_loadu_si128,
-    _mm_shuffle_epi32, _mm_storeu_si128, _mm256_abs_epi32, _mm256_add_epi32, _mm256_add_epi64,
-    _mm256_blend_epi32, _mm256_castsi256_si128, _mm256_cmpeq_epi32, _mm256_cvtepi16_epi32,
-    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_min_epi32, _mm256_mul_epi32,
-    _mm256_mul_epu32, _mm256_packs_epi32, _mm256_permute4x64_epi64, _mm256_set1_epi32,
-    _mm256_set1_epi64x, _mm256_setzero_si256, _mm256_sign_epi32, _mm256_sll_epi32,
-    _mm256_slli_epi32, _mm256_slli_epi64, _mm256_srl_epi64, _mm256_srli_epi64, _mm256_storeu_si256,
-    _mm256_sub_epi32,
+    _mm_shuffle_epi32, _mm_storeu_si128, _mm256_abs_epi16, _mm256_abs_epi32, _mm256_add_epi16,
+    _mm256_add_epi32, _mm256_add_epi64, _mm256_and_si256, _mm256_blend_epi32,
+    _mm256_castsi256_si128, _mm256_cmpeq_epi16, _mm256_cmpeq_epi32, _mm256_cvtepi16_epi32,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_min_epi32,
+    _mm256_min_epu16, _mm256_mul_epi32, _mm256_mul_epu32, _mm256_mulhi_epi16, _mm256_packs_epi32,
+    _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set1_epi64x,
+    _mm256_setzero_si256, _mm256_sign_epi16, _mm256_sign_epi32, _mm256_sll_epi32,
+    _mm256_slli_epi32, _mm256_slli_epi64, _mm256_srai_epi16, _mm256_srl_epi16, _mm256_srl_epi64,
+    _mm256_srli_epi64, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32,
 };
 
 use super::scalar::{fix_dc, quantize_tail};
 use super::{
-    Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, avx2_forward, avx2_inverse,
-    generic,
+    Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, WordQuant, avx2_forward,
+    avx2_inverse, generic,
 };
 use crate::simd::avx2::{I32x4, I32x8};
 
@@ -57,9 +59,9 @@ pub(crate) unsafe fn txfm_fns() -> TxfmFns {
         ],
         coefficient_gain,
         quantize,
-        quantize_from: quantize_from::<i16, i16>,
+        quantize_from: quantize_from_words::<i16>,
         quantize_from_wide: quantize_from::<i32, i32>,
-        quantize_from_widening: quantize_from::<i16, i32>,
+        quantize_from_widening: quantize_from_words::<i32>,
         dequantize,
         forward_dct_raster: [
             forward_4_raster,
@@ -136,6 +138,14 @@ pub(super) trait Lanes8: QuantStorage {
     ///
     /// AVX2 is enabled; `dst` holds eight values.
     unsafe fn store8(dst: *mut Self, lanes: __m256i);
+
+    /// Store sixteen signed word lanes, widening only when the output
+    /// storage requires it.
+    ///
+    /// # Safety
+    ///
+    /// AVX2 is enabled; `dst` holds sixteen values.
+    unsafe fn store16_words(dst: *mut Self, lanes: __m256i);
 }
 
 impl Lanes8 for i32 {
@@ -148,6 +158,17 @@ impl Lanes8 for i32 {
     unsafe fn store8(dst: *mut Self, lanes: __m256i) {
         // SAFETY: caller contract.
         unsafe { _mm256_storeu_si256(dst.cast(), lanes) }
+    }
+
+    #[inline(always)]
+    unsafe fn store16_words(dst: *mut Self, lanes: __m256i) {
+        // SAFETY: the caller provides two writable groups of eight dwords.
+        unsafe {
+            let low = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(lanes));
+            let high = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(lanes));
+            _mm256_storeu_si256(dst.cast(), low);
+            _mm256_storeu_si256(dst.add(8).cast(), high);
+        }
     }
 }
 
@@ -166,6 +187,12 @@ impl Lanes8 for i16 {
             let packed = _mm256_permute4x64_epi64::<0b1000>(_mm256_packs_epi32(lanes, lanes));
             _mm_storeu_si128(dst.cast(), _mm256_castsi256_si128(packed));
         }
+    }
+
+    #[inline(always)]
+    unsafe fn store16_words(dst: *mut Self, lanes: __m256i) {
+        // SAFETY: the caller provides sixteen writable words.
+        unsafe { _mm256_storeu_si256(dst.cast(), lanes) };
     }
 }
 
@@ -250,13 +277,72 @@ fn horizontal_sum(lanes: __m256i) -> i32 {
     }
 }
 
-/// [`quantize_levels`] in place.
+/// Quantise sixteen coefficients in word lanes when every possible
+/// magnitude fits the certified reciprocal. Other terms use the wider path.
+///
+/// # Safety
+/// The source and destination hold len values and are disjoint or equal.
+#[target_feature(enable = "avx2")]
+unsafe fn quantize_words<D: Lanes8>(
+    src: *const i16,
+    dst: *mut D,
+    len: usize,
+    q: &QuantTerms,
+) -> u32 {
+    let Some(terms) = WordQuant::new(len, q) else {
+        // SAFETY: same source and destination contract.
+        return unsafe { quantize_levels(src, dst, len, q) };
+    };
+    // SAFETY: the vector path has at least sixteen coefficients.
+    let dc = i32::from(unsafe { *src });
+    let offset = _mm256_set1_epi16(terms.rounding as i16);
+    let reciprocal = _mm256_set1_epi16(terms.reciprocal as i16);
+    let shift = _mm_cvtsi32_si128(terms.shift as i32);
+    let cap = _mm256_set1_epi16(q.ac.cap as i16);
+    let zero = _mm256_setzero_si256();
+    let mut zeros = zero;
+    let done = len / 16 * 16;
+    for i in (0..done).step_by(16) {
+        // SAFETY: exactly sixteen coefficients fit in both buffers at i.
+        unsafe {
+            let c = _mm256_loadu_si256(src.add(i).cast());
+            let numerator = _mm256_add_epi16(_mm256_abs_epi16(c), offset);
+            // Every reciprocal has its high bit set. Interpret both
+            // operands as signed, then add the two unsigned corrections
+            // in the high word. LLVM keeps this multiply in word lanes.
+            let correction = _mm256_and_si256(_mm256_srai_epi16::<15>(numerator), reciprocal);
+            let high = _mm256_mulhi_epi16(numerator, reciprocal);
+            let quotient = _mm256_srl_epi16(
+                _mm256_add_epi16(_mm256_add_epi16(high, numerator), correction),
+                shift,
+            );
+            let signed = _mm256_sign_epi16(_mm256_min_epu16(quotient, cap), c);
+            D::store16_words(dst.add(i), signed);
+            zeros = _mm256_sub_epi16(zeros, _mm256_cmpeq_epi16(signed, zero));
+        }
+    }
+    let counted = horizontal_sum(_mm256_madd_epi16(zeros, _mm256_set1_epi16(1)));
+    // SAFETY: the tail lies within both buffers and the vector pass wrote DC.
+    unsafe {
+        let nonzero = done as u32 - counted as u32 + quantize_tail(src, dst, done, len, q);
+        fix_dc(dst, dc, nonzero, q)
+    }
+}
+
+/// Quantise in place.
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
     let (len, coeffs) = (coeffs.len(), coeffs.as_mut_ptr());
-    // SAFETY: source and destination are the same slice; every value is
-    // read before its level is written (`quantize_levels`).
-    unsafe { quantize_levels(coeffs.cast_const(), coeffs, len, q) }
+    // SAFETY: each input vector is read before its output is stored.
+    unsafe { quantize_words(coeffs.cast_const(), coeffs, len, q) }
+}
+
+/// Quantise from separate 16-bit coefficients.
+#[target_feature(enable = "avx2")]
+unsafe fn quantize_from_words<D: Lanes8>(coeffs: &[i16], q: &QuantTerms, out: &mut [D]) -> u32 {
+    let out = &mut out[..coeffs.len()];
+    // SAFETY: both slices hold coeffs.len() values.
+    unsafe { quantize_words(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
 }
 
 /// [`quantize_levels`] from `coeffs` into `out`, which keeps `coeffs`.

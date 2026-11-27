@@ -20,8 +20,9 @@ use super::{HevcForwardMode, HevcForwardStaging};
 use crate::simd::avx2::I32x8;
 
 use core::arch::x86_64::{
-    _mm256_cmpeq_epi16, _mm256_loadu_si256, _mm256_movemask_epi8, _mm256_packs_epi16,
-    _mm256_permute4x64_epi64, _mm256_setzero_si256,
+    _mm_cmpeq_epi8, _mm_loadl_epi64, _mm_loadu_si128, _mm_movemask_epi8, _mm_packs_epi16,
+    _mm_setzero_si128, _mm256_cmpeq_epi8, _mm256_cmpeq_epi16, _mm256_loadu_si256,
+    _mm256_movemask_epi8, _mm256_packs_epi16, _mm256_permute4x64_epi64, _mm256_setzero_si256,
 };
 
 /// The AVX2 table.
@@ -32,6 +33,10 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.hevc_forward_bounded[2] = staged16_bounded;
     table.hevc_forward_bounded[3] = staged32_bounded;
     table.nonzero_mask = nonzero_mask;
+    if std::arch::is_x86_feature_detected!("popcnt") {
+        table.h264_eliminate_luma_4x4 = super::h264_levels::avx2;
+        table.h264_eliminate_luma_8x8 = super::h264_levels8::avx2;
+    }
     super::avx2_h264_inverse::install(&mut table);
     super::avx2_h264::install(&mut table);
     table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
@@ -117,11 +122,72 @@ unsafe fn forward_bounded<T: Line<I32x8>, const N: usize, const LOG2: u32>(
     unsafe { g::hevc_forward_columns::<I32x8, T, N, LOG2>(m, limit, out, mode) }
 }
 
-/// `generic::nonzero_mask`: sixteen levels at a time compared with zero,
-/// their lane flags packed to bytes (in 128-bit lane order, so the packs
-/// pair the low and high halves) and gathered by one `movemask`.
+/// `generic::nonzero_mask`. Saturating to bytes preserves which levels are
+/// zero and lets the movemask return one bit per coefficient directly.
 #[target_feature(enable = "avx2")]
 unsafe fn nonzero_mask(levels: &[i16]) -> u64 {
+    if levels.len() == 16 {
+        let ptr = levels.as_ptr();
+        // SAFETY: the slice covers both eight-coefficient loads.
+        let (a, b) = unsafe {
+            (
+                _mm_loadu_si128(ptr.cast()),
+                _mm_loadu_si128(ptr.add(8).cast()),
+            )
+        };
+        let zeros = _mm_cmpeq_epi8(_mm_packs_epi16(a, b), _mm_setzero_si128());
+        return u64::from(!(_mm_movemask_epi8(zeros) as u16));
+    }
+    // SAFETY: AVX2 is available. The helper checks its own load lengths.
+    unsafe { nonzero_mask_other_lengths(levels) }
+}
+
+/// Pack both halves of a 32-coefficient group.
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn nonzero_mask32(levels: *const i16) -> u32 {
+    // SAFETY: the caller supplies 32 contiguous coefficients.
+    let (a, b) = unsafe {
+        (
+            _mm256_loadu_si256(levels.cast()),
+            _mm256_loadu_si256(levels.add(16).cast()),
+        )
+    };
+    let bytes = _mm256_packs_epi16(a, b);
+    // The pack interleaves eight coefficients from each input in each lane.
+    let ordered = _mm256_permute4x64_epi64::<0xd8>(bytes);
+    let zeros = _mm256_cmpeq_epi8(ordered, _mm256_setzero_si256());
+    !(_mm256_movemask_epi8(zeros) as u32)
+}
+
+#[target_feature(enable = "avx2")]
+#[inline(never)]
+unsafe fn nonzero_mask_other_lengths(levels: &[i16]) -> u64 {
+    let ptr = levels.as_ptr();
+    match levels.len() {
+        4 => {
+            // SAFETY: the slice covers the eight-byte load.
+            let values = unsafe { _mm_loadl_epi64(ptr.cast()) };
+            let zeros = _mm_cmpeq_epi8(_mm_packs_epi16(values, values), _mm_setzero_si128());
+            u64::from(!(_mm_movemask_epi8(zeros) as u8) & 0xf)
+        }
+        32 => {
+            // SAFETY: the slice covers the 32-coefficient group.
+            u64::from(unsafe { nonzero_mask32(ptr) })
+        }
+        64 => {
+            // SAFETY: the slice covers both 32-coefficient groups.
+            let (a, b) = unsafe { (nonzero_mask32(ptr), nonzero_mask32(ptr.add(32))) };
+            u64::from(a) | (u64::from(b) << 32)
+        }
+        // SAFETY: AVX2 is available and the slice covers all full groups.
+        _ => unsafe { nonzero_mask_groups(levels) },
+    }
+}
+
+#[target_feature(enable = "avx2")]
+#[inline(never)]
+unsafe fn nonzero_mask_groups(levels: &[i16]) -> u64 {
     const LANES: usize = 16;
     let (groups, rest) = levels.as_chunks::<LANES>();
     let zero = _mm256_setzero_si256();

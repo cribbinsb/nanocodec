@@ -27,33 +27,27 @@
 //! corrupt (`VP9 Annex B §B.3`). Appending one `0x00` padding byte escapes
 //! that collision (`escape_single_frame`).
 //!
-//! # Display semantics (`show_frame`, VP9 §6.2 / §7.1)
+//! # Display semantics (`show_frame`, VP9 §6.2 / §7.2)
 //!
-//! Every lower spatial layer (`S0`, and `S1` of three) is coded with
-//! `show_frame = 0`, and so is the top layer in K-SVC (`_KEY` modes), where a
-//! receiver may get the top layer without the layers below; a unit whose
-//! last coded frame is hidden ends with a `show_existing_frame` of the slot
-//! it refreshed ([`pack_spatial_tu`]). For two layers:
+//! Our spatial SVC codes every layer frame with `show_frame = 1`, as libvpx's
+//! SVC (what WebRTC sends) does: a unit is `[S0, S1(, S2)]`, a receiver of a
+//! lower layer gets the unit cut after its layer (in K-SVC, the layer alone
+//! outside key units), and a decoder shows the last frame of what it got
+//! (vpxdec and our decoder output one picture per unit; ffmpeg outputs each
+//! shown frame, so every layer's picture). A unit without its upper layers
+//! (a decimated enhancement schedule, or a layer dropped by rate control) is
+//! the lower frames alone. This is the layout RFC 9628 carries: each layer
+//! frame is one RTP frame, with no `show_existing_frame` between them.
 //!
-//! `S0` is always coded with `show_frame = 0` (`intra_only = 0` on inter
-//! frames) and refreshes at least one reference slot:
-//! - in a 2-layer temporal unit `[S0, S1]`, `S1` (`show_frame = 1`) is the
-//!   single picture output for the unit;
-//! - a unit without `S1` (the non-enhancement units of a decimated schedule
-//!   such as `480p30 + 720p5`, or `S1` dropped by rate control) is `[S0,
-//!   show_existing_frame]`, the second frame showing a slot `S0` refreshed;
-//! - stripping `S1` for a base-only receiver ([`strip_superframe_to_base`])
-//!   gives the same `[S0, show_existing_frame]` unit.
+//! The frame decoded before a layer frame differs by receiver (the layer
+//! below in the same unit, or the receiver's own layer of the unit before),
+//! so every spatial frame is error resilient (`backend.rs`): no previous
+//! vectors (`use_prev_frame_mvs = 0`) and no adapted contexts, which decode
+//! the same on every receiver.
 //!
-//! A hidden `S0` keeps every decoder's `use_prev_frame_mvs` (VP9 §7.2: the
-//! previous decoded frame must be shown and of the same size) at 0 whether
-//! or not it decodes `S1`, so `S0` need not be error resilient and both
-//! layers keep their own adapted probability contexts (`backend.rs`
-//! `BackendSpatial::context_use`). Rewriting `S0` to `show_frame = 1`
-//! instead, as before, let a base-only decoder use `S0`'s vectors in the
-//! next `S0` while a decoder of both layers could not. The base-only
-//! stream pays 5-6 bytes a unit for it (the one-byte frame and the index).
-//! Streams whose base frames are shown (libvpx's SVC) strip to that frame.
+//! Other encoders' streams (and ours before 2026-11-27) hide lower layers and
+//! show them with `show_existing_frame`; stripping such a unit to a hidden
+//! frame adds one ([`strip_superframe_to_base`], [`pack_coded_layers`]).
 
 use nc_common::decode::{BitReader, DecodeError, Result};
 
@@ -582,41 +576,14 @@ pub(crate) fn trim_escape_padding(packet: &[u8]) -> &[u8] {
     }
 }
 
-/// Finalize a spatial temporal unit (`data` containing concatenated layer frames
-/// with byte lengths `layer_lengths`):
-/// - When `layer_lengths` has 1 frame, escapes a shown frame or appends a
-///   `show_existing_frame` pointer for a hidden frame (`[S0, sef]`).
-/// - When `layer_lengths` has 2..=7 frames, appends `show_existing_frame` when
-///   the final coded frame is hidden (such as a K-SVC unit or a 3-layer unit
-///   whose `S2` was dropped) and writes the Annex B superframe index (`§B.2`).
+/// Finalize a spatial temporal unit: `data` holds the unit's layer frames
+/// (each shown, lowest first) of `layer_lengths` bytes; one frame is
+/// escaped (Annex B §B.3), several get the superframe index (§B.2).
 pub fn pack_spatial_tu(data: &mut Vec<u8>, layer_lengths: &[usize]) {
     match layer_lengths.len() {
         0 => {}
-        1 => {
-            if shows_frame(data).expect("valid encoder VP9 header") {
-                *data = escape_single_frame(data);
-            } else {
-                *data = show_hidden_base(data)
-                    .expect("the encoder's hidden layer frame refreshes a slot");
-            }
-        }
-        _ => {
-            let last_len = *layer_lengths.last().expect("at least 2 layers");
-            let last_start = data.len() - last_len;
-            if shows_frame(&data[last_start..]).expect("valid encoder VP9 header") {
-                write_superframe_index(data, layer_lengths);
-            } else {
-                let refresh =
-                    refresh_frame_flags(&data[last_start..]).expect("valid encoder VP9 header");
-                assert!(refresh != 0, "hidden top spatial frame must refresh a slot");
-                let slot = refresh.trailing_zeros() as u8;
-                data.push(SHOW_EXISTING_FRAME | slot);
-                let mut lengths = Vec::with_capacity(layer_lengths.len() + 1);
-                lengths.extend_from_slice(layer_lengths);
-                lengths.push(1);
-                write_superframe_index(data, &lengths);
-            }
-        }
+        1 => *data = escape_single_frame(data),
+        _ => write_superframe_index(data, layer_lengths),
     }
 }
 
@@ -704,10 +671,12 @@ mod tests {
     use crate::segmentation::{SegmentFeatures, Segmentation};
     use crate::tables::COEFFICIENTS;
 
-    fn sample_coded_frame(key: bool, show_frame: bool, width: usize, height: usize) -> Vec<u8> {
+    /// `show_frame` of a frame's first byte (VP9 §6.2).
+    const SHOW_FRAME_BIT: u8 = 0x02;
+
+    fn sample_coded_frame(key: bool, width: usize, height: usize) -> Vec<u8> {
         let header = FrameHeader {
             key,
-            show_frame,
             error_resilient: true,
             context_index: 0,
             refresh_context: false,
@@ -747,45 +716,46 @@ mod tests {
     }
 
     #[test]
-    fn two_layer_superframe_pack_split_and_strip_roundtrip() {
+    fn two_layer_unit_packs_splits_and_strips_to_its_shown_base() {
         for key in [true, false] {
-            let s0 = sample_coded_frame(key, false, 320, 180);
-            let s1 = sample_coded_frame(false, true, 640, 360);
-
+            let s0 = sample_coded_frame(key, 320, 180);
+            let s1 = sample_coded_frame(false, 640, 360);
             let info_s0 = parse_uncompressed_header_info(&s0, Some(320)).unwrap();
             assert_eq!(info_s0.key_frame, key);
-            assert!(!info_s0.show_frame);
+            assert!(info_s0.show_frame);
 
-            let info_s1 = parse_uncompressed_header_info(&s1, Some(640)).unwrap();
-            assert!(!info_s1.key_frame);
-            assert!(info_s1.show_frame);
+            let mut unit = [s0.as_slice(), s1.as_slice()].concat();
+            pack_spatial_tu(&mut unit, &[s0.len(), s1.len()]);
+            assert_eq!(unit, pack_superframe(&[&s0, &s1]));
+            let parts = split_superframe(&unit).expect("valid 2-frame superframe");
+            assert_eq!(parts, [s0.as_slice(), s1.as_slice()]);
 
-            let superframe = pack_superframe(&[&s0, &s1]);
-            let parts = split_superframe(&superframe).expect("valid 2-frame superframe");
-            assert_eq!(parts.len(), 2);
-            assert_eq!(parts[0], s0.as_slice());
-            assert_eq!(parts[1], s1.as_slice());
-
-            // The hidden base and a `show_existing_frame` of the slot it
-            // refreshes (slot 0 in both cases).
-            let stripped = strip_superframe_to_base(&superframe).unwrap();
-            let parts = split_superframe(&stripped).expect("base unit is a superframe");
-            assert_eq!(parts, [s0.as_slice(), &[SHOW_EXISTING_FRAME]]);
-            let shown = parse_uncompressed_header_info(parts[1], None).unwrap();
-            assert!(shown.show_existing_frame);
-
-            // A unit with the base alone packs the same way, and strips to itself.
+            // A unit with the base alone is the escaped base, and so is the
+            // base-only receiver's unit.
             let mut alone = s0.clone();
             pack_spatial_tu(&mut alone, &[s0.len()]);
-            assert_eq!(alone, stripped);
-            assert_eq!(strip_superframe_to_base(&alone).unwrap(), stripped);
+            assert_eq!(alone, escape_single_frame(&s0));
+            assert_eq!(strip_superframe_to_base(&unit).unwrap(), alone);
         }
     }
 
     #[test]
+    fn a_hidden_base_strips_to_it_and_a_show_existing_frame() {
+        // Other encoders' (and our older) streams hide the base layer.
+        let mut s0 = sample_coded_frame(true, 320, 180);
+        s0[0] &= !SHOW_FRAME_BIT;
+        let s1 = sample_coded_frame(false, 640, 360);
+        let stripped = strip_superframe_to_base(&pack_superframe(&[&s0, &s1])).unwrap();
+        let parts = split_superframe(&stripped).expect("base unit is a superframe");
+        assert_eq!(parts, [s0.as_slice(), &[SHOW_EXISTING_FRAME]]);
+        let shown = parse_uncompressed_header_info(parts[1], None).unwrap();
+        assert!(shown.show_existing_frame);
+    }
+
+    #[test]
     fn shown_base_frames_strip_to_themselves() {
-        let s0 = sample_coded_frame(false, true, 320, 180);
-        let s1 = sample_coded_frame(false, true, 640, 360);
+        let s0 = sample_coded_frame(false, 320, 180);
+        let s1 = sample_coded_frame(false, 640, 360);
         let superframe = pack_superframe(&[&s0, &s1]);
         let stripped = strip_superframe_to_base(&superframe).unwrap();
         assert!(

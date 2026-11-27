@@ -15,14 +15,17 @@ pub(super) fn prepare<T: Pixel>(
         return std::array::from_fn(|_| Vec::new());
     }
     std::array::from_fn(|plane| {
-        let shift = usize::from(plane != 0);
+        let (sx, sy) = picture
+            .chroma_format()
+            .plane_subsampling(PlaneIndex::ALL[plane]);
         let node = unit.node;
         let (x, y, w, h) = (
-            node.x >> shift,
-            node.y >> shift,
-            node.width >> shift,
-            node.height >> shift,
+            node.x >> sx,
+            node.y >> sy,
+            node.width >> sx,
+            node.height >> sy,
         );
+        // Chroma two samples wide takes the inter prediction alone.
         if plane != 0 && w == 2 {
             return Vec::new();
         }
@@ -46,13 +49,13 @@ pub(super) fn prepare<T: Pixel>(
         prediction
     })
 }
-/// Blend the inter `prediction` of `plane` of `block` with the CU's
-/// planar `intra` prediction (H.266 §8.5.6.7: `(w · intra + (4 − w) ·
-/// inter + 2) >> 2`, the same at every depth).
+/// Blend the inter `prediction` of a plane subsampled by `(sx, sy)` of
+/// `block` with the CU's planar `intra` prediction (H.266 §8.5.6.7: `(w ·
+/// intra + (4 − w) · inter + 2) >> 2`, the same at every depth).
 pub(super) fn blend<T: Pixel>(
     unit: &Unit,
     block: nc_encoder::Block,
-    plane: usize,
+    (sx, sy): (usize, usize),
     intra: &[T],
     prediction: &mut [T],
     dsp: DepthKernels<'_>,
@@ -60,13 +63,9 @@ pub(super) fn blend<T: Pixel>(
     if intra.is_empty() {
         return;
     }
-    let shift = usize::from(plane != 0);
-    let (w, h) = (block.width() >> shift, block.height() >> shift);
-    let (x, y) = (
-        (block.x - unit.node.x) >> shift,
-        (block.y - unit.node.y) >> shift,
-    );
-    let stride = unit.node.width >> shift;
+    let (w, h) = (block.width() >> sx, block.height() >> sy);
+    let (x, y) = ((block.x - unit.node.x) >> sx, (block.y - unit.node.y) >> sy);
+    let stride = unit.node.width >> sx;
     let intra: Vec<i16> = (y..y + h)
         .flat_map(|row| {
             intra[row * stride + x..row * stride + x + w]

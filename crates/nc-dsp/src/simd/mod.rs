@@ -1125,6 +1125,12 @@ pub(crate) trait WordPairLanes: I32Lanes {
     /// Lane `i` holds (`self[i]`, `high[i]`) truncated to 16 bits each:
     /// exact when every value fits `i16`.
     fn word_pairs(self, high: Self) -> Self::Pairs;
+    /// Pack adjacent vectors into the first `N / 2` slots after verifying
+    /// that every packed lane fits `i16`. The caller can keep its wide path when
+    /// the range check is unavailable or fails.
+    fn checked_word_pairs<const N: usize>(_values: &[Self; N]) -> Option<[Self::Pairs; N]> {
+        None
+    }
     /// `low * w0 + high * w1` per lane, exact in `i32`, with the weights
     /// packed as `weights = (w1 << 16) | (w0 as u16)`.
     fn pair_dot(pairs: Self::Pairs, weights: i32) -> Self;

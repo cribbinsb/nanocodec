@@ -1,7 +1,9 @@
-//! Every CABAC context variable of Main-profile slice data, with the
-//! initial values of all three `initType`s (H.265 §9.3.2.2, Tables 9-5 to
-//! 9-37), kept in one flat array so that WPP and dependent slice segments
-//! can save and restore the whole state (§9.3.2.4, §9.3.2.5). The encoder's
+//! Every CABAC context variable of slice data, the range extensions'
+//! included, with the initial values of all three `initType`s (H.265
+//! §9.3.2.2, Tables 9-5 to 9-37), kept in one flat array so that WPP and
+//! dependent slice segments can save and restore the whole state (§9.3.2.4,
+//! §9.3.2.5) together with the Rice parameter statistics `StatCoeff` of
+//! `persistent_rice_adaptation_enabled_flag` (§9.3.2.3). The encoder's
 //! contexts (`contexts.rs`) take their initial values from here.
 
 use crate::cabac::Context;
@@ -70,16 +72,18 @@ elements! {
         [125, 110, 124, 110, 95, 94, 125, 111, 111, 79, 125, 126, 111, 111, 79, 108, 123, 93]
     ];
     CODED_SUB_BLOCK: [[91, 171, 134, 141], [121, 140, 61, 154], [121, 140, 61, 154]];
+    // The last two: the single luma and chroma contexts of transform-skip
+    // and lossless blocks with `transform_skip_context_enabled_flag`.
     SIG_COEFF: [
         [111, 111, 125, 110, 110, 94, 124, 108, 124, 107, 125, 141, 179, 153, 125, 107, 125, 141,
          179, 153, 125, 107, 125, 141, 179, 153, 125, 140, 139, 182, 182, 152, 136, 152, 136, 153,
-         136, 139, 111, 136, 139, 111],
+         136, 139, 111, 136, 139, 111, 141, 111],
         [155, 154, 139, 153, 139, 123, 123, 63, 153, 166, 183, 140, 136, 153, 154, 166, 183, 140,
          136, 153, 154, 166, 183, 140, 136, 153, 154, 170, 153, 123, 123, 107, 121, 107, 121, 167,
-         151, 183, 140, 151, 183, 140],
+         151, 183, 140, 151, 183, 140, 140, 140],
         [170, 154, 139, 153, 139, 123, 123, 63, 124, 166, 183, 140, 136, 153, 154, 166, 183, 140,
          136, 153, 154, 166, 183, 140, 136, 153, 154, 170, 153, 138, 138, 122, 121, 122, 121, 167,
-         151, 183, 140, 151, 183, 140]
+         151, 183, 140, 151, 183, 140, 140, 140]
     ];
     GREATER1: [
         [140, 92, 137, 138, 140, 152, 138, 139, 153, 74, 149, 92, 139, 107, 122, 152, 140, 179,
@@ -90,10 +94,22 @@ elements! {
          166, 167, 154, 152, 167, 182]
     ];
     GREATER2: [[138, 153, 136, 167, 152, 152], [107, 167, 91, 122, 107, 167], [107, 167, 91, 107, 107, 167]];
+    // The range extensions (Tables 9-35 to 9-37 of the 2016 edition).
+    EXPLICIT_RDPCM: [[CNU; 2], [139, 139], [139, 139]];
+    EXPLICIT_RDPCM_DIR: [[CNU; 2], [139, 139], [139, 139]];
+    LOG_RES_SCALE_ABS: [[154; 8], [154; 8], [154; 8]];
+    RES_SCALE_SIGN: [[154; 2], [154; 2], [154; 2]];
+    CU_CHROMA_QP_OFFSET_FLAG: [[154], [154], [154]];
+    CU_CHROMA_QP_OFFSET_IDX: [[154], [154], [154]];
 }
 
 /// Offset of the chroma contexts within `SIG_COEFF`.
 pub(super) const SIG_CHROMA: usize = 27;
+/// `sigCtx` of transform-skip and lossless blocks with
+/// `transform_skip_context_enabled_flag` (§9.3.4.2.5): luma, and chroma
+/// (before [`SIG_CHROMA`]).
+pub(super) const SIG_TRANSFORM_SKIP_LUMA: usize = 42;
+pub(super) const SIG_TRANSFORM_SKIP_CHROMA: usize = 16;
 /// Offset of the chroma contexts within `LAST_X` / `LAST_Y`.
 pub(super) const LAST_CHROMA: usize = 15;
 /// Offset of the chroma contexts within `GREATER1`.
@@ -112,9 +128,18 @@ pub(crate) fn initial_values(element: Element, init_type: usize) -> &'static [u8
     element.init[init_type]
 }
 
+/// `StatCoeff` entries: luma or chroma, with or without a transform
+/// (`sbType`, §9.3.3.11).
+pub(super) const RICE_STATISTICS: usize = 4;
+
 /// The whole context state of one slice segment.
 #[derive(Debug, Clone)]
-pub(super) struct Contexts([Context; COUNT]);
+pub(super) struct Contexts {
+    contexts: [Context; COUNT],
+    /// `StatCoeff[sbType]` (§9.3.2.3): 0 at every initialisation, carried
+    /// with the contexts through WPP and dependent slice segments.
+    pub stat_coeff: [u8; RICE_STATISTICS],
+}
 
 impl Contexts {
     /// Initialise every context for `init_type` at `slice_qp` (§9.3.2.2).
@@ -125,13 +150,16 @@ impl Contexts {
                 all[element.start + i] = Context::new(v, slice_qp);
             }
         }
-        Self(all)
+        Self {
+            contexts: all,
+            stat_coeff: [0; RICE_STATISTICS],
+        }
     }
 
     /// Context `inc` of `element`.
     #[inline]
     pub fn at(&mut self, element: Element, inc: usize) -> &mut Context {
-        &mut self.0[element.start + inc]
+        &mut self.contexts[element.start + inc]
     }
 }
 
@@ -145,8 +173,8 @@ mod tests {
             let n = element.init[0].len();
             assert!(element.init.iter().all(|t| t.len() == n));
         }
-        assert_eq!(SIG_COEFF.init[0].len(), 42);
+        assert_eq!(SIG_COEFF.init[0].len(), 44);
         assert_eq!(GREATER1.init[0].len(), 24);
-        assert_eq!(GREATER2.start + 6, COUNT);
+        assert_eq!(CU_CHROMA_QP_OFFSET_IDX.start + 1, COUNT);
     }
 }

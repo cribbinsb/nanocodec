@@ -1,12 +1,18 @@
-//! `sequence_header_obu()` (AV1 §5.5): every field of an 8- or 10-bit 4:2:0
-//! Main profile sequence header, with operating point 0 selected (§7.18 leaves
-//! the choice to the application; libaom and dav1d default to 0).
-use nc_common::colour::{matrix, read_code_points};
+//! `sequence_header_obu()` (AV1 §5.5): every field of a sequence header of
+//! the Main, High and Professional profiles (8-, 10- and 12-bit; 4:2:0,
+//! 4:2:2, 4:4:4 and monochrome), with operating point 0 selected (§7.18
+//! leaves the choice to the application; libaom and dav1d default to 0).
+use nc_common::colour::{ColourDescription, matrix, primaries, read_code_points, transfer};
 use nc_common::decode::{BitReader, DecodeError};
-use nc_common::{BitDepth, ColourInfo};
+use nc_common::{BitDepth, ChromaFormat, ColourInfo};
 
-/// `seq_profile` of the Main profile (AV1 §6.4.1).
+/// `seq_profile` values (AV1 §6.4.1, Annex A.2): Main (8/10-bit 4:2:0 and
+/// monochrome), High (adds 4:4:4), Professional (adds 4:2:2 and 12 bits).
 const MAIN_PROFILE: u32 = 0;
+const HIGH_PROFILE: u32 = 1;
+const PROFESSIONAL_PROFILE: u32 = 2;
+/// The 12-bit depth `twelve_bit` selects (Professional profile).
+const TWELVE_BITS: u32 = 12;
 /// `seq_level_idx` above which `seq_tier` is coded (AV1 §5.5.1).
 const LEVEL_WITH_TIER: u32 = 7;
 /// `SELECT_SCREEN_CONTENT_TOOLS` / `SELECT_INTEGER_MV` (AV1 §6.4.1): the
@@ -84,9 +90,12 @@ pub(crate) struct Sequence {
     pub enable_cdef: bool,
     pub enable_restoration: bool,
     pub colour: ColourInfo,
-    /// `BitDepth` (§5.5.2): 8 or 10 in the Main profile, the same for
-    /// luma and chroma.
+    /// `BitDepth` (§5.5.2): 8, 10 or (Professional) 12, the same for luma
+    /// and chroma.
     pub bit_depth: BitDepth,
+    /// `subsampling_x`, `subsampling_y` as a format (4:2:0 for monochrome,
+    /// whose chroma is output mid-grey).
+    pub chroma_format: ChromaFormat,
     /// `mono_chrome`: one plane coded.
     pub mono_chrome: bool,
     pub separate_uv_delta_q: bool,
@@ -142,12 +151,12 @@ impl Sequence {
 /// Parse a sequence header OBU payload.
 ///
 /// # Errors
-/// Truncated or malformed data, or a stream outside Main (8- or 10-bit
-/// 4:2:0 or monochrome).
+/// Truncated or malformed data, or a reserved `seq_profile`.
 pub(crate) fn parse(payload: &[u8]) -> Result<Sequence, DecodeError> {
     let mut r = BitReader::new(payload);
-    if r.read_bits(3)? != MAIN_PROFILE {
-        return Err(DecodeError::Unsupported("AV1 profile other than Main"));
+    let profile = r.read_bits(3)?;
+    if profile > PROFESSIONAL_PROFILE {
+        return Err(DecodeError::Malformed("AV1 reserved seq_profile"));
     }
     let still_picture = r.read_bit()?;
     let reduced_still_picture_header = r.read_bit()?;
@@ -183,7 +192,7 @@ pub(crate) fn parse(payload: &[u8]) -> Result<Sequence, DecodeError> {
     let enable_superres = r.read_bit()?;
     let enable_cdef = r.read_bit()?;
     let enable_restoration = r.read_bit()?;
-    let colour = color_config(&mut r)?;
+    let colour = color_config(&mut r, profile)?;
     let film_grain_params_present = r.read_bit()?;
     Ok(Sequence {
         still_picture,
@@ -216,6 +225,7 @@ pub(crate) fn parse(payload: &[u8]) -> Result<Sequence, DecodeError> {
         enable_restoration,
         colour: colour.info,
         bit_depth: colour.bit_depth,
+        chroma_format: colour.chroma_format,
         mono_chrome: colour.mono_chrome,
         separate_uv_delta_q: colour.separate_uv_delta_q,
         film_grain_params_present,
@@ -365,47 +375,91 @@ fn decoder_model_info(r: &mut BitReader<'_>) -> Result<DecoderModel, DecodeError
     })
 }
 
-/// What `color_config()` (§5.5.2) yields for a Main-profile stream.
+/// What `color_config()` (§5.5.2) yields.
 struct ColourConfig {
     info: ColourInfo,
     bit_depth: BitDepth,
+    chroma_format: ChromaFormat,
     mono_chrome: bool,
     separate_uv_delta_q: bool,
 }
 
-fn color_config(r: &mut BitReader<'_>) -> Result<ColourConfig, DecodeError> {
-    // `high_bitdepth`: 10 bits (`twelve_bit` exists only in the
-    // Professional profile).
-    let bit_depth = if r.read_bit()? {
-        BitDepth::TEN
-    } else {
-        BitDepth::EIGHT
+/// `color_config()` (§5.5.2) of a stream of `profile`.
+fn color_config(r: &mut BitReader<'_>, profile: u32) -> Result<ColourConfig, DecodeError> {
+    let high_bitdepth = r.read_bit()?;
+    let bits = match (high_bitdepth, profile == PROFESSIONAL_PROFILE) {
+        (true, true) if r.read_bit()? => TWELVE_BITS,
+        (true, _) => BitDepth::TEN.bits(),
+        (false, _) => BitDepth::EIGHT.bits(),
     };
-    let mono_chrome = r.read_bit()?;
+    let bit_depth = BitDepth::new(bits).expect("8, 10 and 12 are depths");
+    // The High profile codes no `mono_chrome`: it is 4:4:4.
+    let mono_chrome = profile != HIGH_PROFILE && r.read_bit()?;
     let description = if r.read_bit()? {
         Some(read_code_points(r)?)
     } else {
         None
     };
-    if !mono_chrome && description.is_some_and(|d| d.matrix == matrix::IDENTITY) {
-        // The identity matrix (sRGB included) requires 4:4:4, which the
-        // Main profile allows only without chroma (§6.4.2).
-        return Err(DecodeError::Unsupported("AV1 identity matrix (4:4:4)"));
+    if mono_chrome {
+        let full_range = r.read_bit()?;
+        return Ok(ColourConfig {
+            info: ColourInfo {
+                description,
+                full_range,
+            },
+            bit_depth,
+            chroma_format: ChromaFormat::Yuv420,
+            mono_chrome,
+            separate_uv_delta_q: false,
+        });
     }
-    let full_range = r.read_bit()?;
-    if !mono_chrome {
-        r.read_bits(2)?; // chroma_sample_position: informative
+    let (full_range, chroma_format) = if description.is_some_and(is_srgb) {
+        // sRGB: full range 4:4:4, which the Main profile does not allow.
+        if profile == MAIN_PROFILE {
+            return Err(DecodeError::Malformed("AV1 sRGB in the Main profile"));
+        }
+        (true, ChromaFormat::Yuv444)
+    } else {
+        let full_range = r.read_bit()?;
+        let format = match profile {
+            MAIN_PROFILE => ChromaFormat::Yuv420,
+            HIGH_PROFILE => ChromaFormat::Yuv444,
+            _ if bits == TWELVE_BITS => {
+                let x = r.read_bit()?;
+                let y = x && r.read_bit()?;
+                ChromaFormat::from_subsampling(usize::from(x), usize::from(y))
+                    .expect("a 4:2:0, 4:2:2 or 4:4:4 subsampling")
+            }
+            _ => ChromaFormat::Yuv422,
+        };
+        if format == ChromaFormat::Yuv420 {
+            r.read_bits(2)?; // chroma_sample_position: informative
+        }
+        (full_range, format)
+    };
+    // §6.4.2: the identity matrix (RGB) requires 4:4:4.
+    if description.is_some_and(|d| d.matrix == matrix::IDENTITY)
+        && chroma_format != ChromaFormat::Yuv444
+    {
+        return Err(DecodeError::Malformed("AV1 identity matrix without 4:4:4"));
     }
-    let separate_uv_delta_q = !mono_chrome && r.read_bit()?;
+    let separate_uv_delta_q = r.read_bit()?;
     Ok(ColourConfig {
-        bit_depth,
         info: ColourInfo {
             description,
             full_range,
         },
+        bit_depth,
+        chroma_format,
         mono_chrome,
         separate_uv_delta_q,
     })
+}
+
+/// BT.709 primaries, the sRGB transfer and the identity matrix: what
+/// `color_config` treats as sRGB (§5.5.2).
+fn is_srgb(d: ColourDescription) -> bool {
+    d.primaries == primaries::BT709 && d.transfer == transfer::SRGB && d.matrix == matrix::IDENTITY
 }
 
 #[cfg(test)]

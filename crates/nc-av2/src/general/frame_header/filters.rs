@@ -198,10 +198,17 @@ fn deblock(parser: &mut Parser<'_, '_, '_, '_>, header: &mut FrameHeader) -> Res
         if header.frame_type == FrameType::Inter && parser.context.sequence.inter.deblock_sub_pu {
             d.sub_pu = bits.read_bit()?;
         }
-        d.level_y = [bits.read_bit()?, bits.read_bit()?];
-        if d.level_y[0] || d.level_y[1] {
-            d.level_u = bits.read_bit()?;
-            d.level_v = bits.read_bit()?;
+        // A multi-frame header may set the switches for its frames (AVM
+        // `setup_loopfilter`).
+        let named = parser.multi_frame_header.and_then(|named| named.deblock);
+        let mut flag = |index: usize| match named {
+            Some(flags) => Ok(flags[index]),
+            None => bits.read_bit(),
+        };
+        d.level_y = [flag(0)?, flag(1)?];
+        if !parser.context.sequence.monochrome && (d.level_y[0] || d.level_y[1]) {
+            d.level_u = flag(2)?;
+            d.level_v = flag(3)?;
         }
         let width = u32::from(parser.context.sequence.filters.deblock_param_bits);
         let offset = 1_i32 << (width - 1);
@@ -247,7 +254,10 @@ fn gdf(parser: &mut Parser<'_, '_, '_, '_>, header: &mut FrameHeader) -> Result<
             } else {
                 GDF_INTER_QP_BASE
             };
-            let difference = i32::from(header.quantizer.base) - base;
+            // The class is counted on the 8-bit quantizer scale (dav2d
+            // `qp_diff`: `48 * hbd` less above 8 bits).
+            let difference =
+                i32::from(header.quantizer.base) - base - i32::from(sequence.qindex_depth_offset());
             let offset = bits.read_bits(GDF_FIELD_BITS)? as i32;
             // Integer division truncating toward zero, as C's.
             gdf.qp_index = (((difference - GDF_QP_OFFSET) / GDF_QP_STEP)
@@ -301,7 +311,9 @@ fn cdef(parser: &mut Parser<'_, '_, '_, '_>, header: &mut FrameHeader) -> Result
         };
         for set in 0..usize::from(strengths) {
             cdef.y_strength[set] = strength(bits)?;
-            cdef.uv_strength[set] = strength(bits)?;
+            if !sequence.monochrome {
+                cdef.uv_strength[set] = strength(bits)?;
+            }
         }
         header.cdef = Some(cdef);
     }
@@ -314,7 +326,7 @@ fn ccso(parser: &mut Parser<'_, '_, '_, '_>, header: &mut FrameHeader) -> Result
     if !header.lossless.all && sequence.filters.ccso {
         header.ccso.enabled = sequence.single_picture || parser.bits.read_bit()?;
         if header.ccso.enabled {
-            for plane in 0..PLANES {
+            for plane in 0..sequence.planes() {
                 header.ccso.planes[plane] = ccso_plane(parser, header, plane)?;
             }
         }

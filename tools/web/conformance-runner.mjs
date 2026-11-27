@@ -8,7 +8,7 @@
 //   node conformance-runner.mjs --pkg DIR --codec C --manifest JSON --streams DIR
 //        [--must-pass FILE] [--only A,B] [--jobs N] [--json OUT]
 //
-// Each 4:2:0 or 4:0:0 progressive stream is decoded with BrowserDecoder.decode,
+// Each 4:2:0 or 4:0:0 stream is decoded with BrowserDecoder.decode,
 // one packet per picture, taking every picture it shows (next_frame, and
 // finish at the end, where the module has them), cropped Y, Cb, Cr: 8-bit
 // streams as bytes (decoded_i420), deeper ones as the native samples in
@@ -22,8 +22,9 @@
 // streams equal to the reference failed on the count alone (2026-11-23).
 // The module shows 4:0:0 pictures with neutral chroma planes; where the
 // reference writes luma only (the manifest's frame size is the luma plane's:
-// VTM's 4:0:0 output), only the luma plane is compared. Interlaced streams are
-// left out (the browser shows frames).
+// VTM's 4:0:0 output), only the luma plane is compared. Interlaced H.264
+// streams are in (since 2026-11-27): a field pair is two packets, the frame
+// shown after the second, as the reference writes it.
 // --json writes each compared stream's result and the counts.
 // Exit status 0 when every stream matches, or with --must-pass FILE (one name
 // per line, # comments) every listed one.
@@ -96,13 +97,12 @@ function isLumaOnly(entry) {
     && entry.frame_bytes === entry.width * entry.height * (isDeep(entry) ? 2 : 1);
 }
 
-/** The manifest's entries and those this check can compare: 4:2:0 or 4:0:0, progressive. */
+/** The manifest's entries and those this check can compare: 4:2:0 or 4:0:0. */
 function comparable(manifest, only) {
   const data = JSON.parse(readFileSync(manifest, 'utf8'));
   const names = new Set(only ? only.split(',') : []);
   const all = (Array.isArray(data) ? data : data.streams).filter(e => !names.size || names.has(e.name));
-  const entries = all.filter(e => ['4:2:0', '4:0:0'].includes(e.chroma_format)
-    && (e.scan ?? 'progressive') === 'progressive');
+  const entries = all.filter(e => ['4:2:0', '4:0:0'].includes(e.chroma_format));
   return { all, entries };
 }
 
@@ -148,7 +148,7 @@ async function main() {
   const deep = entries.filter(isDeep);
   const deepPassed = deep.filter(e => results.has(e.name) && !results.get(e.name)).length;
   console.log(`${args.codec} WASM (${path.basename(path.resolve(args.pkg))}): ${passed}/${entries.length} streams match the reference`
-    + ` (deeper than 8 bits ${deepPassed}/${deep.length}; ${all.length - entries.length} of the manifest's ${all.length} not 4:2:0 or 4:0:0 progressive; 4:0:0 ${entries.filter(e => e.chroma_format === '4:0:0').length})`
+    + ` (deeper than 8 bits ${deepPassed}/${deep.length}; ${all.length - entries.length} of the manifest's ${all.length} not 4:2:0 or 4:0:0; 4:0:0 ${entries.filter(e => e.chroma_format === '4:0:0').length})`
     + (mustPass ? `, ${failedRequired} required failing` : ''));
   if (args.json) {
     const streams = Object.fromEntries(entries.map(e => [e.name, {

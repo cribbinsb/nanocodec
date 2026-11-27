@@ -219,6 +219,34 @@ impl InterTxTypes {
     }
 }
 
+/// What an AV2 key frame signals besides its sequence header: the content
+/// interpretation OBU (colour, range, timing) and what its level covers.
+#[derive(Debug, Clone)]
+struct KeySignalling {
+    /// The content interpretation OBU payload
+    /// (`packet::content_interpretation`).
+    content: Vec<u8>,
+    /// The nominal frame rate, which the level covers.
+    frame_rate: nc_encoder::FrameRate,
+    /// The peak rate under rate control, which the level covers
+    /// (`CodecBackend::set_stream_rate`).
+    max_bitrate_bps: Option<u64>,
+}
+
+impl KeySignalling {
+    fn new(config: &EncoderConfig) -> Self {
+        Self {
+            content: packet::content_interpretation(
+                config.signal.colour,
+                config.frame_rate,
+                config.signal.timing == nc_encoder::TimingSignal::Constant,
+            ),
+            frame_rate: config.frame_rate,
+            max_bitrate_bps: None,
+        }
+    }
+}
+
 /// Native AV2 backend on the shared engine.
 #[derive(Debug)]
 #[allow(
@@ -226,9 +254,12 @@ impl InterTxTypes {
     reason = "independent per-stream and per-frame switches"
 )]
 pub struct Av2Backend {
-    /// The encoder information message written after every sequence
-    /// header (`CodecBackend::set_encoder_info`).
+    /// The encoder information message still to write after the next key
+    /// frame's sequence header (`CodecBackend::set_encoder_info`); a
+    /// committed key frame clears it.
     encoder_info: Option<Vec<u8>>,
+    /// What every key frame signals besides its sequence header.
+    signalling: KeySignalling,
     /// Coded picture size: the visible size padded to whole 8x8 blocks.
     coded_width: usize,
     coded_height: usize,
@@ -1113,9 +1144,9 @@ impl CodecBackend for Av2Backend {
         if config.codec != Codec::Av2 {
             return Err(ConfigError::Unsupported("AV2 backend requires AV2 codec"));
         }
-        if config.signal.colour != nc_common::ColourInfo::default() {
+        if !config.signal.colour.is_valid_for_420() {
             return Err(ConfigError::Unsupported(
-                "AV2 colour metadata overrides are not yet supported",
+                "the identity matrix needs 4:4:4; AV2 codes 4:2:0",
             ));
         }
         let (coded_width, coded_height) = packet::coded_size(config.width, config.height);
@@ -1150,6 +1181,7 @@ impl CodecBackend for Av2Backend {
             .map_err(ConfigError::Param)?;
         Ok(Self {
             encoder_info: None,
+            signalling: KeySignalling::new(config),
             coded_width,
             coded_height,
             params: ToolParams::from_overrides(&config.params),
@@ -1530,6 +1562,12 @@ impl CodecBackend for Av2Backend {
         self.encoder_info = payload;
     }
 
+    /// The sequence header's level from the next key frame on covers
+    /// `rate`'s peak (`level.rs`).
+    fn set_stream_rate(&mut self, rate: Option<nc_encoder::StreamRate>) {
+        self.signalling.max_bitrate_bps = rate.map(|rate| rate.peak_bps);
+    }
+
     fn set_frame_params(&mut self, params: &nc_encoder::ParamOverrides) {
         self.params = ToolParams::from_overrides(params);
         self.intra_stage = nc_encoder::IntraStage::from_overrides(params);
@@ -1764,7 +1802,7 @@ impl CodecBackend for Av2Backend {
         };
         self.ccso = if ccso {
             let coder = self.coder.as_mut().expect("filtering runs inside a frame");
-            coder.ccso(source, recon, &self.ccso_source)
+            coder.ccso(source, recon, &self.ccso_source, &self.dsp)
         } else {
             CcsoParams::OFF
         };
@@ -1794,6 +1832,16 @@ impl CodecBackend for Av2Backend {
         });
         let adaptive_cdf = self.params.cdf_adaptation >= 0.5;
         let packet = if self.key {
+            self.sequence.level = crate::level::seq_level_idx(crate::level::LevelBasis {
+                size: (
+                    self.sequence.max_width as usize,
+                    self.sequence.max_height as usize,
+                ),
+                frame_rate: self.signalling.frame_rate,
+                fixed_qindex: (!self.rate_control).then_some(u32::from(self.qindex)),
+                max_bitrate_bps: self.signalling.max_bitrate_bps,
+                random_decisions: self.random.is_some(),
+            });
             packet::key(
                 &self.sequence,
                 KeyframeHeader {
@@ -1811,7 +1859,7 @@ impl CodecBackend for Av2Backend {
                     delta_q: self.frame_delta_q(),
                 },
                 &tile,
-                self.encoder_info.as_deref(),
+                (&self.signalling.content, self.encoder_info.as_deref()),
             )
         } else {
             let (reference, refresh_flags) = self.slot_signalling();
@@ -1848,6 +1896,11 @@ impl CodecBackend for Av2Backend {
 
     fn commit_frame(&mut self) {
         self.cdef_outcome.commit();
+        if self.key {
+            // Written once per setting, as AV1's (decoders log metadata
+            // types they do not know).
+            self.encoder_info = None;
+        }
         if let Some(ratio) = self.frame_chroma_error_ratio.take() {
             self.chroma_error_ratio = Some(ratio);
         }

@@ -3,7 +3,7 @@
 // timing machine's report, the families whose curves on a clip were malformed, which is what
 // takes a clip out of the common set. Data: data/clips.json (tools/bench/preview_pages.py).
 import { control, el, fail, loadData, segmented, table } from './common.js';
-import { banner, chosenMachine, machinePicker } from './bp3.js';
+import { aboutDataset, banner, chosenMachine, datasetChoices, machineFor, machinePicker } from './bp3.js';
 
 const DATASET_PARAM = 'set';
 const state = { dataset: new URLSearchParams(location.search).get(DATASET_PARAM) };
@@ -31,7 +31,7 @@ function render(data, machine, root) {
   const view = d.views[machine];
   const windows = d.clips.reduce((n, c) => n + c.windows.length, 0);
   root.querySelector('.summary').replaceChildren(
-    `${d.name}: ${d.about}. ${d.clips.length} clips, ${windows} windows (150 frames on every clip, also 600 where the source allows it; AOM-CTC: the CTC's 130). `,
+    `${d.name}: `, ...aboutDataset(d), `. ${d.clips.length} clips, ${windows} windows (150 frames on every clip, also 600 where the source allows it; AOM-CTC: the CTC's 130). `,
     view ? `On this machine's report: ${view.view_clips} windows in the view, ${view.common_clips} in the common set (every family but the +drop rows has well-formed curves there). ` : 'No report on this machine yet. ',
     `Rungs: the shared ${data.ladder_kbps.join(' / ')} kbps ladder at 720p30, scaled to each clip and capped at half its source rate. Manifest: `,
     el('code', {}, d.manifest), '.');
@@ -53,19 +53,23 @@ async function main() {
   try {
     const [data, bp3] = await Promise.all([loadData('clips'), loadData('bp3')]);
     if (!(state.dataset in data.datasets)) [state.dataset] = Object.keys(data.datasets);
-    let machine = chosenMachine(bp3.machines);
+    // The machine selector lists the chosen dataset's machines (bp3.json's reports).
+    let machine = machineFor(bp3, state.dataset, chosenMachine(bp3.machines, bp3.views)) || chosenMachine(bp3.machines);
+    const picker = () => machinePicker(bp3.machines, machine, (m) => { machine = m; show(); }, datasetChoices(bp3, state.dataset));
     const show = () => { banner(bp3, machine); render(data, machine, root); };
     const controls = root.querySelector('.controls');
     controls.append(control('Dataset', segmented('Dataset',
       Object.entries(data.datasets).map(([value, d]) => ({ value, label: d.name })), state.dataset,
       (v) => {
         state.dataset = v;
+        machine = machineFor(bp3, v, machine) || machine;
+        picker();
         const url = new URL(location.href);
         url.searchParams.set(DATASET_PARAM, v);
         history.replaceState(null, '', url);
         show();
       })));
-    machinePicker(bp3.machines, machine, (m) => { machine = m; show(); });
+    picker();
     show();
   } catch (error) {
     fail(root, error);

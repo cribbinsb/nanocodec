@@ -1,6 +1,17 @@
 //! H.266 §7.3.3 profile/tier/level and general constraint information.
 use super::{DecodeError, Reader, Result};
 
+/// `general_profile_idc` of the decoded profiles (H.266 Table A.1, A.3.2,
+/// A.3.5): Main 10 (1), Main 10 4:4:4 (33) and their Still Picture
+/// profiles (65, 97); the operating range extensions Main 12 (2), Main 12
+/// Intra (10), Main 12 Still Picture (66), Main 12 4:4:4 (34), Main 12
+/// 4:4:4 Intra (42), Main 12 4:4:4 Still Picture (98), Main 16 4:4:4 (35),
+/// Main 16 4:4:4 Intra (43) and Main 16 4:4:4 Still Picture (99).
+const SUPPORTED_PROFILES: [u8; 13] = [1, 33, 65, 97, 2, 10, 66, 34, 42, 98, 35, 43, 99];
+/// `gci_num_additional_bits` from which the second edition's six
+/// range-extension constraint flags are present (§7.3.3.2).
+const GCI_EXTENSION_BITS: u32 = 6;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Profile {
     pub id: u8,
@@ -13,9 +24,9 @@ pub(crate) struct Profile {
 impl Profile {
     pub fn parse(r: &mut Reader<'_>, max_layer: usize) -> Result<Self> {
         let id = r.bits(7)? as u8;
-        if !matches!(id, 1 | 65) {
+        if !SUPPORTED_PROFILES.contains(&id) {
             return Err(DecodeError::Unsupported(
-                "VVC profile outside Main 10/Still Picture",
+                "VVC profile outside Main 10/Main 12/Main 16",
             ));
         }
         let high_tier = r.flag()?;
@@ -31,8 +42,13 @@ impl Profile {
             if depth_constraint > 8 {
                 return Err(DecodeError::Malformed("VVC GCI bit depth"));
             }
-            let reserved = r.bits(8)?;
-            r.zeroes(reserved)?;
+            // The range-extension constraint flags (six when present) and
+            // reserved bits, whose values decoders ignore (§7.4.4.2).
+            let additional = r.bits(8)?;
+            if additional != 0 && additional < GCI_EXTENSION_BITS {
+                return Err(DecodeError::Malformed("VVC GCI additional bits"));
+            }
+            r.flags(additional as usize)?;
             bits
         } else {
             Vec::new()
@@ -77,8 +93,9 @@ mod tests {
         for _ in 0..71 {
             w.put_bit(false);
         }
-        w.put_bits(3, 8);
-        w.put_bits(0, 3);
+        // The six range-extension constraint flags and one reserved bit.
+        w.put_bits(7, 8);
+        w.put_bits(0b101_0101, 7);
         w.byte_align_zero();
         w.put_bit(false);
         w.put_bit(true);

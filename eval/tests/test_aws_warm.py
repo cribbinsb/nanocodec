@@ -159,18 +159,20 @@ def test_a_checkpoint_skips_other_jobs_temp_files_and_vanished_ones(tmp_path):
     (cache / "f150").mkdir(parents=True)
     (cache / "f150" / "mine.json").write_text("{}")
     (cache / "f150" / ".cbr150-x.json.qlpmzmbo.times.txt").write_text("partial")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    # `find` lists one more file, which the other job renames away before tar reads it
-    (fake_bin / "find").write_text("#!/bin/bash\n/usr/bin/find \"$@\"; echo ./f150/gone.json\n")
-    (fake_bin / "find").chmod(0o755)
+    listing = subprocess.run(["bash", "-c", aws_session.new_files_command(str(cache), ".cp")],
+                             capture_output=True, text=True, check=True).stdout
+    files = aws_session.parse_new_files(listing)
+    assert [f.path for f in files] == ["f150/mine.json"]  # the dot temporary left out
     out = tmp_path / "out.tar"
-    with out.open("wb") as sink:
-        done = subprocess.run(["bash", "-c", aws_session.checkpoint_command(str(cache), ".cp")],
-                              stdout=sink, env={"PATH": f"{fake_bin}:/usr/bin:/bin"})
+    with out.open("wb") as sink:  # the other job renamed gone.json away after the listing
+        done = subprocess.run(["bash", "-c", aws_session.batch_send_command(str(cache))],
+                              input=b"2 0 f150/mine.json\0" + b"2 0 f150/gone.json\0",
+                              stdout=sink)
     assert done.returncode == 0
     with tarfile.open(out) as archive:
-        assert archive.getnames() == ["./f150/mine.json"]
+        assert archive.getnames() == ["f150/mine.json", aws_session.BATCH_MANIFEST]
+    subprocess.run(["bash", "-c", aws_session.advance_marker_command(str(cache), ".cp")],
+                   check=True)
     assert (cache / ".cp").exists()  # the checkpoint moved on
 
 

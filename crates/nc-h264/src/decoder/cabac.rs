@@ -3,6 +3,11 @@
 //! as HEVC's) with the slice's context variables, initialised from Tables
 //! 9-12..9-33 (§9.3.1.1).
 //!
+//! Context variables 460..=1023 are those of the Cb and Cr blocks of 4:4:4
+//! (`ctxBlockCat` 5..13, Table 9-34): each starts from the same `(m, n)` as
+//! its luma twin (Tables 9-24..9-33 repeat the luma values), so they are
+//! initialised from the luma entries ([`CONTEXT_TWINS`]).
+//!
 //! Past the end of the slice data the engine reads zero bits: the
 //! macroblock count and end-of-slice checks catch truncated slices.
 
@@ -10,7 +15,43 @@ use super::cavlc::read_pcm;
 use super::reader::Reader;
 use super::slice::SliceType;
 use super::{DecodeError, Result};
-use crate::tables::{CABAC_INIT_MN, CONTEXT_COUNT};
+use crate::tables::CABAC_INIT_MN;
+
+/// Context variables of every chroma format (4:4:4 uses 460..=1023).
+pub(super) const CONTEXT_COUNT_444: usize = 1024;
+
+/// The Cb / Cr context ranges beyond [`crate::tables::CONTEXT_COUNT`] as `(first ctxIdx,
+/// length, first ctxIdx of the luma twin)` (Table 9-34: coded block flags,
+/// then frame and field significance maps, last flags and levels of
+/// `ctxBlockCat` 6..8, 10..12, 9 and 13).
+const CONTEXT_TWINS: [(usize, usize, usize); 25] = [
+    (460, 12, 85),
+    (472, 12, 85),
+    (484, 44, 105),
+    (528, 44, 105),
+    (572, 44, 166),
+    (616, 44, 166),
+    (660, 15, 402),
+    (675, 15, 436),
+    (690, 9, 417),
+    (699, 9, 451),
+    (708, 10, 426),
+    (718, 15, 402),
+    (733, 15, 436),
+    (748, 9, 417),
+    (757, 9, 451),
+    (766, 10, 426),
+    (776, 44, 277),
+    (820, 44, 277),
+    (864, 44, 338),
+    (908, 44, 338),
+    (952, 30, 227),
+    (982, 30, 227),
+    // coded_block_flag of the 8x8 blocks of Y, Cb and Cr: as Luma4x4's.
+    (1012, 4, 93),
+    (1016, 4, 93),
+    (1020, 4, 93),
+];
 use nc_common::cabac::{CabacReader, context_from_pre_state};
 
 /// `preCtxState` bounds (eq. 9-5).
@@ -24,23 +65,36 @@ const MAX_BYPASS_ORDER: u32 = 24;
 pub(super) struct Cabac<'a> {
     reader: CabacReader<'a>,
     /// `pStateIdx << 1 | valMPS` of every context variable.
-    contexts: [u8; CONTEXT_COUNT],
+    contexts: [u8; CONTEXT_COUNT_444],
 }
 
 impl<'a> Cabac<'a> {
     /// Initialise contexts for `slice_type` / `cabac_init_idc` at `qp`
-    /// (§9.3.1.1) and the engine on `data` (the byte-aligned slice data).
-    pub fn new(data: &'a [u8], slice_type: SliceType, cabac_init_idc: u8, qp: i32) -> Result<Self> {
+    /// (§9.3.1.1; those of 4:4:4's Cb and Cr blocks when `chroma_444`) and
+    /// the engine on `data` (the byte-aligned slice data).
+    pub fn new(
+        data: &'a [u8],
+        (slice_type, cabac_init_idc): (SliceType, u8),
+        qp: i32,
+        chroma_444: bool,
+    ) -> Result<Self> {
         let column = match slice_type {
             SliceType::I | SliceType::Si => 0,
             SliceType::P | SliceType::B => 1 + usize::from(cabac_init_idc),
         };
-        let mut contexts = [0u8; CONTEXT_COUNT];
-        for (ctx, mn) in contexts.iter_mut().zip(CABAC_INIT_MN.iter()) {
-            let (m, n) = mn[column];
+        let state = |(m, n): (i8, i8)| {
             let pre = (((i32::from(m) * qp.clamp(0, 51)) >> 4) + i32::from(n))
                 .clamp(MIN_PRE_STATE, MAX_PRE_STATE);
-            *ctx = context_from_pre_state(pre);
+            context_from_pre_state(pre)
+        };
+        let mut contexts = [0u8; CONTEXT_COUNT_444];
+        for (ctx, mn) in contexts.iter_mut().zip(CABAC_INIT_MN.iter()) {
+            *ctx = state(mn[column]);
+        }
+        if chroma_444 {
+            for (first, length, twin) in CONTEXT_TWINS {
+                contexts.copy_within(twin..twin + length, first);
+            }
         }
         Ok(Self {
             reader: CabacReader::new(data, 0)?,
@@ -101,9 +155,31 @@ impl<'a> Cabac<'a> {
         let start = self.reader.next_byte();
         let mut reader = Reader::new(data.get(start..).ok_or(DecodeError::Truncated)?);
         read_pcm(&mut reader, out, bits)?;
-        // Whole bytes: 256 luma and 128 chroma samples of any depth.
+        // Whole bytes: 256 luma and 0, 128, 256 or 512 chroma samples of any
+        // depth.
         let bytes = reader.position().div_ceil(8);
         self.reader = CabacReader::new(data, start + bytes)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tables::CONTEXT_COUNT;
+
+    /// The twin ranges tile 460..=1023 exactly, each twin inside the
+    /// generated luma table.
+    #[test]
+    fn twins_cover_the_444_contexts() {
+        let mut next = CONTEXT_COUNT;
+        let mut ranges = CONTEXT_TWINS;
+        ranges.sort_unstable();
+        for (first, length, twin) in ranges {
+            assert_eq!(first, next);
+            assert!(twin + length <= CONTEXT_COUNT);
+            next = first + length;
+        }
+        assert_eq!(next, CONTEXT_COUNT_444);
     }
 }

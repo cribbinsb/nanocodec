@@ -1,20 +1,22 @@
-//! Sequence parameter sets (§7.3.2.1.1) with their VUI (§E.1.1), limited to
-//! what a High 10 decoder of frames must accept: 8- to 10-bit 4:2:0 or
-//! 4:0:0, no lossless transform bypass. Sequences that allow fields are accepted;
-//! their field and MBAFF pictures are refused by the slice header. Anything
-//! else is rejected as unsupported rather than misdecoded.
+//! Sequence parameter sets (§7.3.2.1.1) with their VUI (§E.1.1): what the
+//! High, High 10, High 4:2:2 and High 4:4:4 Predictive profiles (and their
+//! Intra profiles, CAVLC 4:4:4 Intra) accept: 8- to 14-bit 4:0:0, 4:2:0,
+//! 4:2:2 or 4:4:4, separately coded colour planes and lossless transform
+//! bypass. Sequences that allow fields are accepted; their field and MBAFF
+//! pictures are refused by the slice header. Anything else is rejected as
+//! unsupported rather than misdecoded.
 
-use nc_common::{BitDepth, BitDepths, ColourDescription, ColourInfo};
+use nc_common::{BitDepth, BitDepths, ChromaFormat, ColourDescription, ColourInfo};
 
+use super::chroma::{self, ChromaArray};
 use super::reader::Reader;
 use super::scaling::{self, ScalingMatrix};
 use super::structure::Structure;
 use super::{DecodeError, Result};
 
 /// Range of `bit_depth_luma_minus8` / `bit_depth_chroma_minus8`
-/// (§7.4.2.1.1), and the deepest samples decoded (High 10).
+/// (§7.4.2.1.1: 14-bit samples at most, High 4:4:4 Predictive).
 const MAX_BIT_DEPTH_MINUS8: u32 = 6;
-const MAX_BIT_DEPTH: u32 = 10;
 /// `seq_parameter_set_id` range (§7.4.2.1.1).
 pub(super) const MAX_SPS_ID: u32 = 31;
 /// `max_num_ref_frames` and DPB frames are at most 16 (§A.3.1).
@@ -40,7 +42,12 @@ const HIGH_PROFILES: [u32; 13] = [100, 110, 122, 244, 44, 83, 86, 118, 128, 138,
 /// `chroma_format_idc` values (Table 6-1).
 const CHROMA_400: u32 = 0;
 const CHROMA_420: u32 = 1;
+const CHROMA_422: u32 = 2;
 const CHROMA_444: u32 = 3;
+/// The 8x8 scaling lists of an SPS: Y only, or Y, Cb and Cr in 4:4:4
+/// (§7.3.2.1.1: `( chroma_format_idc != 3 ) ? 8 : 12` lists in all).
+pub(super) const LISTS_8X8_Y: usize = 2;
+pub(super) const LISTS_8X8_YUV: usize = 6;
 
 /// Picture order count derivation of the SPS (§8.2.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +88,19 @@ pub(super) struct Sps {
     pub constraint_set3: bool,
     /// `chroma_format_idc` 0.
     pub monochrome: bool,
-    /// `bit_depth_luma_minus8 + 8` and the chroma one.
+    /// `ChromaArrayType`: the chroma syntax of the macroblock layer.
+    pub chroma: ChromaArray,
+    /// `separate_colour_plane_flag`: three colour planes, each coded as a
+    /// monochrome picture (`colour_plane_id`).
+    pub separate_planes: bool,
+    /// The decoded pictures' format.
+    pub format: ChromaFormat,
+    /// `qpprime_y_zero_transform_bypass_flag`: macroblocks with `QP′Y` 0
+    /// are lossless (§8.5.15).
+    pub transform_bypass: bool,
+    /// `bit_depth_luma_minus8 + 8` and the chroma one (the luma one for
+    /// every plane when they are coded separately: `ChromaArrayType` 0
+    /// leaves the chroma depth unused, §7.4.2.1.1).
     pub depths: BitDepths,
     /// `seq_scaling_matrix_present_flag`: PPS lists fall back by rule B.
     pub scaling_present: bool,
@@ -133,6 +152,12 @@ impl Sps {
     /// `PicSizeInMbs` of a picture of `structure` (eq. 7-26).
     pub fn picture_mbs(&self, structure: Structure) -> usize {
         self.width_mbs * self.picture_height_mbs(structure)
+    }
+
+    /// Colour planes coded separately: 3 with `separate_colour_plane_flag`,
+    /// else 1 (all components in each macroblock).
+    pub fn coded_planes(&self) -> usize {
+        if self.separate_planes { 3 } else { 1 }
     }
 
     /// The visible (cropped) size.
@@ -190,6 +215,63 @@ fn max_dpb_mbs(level_idc: u32, constraint_set3: bool) -> usize {
     }
 }
 
+/// The fields only the High profiles' SPSs carry (§7.3.2.1.1).
+struct HighFields {
+    chroma_format_idc: u32,
+    separate_planes: bool,
+    depths: BitDepths,
+    transform_bypass: bool,
+    scaling_present: bool,
+    scaling: ScalingMatrix,
+}
+
+impl HighFields {
+    /// What they are without them: 8-bit 4:2:0 (§7.4.2.1.1).
+    const BASELINE: Self = Self {
+        chroma_format_idc: CHROMA_420,
+        separate_planes: false,
+        depths: BitDepths::EIGHT,
+        transform_bypass: false,
+        scaling_present: false,
+        scaling: ScalingMatrix::FLAT,
+    };
+}
+
+/// `chroma_format_idc` to `seq_scaling_matrix_present_flag` and its lists.
+fn parse_high_fields(r: &mut Reader<'_>) -> Result<HighFields> {
+    let chroma_format_idc = r.ue_max(CHROMA_444, "chroma_format_idc")?;
+    let separate_planes = chroma_format_idc == CHROMA_444 && r.flag()?;
+    let mut depth = || -> Result<BitDepth> {
+        let bits = r.ue_max(MAX_BIT_DEPTH_MINUS8, "bit_depth_minus8")? + 8;
+        BitDepth::new(bits).ok_or(DecodeError::Malformed("bit depth"))
+    };
+    let luma = depth()?;
+    let chroma = depth()?;
+    let transform_bypass = r.flag()?;
+    let scaling_present = r.flag()?;
+    let mut scaling = ScalingMatrix::FLAT;
+    if scaling_present {
+        let lists_8x8 = if chroma_format_idc == CHROMA_444 {
+            LISTS_8X8_YUV
+        } else {
+            LISTS_8X8_Y
+        };
+        let parsed = scaling::parse_matrix(r, lists_8x8)?;
+        scaling = scaling::resolve(&parsed, None);
+    }
+    Ok(HighFields {
+        chroma_format_idc,
+        separate_planes,
+        depths: BitDepths {
+            luma,
+            chroma: if separate_planes { luma } else { chroma },
+        },
+        transform_bypass,
+        scaling_present,
+        scaling,
+    })
+}
+
 /// Parse an SPS RBSP (after the NAL header).
 pub(super) fn parse(data: &[u8]) -> Result<Sps> {
     let mut r = Reader::new(data);
@@ -197,39 +279,26 @@ pub(super) fn parse(data: &[u8]) -> Result<Sps> {
     let constraint_flags = r.bits(8)?;
     let level_idc = r.bits(8)?;
     let id = r.ue_max(MAX_SPS_ID, "seq_parameter_set_id")?;
-    let mut monochrome = false;
-    let mut depths = BitDepths::EIGHT;
-    let mut scaling_present = false;
-    let mut scaling = ScalingMatrix::FLAT;
-    if HIGH_PROFILES.contains(&profile_idc) {
-        let chroma_format_idc = r.ue_max(CHROMA_444, "chroma_format_idc")?;
-        if chroma_format_idc == CHROMA_444 && r.flag()? {
-            return Err(DecodeError::Unsupported("H264 separate colour planes"));
-        }
-        if chroma_format_idc != CHROMA_420 && chroma_format_idc != CHROMA_400 {
-            return Err(DecodeError::Unsupported("H264 chroma format above 4:2:0"));
-        }
-        monochrome = chroma_format_idc == CHROMA_400;
-        let mut depth = || -> Result<BitDepth> {
-            let bits = r.ue_max(MAX_BIT_DEPTH_MINUS8, "bit_depth_minus8")? + 8;
-            if bits > MAX_BIT_DEPTH {
-                return Err(DecodeError::Unsupported("H264 bit depth above 10"));
-            }
-            BitDepth::new(bits).ok_or(DecodeError::Malformed("bit depth"))
-        };
-        depths = BitDepths {
-            luma: depth()?,
-            chroma: depth()?,
-        };
-        if r.flag()? {
-            return Err(DecodeError::Unsupported("H264 lossless transform bypass"));
-        }
-        scaling_present = r.flag()?;
-        if scaling_present {
-            let parsed = scaling::parse_matrix(&mut r, scaling::LISTS_8X8)?;
-            scaling = scaling::resolve(&parsed, None);
-        }
-    }
+    let high = if HIGH_PROFILES.contains(&profile_idc) {
+        parse_high_fields(&mut r)?
+    } else {
+        HighFields::BASELINE
+    };
+    let HighFields {
+        chroma_format_idc,
+        separate_planes,
+        depths,
+        transform_bypass,
+        scaling_present,
+        scaling,
+    } = high;
+    let monochrome = chroma_format_idc == CHROMA_400;
+    let chroma = match chroma_format_idc {
+        CHROMA_420 => ChromaArray::Yuv420,
+        CHROMA_422 => ChromaArray::Yuv422,
+        CHROMA_444 if !separate_planes => ChromaArray::Yuv444,
+        _ => ChromaArray::Mono,
+    };
     let log2_max_frame_num = r.ue_max(MAX_LOG2_MINUS4, "log2_max_frame_num_minus4")? + 4;
     let poc = parse_poc(&mut r)?;
     let max_num_ref_frames = r.ue_max(MAX_DPB_FRAMES as u32, "max_num_ref_frames")? as usize;
@@ -255,13 +324,17 @@ pub(super) fn parse(data: &[u8]) -> Result<Sps> {
         return Err(DecodeError::Unsupported("H264 picture size"));
     }
     let direct_8x8_inference = r.flag()?;
-    let crop = parse_crop(&mut r, monochrome, frame_mbs_only, width_mbs, height_mbs)?;
+    let crop = parse_crop(&mut r, chroma, frame_mbs_only, width_mbs, height_mbs)?;
     let mut sps = Sps {
         id,
         profile_idc,
         level_idc,
         constraint_set3: constraint_flags & 0x10 != 0,
         monochrome,
+        chroma,
+        separate_planes,
+        format: chroma::picture_format(chroma_format_idc),
+        transform_bypass,
         depths,
         scaling_present,
         scaling,
@@ -309,11 +382,11 @@ fn parse_poc(r: &mut Reader<'_>) -> Result<PocType> {
 }
 
 /// `frame_cropping_flag` and offsets, in luma samples (eqs. 7-19..7-22:
-/// `CropUnitX` 2 for 4:2:0, 1 for 4:0:0; `CropUnitY` that times
-/// `2 − frame_mbs_only_flag`).
+/// `CropUnitX` `SubWidthC`, 1 for `ChromaArrayType` 0; `CropUnitY`
+/// `SubHeightC` (or 1) times `2 − frame_mbs_only_flag`).
 fn parse_crop(
     r: &mut Reader<'_>,
-    monochrome: bool,
+    chroma: ChromaArray,
     frame_mbs_only: bool,
     width_mbs: usize,
     height_mbs: usize,
@@ -321,8 +394,17 @@ fn parse_crop(
     if !r.flag()? {
         return Ok(Crop::default());
     }
-    let unit_x = if monochrome { 1 } else { 2 };
-    let unit_y = if frame_mbs_only { unit_x } else { 2 * unit_x };
+    let (sub_x, sub_y) = if chroma.is_mono() {
+        (0, 0)
+    } else {
+        chroma.subsampling()
+    };
+    let unit_x = 1 << sub_x;
+    let unit_y = if frame_mbs_only {
+        1 << sub_y
+    } else {
+        2 << sub_y
+    };
     // An offset beyond the coded size is invalid anyway (eqs. 7-19..7-22);
     // bounding it first keeps the products and sums below from overflowing
     // a 32-bit `usize` (WASM).

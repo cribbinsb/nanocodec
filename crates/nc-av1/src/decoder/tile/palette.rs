@@ -91,6 +91,8 @@ impl BlockPalette {
 pub(super) struct PaletteState {
     /// `BitDepth`: the bits of each coded colour.
     bits: u32,
+    /// The chroma subsampling (`subsampling_x`, `subsampling_y`).
+    subsampling: (usize, usize),
     above: Vec<[Palette; 2]>,
     left: [[Palette; 2]; MAX_SUPERBLOCK_MI],
     /// The block being decoded.
@@ -104,17 +106,18 @@ pub(super) struct PaletteState {
 
 impl PaletteState {
     /// The state of a frame `mi_cols` 4x4 units wide (with a superblock of
-    /// spare units, so blocks at the edge write whole) and `bits` per
-    /// sample.
-    pub(super) fn new(mi_cols: usize, bits: u32) -> Self {
+    /// spare units, so blocks at the edge write whole), `bits` per sample
+    /// and chroma subsampled by `subsampling`.
+    pub(super) fn new(mi_cols: usize, bits: u32, subsampling: (usize, usize)) -> Self {
         Self {
             bits,
+            subsampling,
             above: vec![[Palette::default(); 2]; mi_cols + MAX_SUPERBLOCK_MI],
             left: [[Palette::default(); 2]; MAX_SUPERBLOCK_MI],
             block: BlockPalette::default(),
             maps: [
                 vec![0; PALETTE_MAX_BLOCK * PALETTE_MAX_BLOCK],
-                vec![0; PALETTE_MAX_BLOCK * PALETTE_MAX_BLOCK / 4],
+                vec![0; (PALETTE_MAX_BLOCK * PALETTE_MAX_BLOCK) >> (subsampling.0 + subsampling.1)],
             ],
             stride: [0; 2],
             origin: [(0, 0); 2],
@@ -250,15 +253,21 @@ impl PaletteState {
         }
         if self.block.u.size > 0 {
             let size = usize::from(self.block.u.size);
-            // A 4-sample-wide (high) block's chroma covers its 8x8 area,
+            let (ss_x, ss_y) = self.subsampling;
+            // A chroma side under 4 samples (a 4-sample luma side
+            // subsampled) covers the chroma of the whole 8-sample area,
             // which starts a unit left (up) (§5.11.49: `+ 2`).
-            let widen = |luma_side: usize| if luma_side < 8 { 2 } else { 0 };
-            let (cw, ch) = (bw / 2 + widen(bw), bh / 2 + widen(bh));
-            let on = (onscreen.0 / 2 + widen(bw), onscreen.1 / 2 + widen(bh));
-            let col = block.mi_col - usize::from(block.size.width_mi() == 1);
-            let row = block.mi_row - usize::from(block.size.height_mi() == 1);
+            let (narrow, short) = ((bw >> ss_x) < 4, (bh >> ss_y) < 4);
+            let widen = |widened: bool| if widened { 2 } else { 0 };
+            let (cw, ch) = ((bw >> ss_x) + widen(narrow), (bh >> ss_y) + widen(short));
+            let on = (
+                (onscreen.0 >> ss_x) + widen(narrow),
+                (onscreen.1 >> ss_y) + widen(short),
+            );
+            let col = block.mi_col - usize::from(narrow);
+            let row = block.mi_row - usize::from(short);
             self.stride[1] = cw;
-            self.origin[1] = (col * 2, row * 2);
+            self.origin[1] = ((col * 4) >> ss_x, (row * 4) >> ss_y);
             read_map(
                 r,
                 &mut cdfs.palette_uv_color_index[size - PALETTE_MIN_SIZE],

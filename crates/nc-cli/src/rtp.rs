@@ -19,8 +19,8 @@ use nc_encoder::{
 };
 use nc_rtp::dump::{self, CapturedPacket, PcapWriter};
 use nc_rtp::{
-    Depacketizer, DepacketizerConfig, LayerFilter, Packetizer, PacketizerConfig, PayloadFormat,
-    UnitLayers, Vp9Mode, rtp_timestamp,
+    Depacketizer, DepacketizerConfig, InterLayer, LayerFilter, Packetizer, PacketizerConfig,
+    PayloadFormat, UnitLayers, Vp9Mode, rtp_timestamp,
 };
 
 use crate::framing::{self, IvfWriter};
@@ -240,6 +240,12 @@ struct Options {
     deliver_after_loss: bool,
     /// `--layers S:T`: forward only these layers first, as an SFU would.
     layers: Option<(u8, u8)>,
+    /// `--inter-layer full|key`: how VP9 layers predict from the layer
+    /// below, for `--layers` (an SFU knows it from the scalability mode).
+    inter_layer: InterLayer,
+    /// `--forward PATH`: also write the packets `--layers` forwards (what
+    /// the SFU sends its receiver).
+    forward: Option<PathBuf>,
 }
 
 fn parse_options(args: &[String]) -> Result<Options, String> {
@@ -286,6 +292,12 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
                 ))
             })
             .transpose()?,
+        inter_layer: match get("--inter-layer").as_deref() {
+            None | Some("full") => InterLayer::Full,
+            Some("key") => InterLayer::KeyOnly,
+            Some(other) => return Err(format!("bad --inter-layer {other} (full|key)")),
+        },
+        forward: get("--forward").map(PathBuf::from),
     })
 }
 
@@ -317,7 +329,10 @@ pub(crate) fn run_packetize(args: &[String]) -> Result<(), String> {
         Codec::Av1 | Codec::Vp9 => {
             framing::read_ivf(&mut input, |header, frame| {
                 if options.codec == Codec::Vp9 && nc_vp9::split_superframe(frame.packet).is_some() {
-                    return Err("VP9 superframes (spatial layers) are not carried over RTP".into());
+                    return Err(
+                        "VP9 superframes (spatial layers) need their layer ids: use encode --rtp"
+                            .into(),
+                    );
                 }
                 let rate = u64::from(u32::from_le_bytes(
                     header.bytes[16..20].try_into().expect("4 bytes"),
@@ -370,7 +385,17 @@ pub(crate) fn run_depacketize(args: &[String]) -> Result<(), String> {
     };
     let mut filter = match (options.layers, options.descriptor_id) {
         (Some((spatial, temporal)), Some(id)) => Some(LayerFilter::new(id, spatial, temporal)),
-        (Some(_), None) => return Err("--layers needs the Dependency Descriptor (--dd-id)".into()),
+        (Some((spatial, temporal)), None) if options.codec == Codec::Vp9 => {
+            Some(LayerFilter::vp9(options.inter_layer, spatial, temporal))
+        }
+        (Some(_), None) => {
+            return Err("--layers needs the Dependency Descriptor (--dd-id) or VP9".into());
+        }
+        _ => None,
+    };
+    let mut forwarded_sink = match (&options.forward, &filter) {
+        (Some(path), Some(_)) => Some(CaptureSink::create(path)?),
+        (Some(_), None) => return Err("--forward needs --layers".into()),
         _ => None,
     };
     let mut first_timestamp = None;
@@ -397,7 +422,12 @@ pub(crate) fn run_depacketize(args: &[String]) -> Result<(), String> {
     for packet in read_capture(&options.input)? {
         let data = match &mut filter {
             Some(filter) => match filter.filter(&packet.data).map_err(|e| e.to_string())? {
-                Some(forwarded) => forwarded,
+                Some(forwarded) => {
+                    if let Some(sink) = &mut forwarded_sink {
+                        sink.write(packet.time_us, &forwarded)?;
+                    }
+                    forwarded
+                }
                 None => continue,
             },
             None => packet.data,
@@ -409,6 +439,9 @@ pub(crate) fn run_depacketize(args: &[String]) -> Result<(), String> {
     }
     receiver.flush();
     write_ready(&mut receiver, &mut sink)?;
+    if let Some(forwarded) = forwarded_sink {
+        forwarded.finish()?;
+    }
     match sink {
         StreamSink::Ivf(writer) => writer.finish().map(drop),
         StreamSink::AnnexB(mut out) => out.flush(),

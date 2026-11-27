@@ -31,7 +31,16 @@
 //!   field (HEVC TMVP): after a loss the decoder's field differs, and so
 //!   would the vector a merge index selects.
 //!
-//! The dirty region is unconstrained. Bitstreams carry no special syntax.
+//! The dirty region is unconstrained. The frame starting a sweep is marked
+//! as a recovery point (H.264 and HEVC recovery-point SEI, VVC GDR
+//! pictures; [`RefreshWindow::recovery_frames`]), so a decoder joining there
+//! knows when its pictures become correct. `VVdeC` (as VTM) withholds the
+//! output of the first GDR picture's recovering pictures even in a stream
+//! that started with an IDR picture (`DecLibParser.cpp` `m_gdrRecovered`,
+//! d261469), where H.266 §8.1.1/§8.1.2 output them
+//! (`NoOutputBeforeRecoveryFlag` 0): `VVdeC`-based players skip the first
+//! sweep after a stream start (owner decision 2026-11-27: GDR kept, the
+//! behaviour documented).
 
 use std::ops::Range;
 
@@ -82,6 +91,11 @@ pub struct RefreshWindow {
     /// This frame starts a sweep (its left neighbours were refreshed in the
     /// previous sweep); recovery completes when the sweep ends.
     pub sweep_start: bool,
+    /// Coded frames from this one to the one that completes its sweep, in
+    /// output order (the sweep's frames are this far apart in a layered
+    /// structure): a decoder starting at a sweep start shows correct
+    /// pictures from that frame on.
+    pub recovery_frames: u32,
 }
 
 impl RefreshWindow {
@@ -166,6 +180,8 @@ pub(crate) struct RefreshSweep {
     unit: usize,
     /// Frames one sweep takes.
     frames: usize,
+    /// Coded frames from one frame of the sweep to the next.
+    spacing: u64,
     /// Frames of this sweep coded so far.
     done: usize,
     /// Luma samples the intra range starts before the previous range's end.
@@ -184,6 +200,7 @@ impl RefreshSweep {
             width,
             unit,
             frames: 0,
+            spacing: 1,
             done: 0,
             overlap,
             filter_reach,
@@ -200,6 +217,7 @@ impl RefreshSweep {
         let frames = usize::try_from(period).unwrap_or(usize::MAX);
         Self {
             frames: frames.max(MIN_REFRESH_PERIOD as usize).min(columns),
+            spacing: spacing.max(1),
             ..self
         }
     }
@@ -235,6 +253,8 @@ impl RefreshSweep {
             clean_limit: previous_end.saturating_sub(self.filter_reach),
             width: self.width,
             sweep_start: previous_end == 0,
+            recovery_frames: u32::try_from((self.frames as u64 - 1) * self.spacing)
+                .unwrap_or(u32::MAX),
         }
     }
 }
@@ -254,6 +274,7 @@ mod tests {
         let mut sweep = RefreshSweep::new(IntraRefresh { period: 3 }, 320, 64, 16);
         let first = sweep.next_window();
         assert_eq!((first.intra.clone(), first.sweep_start), (0..128, true));
+        assert_eq!(first.recovery_frames, 2);
         let second = sweep.next_window();
         // Starts the filter reach (16) before 128.
         assert_eq!((second.intra.clone(), second.clean_limit), (112..256, 112));

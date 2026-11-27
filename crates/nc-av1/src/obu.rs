@@ -434,6 +434,9 @@ pub struct LevelBasis {
     pub fixed_base_q_idx: Option<u32>,
     /// Random-decision test streams signal no level.
     pub random_decisions: bool,
+    /// The peak delivery rate under rate control (Annex A.3 `MaxBitrate`,
+    /// `MinCompRatio`).
+    pub max_bitrate_bps: Option<u64>,
 }
 
 /// Sequence header OBU payload (AV1 §5.5). `width` is the upscaled
@@ -471,7 +474,7 @@ pub fn sequence_header(
             op_rate,
             (picture * u64::from(op_rate.num)).div_ceil(u64::from(op_rate.den)),
             pictures_per_sec,
-            None,
+            basis.max_bitrate_bps,
             unconstrained,
         );
         w.put_bits(operating_point_idc(temporal_layers, op), 12); // operating_point_idc[op]

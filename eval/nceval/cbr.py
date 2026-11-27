@@ -622,7 +622,8 @@ class Bench:
         rate log, coded times and squared-error log against the reference (`--sse-log`,
         builds that have it: the scoring PC then takes PSNR from it, not from the frames in
         Python), and its reconstruction's per-frame digests (yuv.FRAME_HASH), each written
-        under a temporary name and `.done` last; a refusal writes `.failed` (as
+        under a temporary name and `.done` last (with each file's size and SHA-256,
+        gpuscore.write_done); a refusal writes `.failed` (as
         tools/dev/remote_jobs.py does)."""
         family, base = point.family, self.prebuilt_base(point)
         base.parent.mkdir(parents=True, exist_ok=True)
@@ -657,7 +658,7 @@ class Bench:
             for name, partial in outputs.items():
                 if partial.exists():
                     partial.rename(f"{base}{name}")
-        Path(f"{base}.done").touch()
+        gpuscore.write_done(base, list(outputs))
 
     def point_dir(self, family: Family, clip: Clip) -> Path:
         # The cache keys on the family's name, not its codec (`identity`), so an

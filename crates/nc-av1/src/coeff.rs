@@ -389,7 +389,8 @@ impl<'a> Magnitudes<'a> {
             BASE_EOB_SYMBOLS,
         );
         map.code_level::<W, PREPARED>(w, range_cdfs, self.levels, pos, at, level);
-        for (pos, at, offset) in self.steps.ac_before(last) {
+        for c in (1..last).rev() {
+            let (pos, at, offset) = self.steps.step(c);
             let (_, level) = self.level(pos);
             let ctx = if PREPARED {
                 usize::from(contexts[pos] + offset)
@@ -440,7 +441,8 @@ impl<'a> Magnitudes<'a> {
         }
         remainder(counter, level);
         let mut base_q9 = 0;
-        for (pos, at, offset) in self.steps.ac_before(last) {
+        for c in (1..last).rev() {
+            let (pos, at, offset) = self.steps.step(c);
             let (_, level) = self.level(pos);
             let ctx = if PREPARED {
                 usize::from(contexts[pos] + offset)
@@ -604,24 +606,13 @@ impl ScanSteps<'_> {
     }
 
     /// Coefficient, map index and context offset of scan index `c`.
+    #[inline]
     fn step(&self, c: usize) -> (usize, usize, u8) {
         (
             usize::from(self.pos[c]),
             usize::from(self.at[c]),
             self.nz_offset[c],
         )
-    }
-
-    /// The AC steps before scan index `last` (scan indices `last - 1` down
-    /// to 1), in reverse scan order.
-    fn ac_before(&self, last: usize) -> impl Iterator<Item = (usize, usize, u8)> + '_ {
-        let ac = 1.min(last)..last;
-        self.pos[ac.clone()]
-            .iter()
-            .zip(&self.at[ac.clone()])
-            .zip(&self.nz_offset[ac])
-            .rev()
-            .map(|((&pos, &at), &offset)| (usize::from(pos), usize::from(at), offset))
     }
 }
 
@@ -1197,14 +1188,20 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
 
     /// `coeff_base` magnitude sum of the context neighbours of the
     /// coefficient at map index `at`.
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "Keep the neighbour loads in the coefficient loop"
+    )]
+    #[inline(always)]
     fn base_sum(&self, at: usize) -> u32 {
         let near = self.near(at);
-        Self::SHARED_NEIGHBOURS
-            .iter()
-            .chain(&Self::FAR_BASE_NEIGHBOURS)
-            .map(|&i| u32::from(near[i]))
-            .sum()
+        let [shared0, shared1, shared2] = Self::SHARED_NEIGHBOURS;
+        let [far0, far1] = Self::FAR_BASE_NEIGHBOURS;
+        u32::from(near[shared0])
+            + u32::from(near[shared1])
+            + u32::from(near[shared2])
+            + u32::from(near[far0])
+            + u32::from(near[far1])
     }
 
     /// `coeff_br` magnitude sum (each saturated at `MAX_BASE_BR_RANGE`) of
@@ -1212,21 +1209,23 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
     /// map's neighbour offsets are the same steps in libaom layout: one
     /// row (+1) and one column (+`STRIDE` in the map, + the coded side in
     /// `levels`).
+    #[allow(
+        clippy::inline_always,
+        reason = "Keep the neighbour loads in the coefficient loop"
+    )]
+    #[inline(always)]
     fn range_sum(&self, at: usize, levels: &[i16], pos: usize) -> u32 {
         let near = self.near(at);
-        let in_levels = [self.column, 1, self.column + 1];
-        Self::SHARED_NEIGHBOURS
-            .iter()
-            .zip(in_levels)
-            .map(|(&i, step)| {
-                let saturated = near[i];
-                if saturated < BASE_CONTEXT_LEVEL_MAX {
-                    u32::from(saturated)
-                } else {
-                    u32::from(levels[pos + step].unsigned_abs()).min(MAX_BASE_BR_RANGE as u32)
-                }
-            })
-            .sum()
+        let [a, b, c] = Self::SHARED_NEIGHBOURS;
+        let term = |i: usize, step: usize| {
+            let saturated = near[i];
+            if saturated < BASE_CONTEXT_LEVEL_MAX {
+                u32::from(saturated)
+            } else {
+                u32::from(levels[pos + step].unsigned_abs()).min(MAX_BASE_BR_RANGE as u32)
+            }
+        };
+        term(a, self.column) + term(b, 1) + term(c, self.column + 1)
     }
 }
 

@@ -83,15 +83,60 @@ impl EdgeMap {
         }
     }
 
-    /// Move every horizontal edge of row `row` from level `from` to level
-    /// `to` (dav2d's crop of long edges at the bottom of the frame).
-    pub fn lower_row(&mut self, row: usize, from: u8, to: u8) {
-        let start = row * self.columns;
-        let sets = &mut self.sets[Direction::Horizontal as usize][start..start + self.columns];
-        for set in sets {
+    /// Cap the edge at unit (`column`, `row`) in `direction` at level
+    /// `limit`: the sum of its set levels (its level, as one is set at
+    /// most), at most `limit`, becomes its only level, level 0 when none
+    /// was set (dav2d's tile-boundary fix-ups in
+    /// `dav2d_deblock_slice_cols`). The sub-PU mark stays.
+    pub fn cap(&mut self, direction: Direction, column: usize, row: usize, limit: u8) {
+        if column >= self.columns || row >= self.rows {
+            return;
+        }
+        let set = &mut self.sets[direction as usize][row * self.columns + column];
+        let level: u8 = (1..=MAX_LUMA_LEVEL)
+            .filter(|&level| *set >> level & 1 != 0)
+            .sum();
+        *set = (*set & !LEVELS) | 1 << level.min(limit);
+    }
+
+    /// Remove every horizontal edge of row `line` (`direction`
+    /// horizontal) or vertical edge of column `line`: AVM's
+    /// `set_lpf_parameters` leaves edges on tile boundaries unfiltered in a
+    /// sequence that keeps loop filters within tiles.
+    pub fn clear_line(&mut self, direction: Direction, line: usize) {
+        let columns = self.columns;
+        let sets = &mut self.sets[direction as usize];
+        match direction {
+            Direction::Horizontal if line < self.rows => {
+                sets[line * columns..(line + 1) * columns].fill(0);
+            }
+            Direction::Vertical if line < columns => {
+                sets[line..]
+                    .iter_mut()
+                    .step_by(columns)
+                    .for_each(|set| *set = 0);
+            }
+            _ => {}
+        }
+    }
+
+    /// Move every horizontal edge of row `line` (`direction`
+    /// horizontal) or vertical edge of column `line` from level `from` to
+    /// level `to` (dav2d's crop of long edges at the frame's bottom and
+    /// right).
+    pub fn lower_line(&mut self, direction: Direction, line: usize, from: u8, to: u8) {
+        let columns = self.columns;
+        let sets = &mut self.sets[direction as usize];
+        let lower = |set: &mut u8| {
             if *set & (1 << from) != 0 {
                 *set = (*set & !(1 << from)) | 1 << to;
             }
+        };
+        match direction {
+            Direction::Horizontal => sets[line * columns..(line + 1) * columns]
+                .iter_mut()
+                .for_each(lower),
+            Direction::Vertical => sets[line..].iter_mut().step_by(columns).for_each(lower),
         }
     }
 }

@@ -55,14 +55,6 @@ impl<'a> Reader<'a> {
         }
         Ok(value)
     }
-    fn zeroes(&mut self, count: u32) -> Result<()> {
-        for _ in 0..count {
-            if self.flag()? {
-                return Err(DecodeError::Malformed("VVC reserved zero bit"));
-            }
-        }
-        Ok(())
-    }
     fn align(&mut self) -> Result<()> {
         self.0.align_zero()
     }

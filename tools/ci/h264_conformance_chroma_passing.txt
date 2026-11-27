@@ -1,0 +1,24 @@
+# The 4:2:2 / 4:4:4 ITU-T H.264.1 streams our decoder must decode MD5-exact
+# (tools/ci/h264_conformance.sh). Add each stream as it passes.
+Hi422FR10_SONY_A
+Hi422FR11_SONY_A
+Hi422FR12_SONY_A
+Hi422FR13_SONY_A
+Hi422FR14_SONY_A
+Hi422FR15_SONY_A
+Hi422FR1_SONY_A
+Hi422FR2_SONY_A
+Hi422FR3_SONY_A
+Hi422FR4_SONY_A
+Hi422FR6_SONY_A
+Hi422FR7_SONY_A
+Hi422FR8_SONY_A
+Hi422FR9_SONY_A
+PPH422I1_Panasonic_A
+PPH422I2_Panasonic_A
+PPH422I3_Panasonic_A
+PPH422I4_Panasonic_A
+PPH422I5_Panasonic_A
+PPCV444I7_SejongUniv_A
+PPH444I7_SejongUniv_A
+PPH444P10_SejongUniv_A

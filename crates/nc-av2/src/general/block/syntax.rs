@@ -9,6 +9,7 @@ use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::{Tile, UNITS64_LOG2, context, samples};
 use crate::general::frame_header::filters::Cdef;
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 
 /// Planes of 4:2:0.
@@ -24,9 +25,8 @@ const SKIP_MODE_CONTEXT_OFFSET: usize = 3;
 const DELTA_Q_ESCAPE: usize = 7;
 const DELTA_Q_LENGTH_BITS: u32 = 3;
 const DELTA_Q_ESCAPE_BASE: i32 = 5;
-/// Superblock quantizer range of 8-bit streams.
+/// Smallest superblock quantizer (the largest is the sequence's).
 const MIN_QINDEX: i32 = 1;
-const MAX_QINDEX: i32 = 255;
 
 /// A context neighbour: an edge and its index there.
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +43,7 @@ pub(super) struct Neighbours {
     pub count: usize,
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Decode one coding block: `luma` and `chroma` are the sizes of the
     /// trees it belongs to (one may be absent: separate trees).
     pub(super) fn block(
@@ -55,6 +55,10 @@ impl Tile<'_, '_> {
         let size = luma
             .or(chroma)
             .ok_or(DecodeError::Malformed("AV2 block without a tree"))?;
+        // A monochrome block keeps its tree's chroma size only to tell
+        // whether the trees are shared (dav2d `cbs_tree`); it has no chroma.
+        let shared_tree = luma == chroma;
+        let chroma = chroma.filter(|_| !self.sequence.monochrome);
         let (bw4, bh4) = size.units();
         let range = self.reader.range();
         let plane = match (luma, chroma) {
@@ -71,6 +75,9 @@ impl Tile<'_, '_> {
             samples(bw4),
             samples(bh4)
         );
+        if self.frame.bridge_slot.is_some() {
+            return self.bridge_block(luma, chroma, shared_tree);
+        }
         let has_luma = luma.is_some();
         let segment_after_skip = self.segment_before_skip(depth, size, has_luma)?;
         let neighbours = self.context_neighbours(size);
@@ -79,7 +86,7 @@ impl Tile<'_, '_> {
             false
         } else if !self.frame.is_intra() && !self.intra_region {
             // Mixed regions whose chroma block is offset are inter.
-            luma == chroma && {
+            shared_tree && {
                 let context = self.intra_context(neighbours);
                 let inter = self.bool(|m| &mut m.is_inter[context])?;
                 let range = self.reader.range();
@@ -111,6 +118,8 @@ impl Tile<'_, '_> {
         let record = BlockRecord {
             luma,
             chroma,
+            block_chroma: chroma,
+            shared_tree,
             row: self.row,
             column: self.column,
             chroma_row: self.chroma_row,
@@ -468,14 +477,15 @@ impl Tile<'_, '_> {
         } else {
             Some(self.filters.cdef_index[index - stride])
         };
+        // Availability is by position alone: an available unit without a
+        // coded index (only skipped blocks, AVM's -1) counts as not 0 (AVM
+        // v1.0.0 `av2_get_cdef_context`; dav2d 7b187849).
         let zero = |value: Option<Option<u8>>| usize::from(value == Some(Some(0)));
-        // Coded (Some(Some)) neighbours on both sides, else the one coded.
-        let context = match (left, top) {
-            (Some(Some(_)), Some(Some(_))) => {
-                let context = zero(left) + zero(top);
-                context + usize::from(context == 2)
-            }
-            _ => 2 * usize::from(left.flatten().or(top.flatten()) == Some(0)),
+        let context = if left.is_some() && top.is_some() {
+            let context = zero(left) + zero(top);
+            context + usize::from(context == 2)
+        } else {
+            2 * usize::from(zero(left) + zero(top) != 0)
         };
         let value = if self.bool(|m| &mut m.cdef_index0[context])? {
             0
@@ -568,7 +578,8 @@ impl Tile<'_, '_> {
         }
         let scaled = delta << res_log2;
         let previous = self.qindex;
-        self.qindex = (i32::from(self.qindex) + scaled).clamp(MIN_QINDEX, MAX_QINDEX) as u16;
+        let max = i32::from(self.sequence.max_qindex());
+        self.qindex = (i32::from(self.qindex) + scaled).clamp(MIN_QINDEX, max) as u16;
         if self.qindex != previous {
             self.dequant = self.dequantizers(self.qindex);
         }

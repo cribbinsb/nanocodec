@@ -12,11 +12,13 @@ mod blend;
 mod kernels;
 mod mc;
 mod refine;
+mod scaled;
 
 use super::Tile;
 use super::inter_record::{CompoundType, InterMode, InterRecord, MotionMode, Reference, TIP_FRAME};
 use super::motion::{MotionStore, Mv};
 use super::size::BlockSize;
+use crate::general::sample::Av2Sample;
 use crate::general::warp::WarpModel;
 use blend::Implicit;
 use mc::{Bounds, Target};
@@ -57,17 +59,20 @@ impl InterPrediction {
 /// of refinement (dav2d `scratch.compinter`, `seg_mask`, `p`,
 /// `interintra`; `t->rmv`).
 #[derive(Debug, Clone)]
-pub struct InterScratch {
+pub struct InterScratch<T> {
     /// The two predictions before blending.
     pub(super) compound: [Vec<i16>; 2],
     /// A difference or implicit mask, per luma piece and chroma.
     pub(super) mask: Vec<u8>,
     /// Bilinear predictions refinement searches over.
-    pub(super) refine: [Vec<u8>; 2],
+    pub(super) refine: [Vec<T>; 2],
     /// An inter-intra block's intra prediction.
-    pub(super) intra: Vec<u8>,
+    pub(super) intra: Vec<T>,
     /// Reference windows of predictions reaching past the frame.
-    pub(super) window: Vec<u8>,
+    pub(super) window: Vec<T>,
+    /// Reference windows of predictions from references of another size,
+    /// grown on first use.
+    pub(super) scaled_window: Vec<T>,
     /// Refined vectors per 8x8 of a 128x128 area, luma and chroma (dav2d
     /// `t->rmv`).
     pub(super) refined: Vec<[[Mv; 2]; 2]>,
@@ -100,14 +105,18 @@ const REFINE_SIDE: usize = (MAX_SIDE + 16) * (MAX_SIDE + 16);
 /// A window of a prediction's reference: the block plus the filter taps.
 const WINDOW_SIDE: usize = MAX_SIDE * 2 + 16;
 
-impl Default for InterScratch {
+impl<T: Av2Sample> Default for InterScratch<T> {
     fn default() -> Self {
         Self {
             compound: [vec![0; MAX_SIDE * MAX_SIDE], vec![0; MAX_SIDE * MAX_SIDE]],
             mask: vec![0; MAX_SIDE * MAX_SIDE],
-            refine: [vec![0; REFINE_SIDE], vec![0; REFINE_SIDE]],
-            intra: vec![0; MAX_SIDE * MAX_SIDE],
-            window: vec![0; WINDOW_SIDE * WINDOW_SIDE],
+            refine: [
+                vec![T::default(); REFINE_SIDE],
+                vec![T::default(); REFINE_SIDE],
+            ],
+            intra: vec![T::default(); MAX_SIDE * MAX_SIDE],
+            window: vec![T::default(); WINDOW_SIDE * WINDOW_SIDE],
+            scaled_window: Vec::new(),
             refined: vec![[[Mv::default(); 2]; 2]; REFINED_SIDE * REFINED_SIDE],
             bawp: [(0, 0); 3],
             covered: vec![
@@ -144,7 +153,7 @@ impl Plane {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Predict a luma piece of `size` at the current position.
     pub(super) fn predict_inter_luma(&mut self, block: &InterPrediction, size: BlockSize) {
         let (bw4, bh4) = size.units();
@@ -462,9 +471,12 @@ impl Tile<'_, '_> {
     /// Whether a compound block may blend by the implicit mask of its
     /// predictions' positions (dav2d `imp_msk_bld`, `bacp = 2`).
     fn implicit_state(&self, block: &InterPrediction) -> Implicit {
+        let [r0, r1] = block.inter.references.map(|r| r as usize);
         if self.sequence.inter.implicit_masked_blend
             && block.inter.motion_mode != MotionMode::WarpCausal
             && block.inter.mode != InterMode::GlobalGlobal
+            && !self.references.scaled(r0)
+            && !self.references.scaled(r1)
         {
             Implicit::Pending
         } else {

@@ -45,10 +45,14 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
         BitDepth::EIGHT,
         BitDepth::new(9).expect("9b"),
         BitDepth::TEN,
+        BitDepth::new(12).expect("12b"),
     ] {
         let (cand, refer) = (candidate.at(depth), reference.at(depth));
         check_alf_filters(depth, (cand, refer), rng, report);
-        check_alf_laplacians_and_classify(depth, (cand, refer), rng, report);
+        // 16-bit Laplacian sums hold samples of at most 10 bits.
+        if depth.bits() <= nc_dsp::VVC_ALF_MAX_BIT_DEPTH {
+            check_alf_laplacians_and_classify(depth, (cand, refer), rng, report);
+        }
         check_high_precision(depth, (cand, refer), rng, report);
         check_weight(depth, (cand, refer), rng, report);
         check_refinement_and_gpm(depth, (cand, refer), rng, report);
@@ -60,9 +64,6 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
         check_vvc_intra(depth, (cand, refer), rng, report);
         check_hevc_intra(depth, (cand, refer), rng, report);
     }
-    let d12 = BitDepth::new(12).expect("12b");
-    check_sao(d12, (candidate.at(d12), reference.at(d12)), rng, report);
-    check_hevc_intra(d12, (candidate.at(d12), reference.at(d12)), rng, report);
 }
 
 #[allow(clippy::too_many_lines)]
@@ -615,9 +616,8 @@ fn check_refinement_and_gpm(
         }
     }
     for &(cu_w, cu_h) in &[(8, 8), (16, 8), (16, 16), (32, 16), (64, 32)] {
-        for chroma in [false, true] {
-            let sub = usize::from(chroma);
-            let (w, h) = (cu_w >> sub, cu_h >> sub);
+        for subsampling in [(0, 0), (1, 0), (1, 1)] {
+            let (w, h) = (cu_w >> subsampling.0, cu_h >> subsampling.1);
             let a: Vec<i16> = (0..w * h)
                 .map(|_| (rng.below(36000) as i32 - 6000) as i16)
                 .collect();
@@ -628,12 +628,26 @@ fn check_refinement_and_gpm(
                 let mask = VvcGeometric::new((cu_w, cu_h), split);
                 for origin in [(0, 0), (4, 8), (600, 12)] {
                     let mut out = [vec![0u16; w * h], vec![0u16; w * h]];
-                    cand.vvc_geometric_blend(mask, origin, (w, h), chroma, (&a, &b), &mut out[0]);
-                    refer.vvc_geometric_blend(mask, origin, (w, h), chroma, (&a, &b), &mut out[1]);
+                    cand.vvc_geometric_blend(
+                        mask,
+                        origin,
+                        (w, h),
+                        subsampling,
+                        (&a, &b),
+                        &mut out[0],
+                    );
+                    refer.vvc_geometric_blend(
+                        mask,
+                        origin,
+                        (w, h),
+                        subsampling,
+                        (&a, &b),
+                        &mut out[1],
+                    );
                     report.cases += 1;
                     if out[0] != out[1] {
                         report.failures.push(format!(
-                            "u16 vvc_geometric_blend {depth:?} cu={cu_w}x{cu_h} chroma={chroma} split={split} origin={origin:?}"
+                            "u16 vvc_geometric_blend {depth:?} cu={cu_w}x{cu_h} subsampling={subsampling:?} split={split} origin={origin:?}"
                         ));
                     }
                 }

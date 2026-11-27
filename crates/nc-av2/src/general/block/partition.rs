@@ -13,6 +13,7 @@
 //! bit 24 that the children may not split again.
 use super::size::{BlockSize, Partition};
 use super::{Tile, samples};
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 
 /// Direction-word fields (see the module docs).
@@ -35,7 +36,7 @@ const LARGE_RECTANGLE_UNITS: u32 = 32;
 /// contexts are `plane context + offset * 4`.
 const CONTEXTS_PER_OFFSET: usize = 4;
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Decode the partition tree of the block at the current position.
     /// # Errors
     /// Propagates the blocks' errors.
@@ -383,6 +384,21 @@ impl Tile<'_, '_> {
         }
     }
 
+    /// Whether the split a block crossing the frame's right (wide blocks)
+    /// or bottom (tall) edge would be forced into leaves the sub-block that
+    /// carries its 4:2:0 chroma outside the frame: AVM then allows no
+    /// partition and codes the block whole, without a symbol (AVM v1.0.0
+    /// `is_chroma_ref_within_boundary`, never in monochrome; dav2d
+    /// 5602d1d3).
+    fn chroma_reference_outside(w4: u32, h4: u32, have_h_split: bool, have_v_split: bool) -> bool {
+        let (cw4, ch4) = (w4 >> 1, h4 >> 1);
+        if w4 > h4 {
+            (cw4 < 2 || ch4 < 1) && !have_h_split
+        } else {
+            (cw4 < 1 || ch4 < 2) && !have_v_split
+        }
+    }
+
     /// The partition of a block of `size` and the chroma size its children
     /// carry (none once an intra region starts its own chroma tree).
     fn read_partition(
@@ -419,6 +435,12 @@ impl Tile<'_, '_> {
                 } else {
                     Partition::Horizontal
                 });
+            } else if luma.is_some()
+                && chroma.is_some()
+                && !self.sequence.monochrome
+                && Self::chroma_reference_outside(w4, h4, have_h_split, have_v_split)
+            {
+                partition = Some(Partition::None);
             } else if w4 > h4 {
                 if !have_h_split || geometry.rows <= self.row + h4 / 4 {
                     direction = Some(true);
@@ -480,6 +502,7 @@ impl Tile<'_, '_> {
     ) -> bool {
         let (w4, h4) = size.units();
         !self.frame.is_intra()
+            && self.frame.bridge_slot.is_none()
             && self.sequence.partition.extended_separate_trees
             && luma.is_some()
             && chroma.is_some()
@@ -534,6 +557,11 @@ impl Tile<'_, '_> {
         (plane, shared): (usize, bool),
         direction: &mut Option<bool>,
     ) -> Result<Partition> {
+        // Bridge frames take no split the frame edge leaves open (AVM
+        // `read_partition`: `do_split` false).
+        if self.frame.bridge_slot.is_some() {
+            return Ok(Partition::None);
+        }
         let (w4, h4) = size.units();
         let (log2_w, log2_h) = size.log2_units();
         let subdivision = size.subdivision();
@@ -607,9 +635,12 @@ impl Tile<'_, '_> {
         let have_v_split = geometry.rows > self.row + h4 / 2;
         let chroma_tree = plane == 1;
         let own = [w4 >> u32::from(chroma_tree), h4 >> u32::from(chroma_tree)];
-        // The chroma block of a shared tree in 4:2:0.
-        let subsampled = [w4 >> 1, h4 >> 1];
-        // Only a shared tree's split must also suit its 4:2:0 chroma block.
+        // The chroma block of a shared tree in 4:2:0; a monochrome frame
+        // subsamples nothing (dav2d `f->ss_hor`, `f->ss_ver`), so the
+        // condition is luma's own.
+        let chroma_shift = u32::from(!self.sequence.monochrome);
+        let subsampled = [w4 >> chroma_shift, h4 >> chroma_shift];
+        // Only a shared tree's split must also suit its chroma block.
         let across = usize::from(!vertical);
         let along = usize::from(vertical);
         let not_eight = u32::from(self.sequence.partition.max_aspect_ratio_log2 != 3);

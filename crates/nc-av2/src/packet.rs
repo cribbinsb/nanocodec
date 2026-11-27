@@ -3,6 +3,8 @@
 use crate::mv_refs::ListConfig;
 use crate::{frame_header, obu, sequence};
 use nc_common::decode::Result;
+use nc_common::{BitWriter, ColourInfo};
+use nc_encoder::FrameRate;
 
 /// OBU type of the temporal delimiter.
 const TEMPORAL_DELIMITER: u8 = 2;
@@ -10,6 +12,16 @@ const TEMPORAL_DELIMITER: u8 = 2;
 const SEQUENCE_HEADER: u8 = 1;
 /// OBU type of a regular (non-key) frame.
 const REGULAR_FRAME: u8 = 7;
+/// `OBU_CONTENT_INTERPRETATION`: how to show the pictures (AVM v1.0.0
+/// `avm_codec.h`).
+const CONTENT_INTERPRETATION: u8 = 24;
+/// `ci_scan_type_idc` progressive frames (AVM `AVM_SCAN_TYPE_PROGRESSIVE`).
+const SCAN_TYPE_PROGRESSIVE: u32 = 1;
+/// `color_description_idc` 0: the three code points follow (AVM
+/// `AVM_COLOR_DESC_IDC_EXPLICIT`), as a Rice-Golomb code with k = 2.
+const COLOR_DESCRIPTION_EXPLICIT_BITS: [bool; 3] = [false, false, false];
+/// Unspecified code points (ISO/IEC 23091-2), for a range-only signal.
+const UNSPECIFIED_CODE_POINT: u32 = 2;
 /// `OBU_METADATA_SHORT`: one metadata unit (AVM v1.0.0 `avm_codec.h`).
 const METADATA_SHORT: u8 = 8;
 /// `metadata_type` `OBU_METADATA_TYPE_USER_DATA_UNREGISTERED`: a 16-byte
@@ -31,8 +43,6 @@ pub const ORDER_HINT_BITS: u8 = 8;
 /// 10 bits, so references up to `nc_encoder::MAX_REFERENCE_AGE` back keep
 /// their display order (`get_relative_dist` stays within half the range).
 pub const LONG_ORDER_HINT_BITS: u8 = 10;
-/// Level 31: no level-specific limits are claimed.
-const UNCONSTRAINED_LEVEL: u8 = 31;
 
 /// Coded frame sizes are whole 8x8 blocks: the subset codes nothing smaller,
 /// and dav2d's deblocking assumes it (`db_apply_tmpl.c`).
@@ -66,7 +76,8 @@ pub fn sequence_header(
         id: 0,
         max_width: coded_width as u32,
         max_height: coded_height as u32,
-        level: UNCONSTRAINED_LEVEL,
+        // The backend sets the level of each key frame (`level.rs`).
+        level: crate::level::UNCONSTRAINED,
         single_picture: false,
         order_hint_bits,
         crop: sequence::CropWindow {
@@ -108,8 +119,57 @@ fn delimiter(packet: &mut Vec<u8>) -> Result<()> {
     )
 }
 
+/// The payload of a content interpretation OBU (AVM v1.0.0
+/// `av2_write_content_interpretation_obu`): progressive frames, the colour
+/// description and range when signalled, and the timing (one display tick
+/// per nominal frame; a constant picture interval when `constant`).
+#[must_use]
+pub fn content_interpretation(colour: ColourInfo, rate: FrameRate, constant: bool) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.put_bits(SCAN_TYPE_PROGRESSIVE, 2); // ci_scan_type_idc
+    w.put_bit(colour.is_signalled()); // ci_color_description_present_flag
+    w.put_bit(false); // ci_chroma_sample_position_present_flag
+    w.put_bit(false); // ci_aspect_ratio_info_present_flag
+    w.put_bit(true); // ci_timing_info_present_flag
+    w.put_bits(0, 2); // reserved
+    if colour.is_signalled() {
+        for bit in COLOR_DESCRIPTION_EXPLICIT_BITS {
+            w.put_bit(bit); // color_description_idc 0
+        }
+        let (primaries, transfer, matrix) = colour.description.map_or(
+            (
+                UNSPECIFIED_CODE_POINT,
+                UNSPECIFIED_CODE_POINT,
+                UNSPECIFIED_CODE_POINT,
+            ),
+            |d| {
+                (
+                    u32::from(d.primaries),
+                    u32::from(d.transfer),
+                    u32::from(d.matrix),
+                )
+            },
+        );
+        w.put_bits(primaries, 8);
+        w.put_bits(transfer, 8);
+        w.put_bits(matrix, 8);
+        w.put_bit(colour.full_range); // full_range_flag
+    }
+    w.put_bits(rate.den, 32); // num_units_in_display_tick
+    w.put_bits(rate.num, 32); // time_scale
+    w.put_bit(constant); // equal_elemental_interval
+    if constant {
+        w.put_uvlc(0); // num_ticks_per_elemental_duration_minus_1
+    }
+    w.put_bit(false); // ci_extension_present_flag
+    w.trailing_bits();
+    w.into_bytes()
+}
+
 /// A closed-loop key picture of `sequence` (base temporal layer), preceded
-/// by the sequence header and, if given, the encoder information message
+/// by the sequence header, the content interpretation OBU `content` (the
+/// first frame-unit OBU, AVM `check_temporal_unit_structure`) and, if
+/// given, the encoder information message
 /// (`nc_encoder` `encoder_info.rs`: UUID then text) as a short
 /// user-data-unregistered metadata OBU, which in a temporal unit follows
 /// the sequence header as frame-unit data (AVM
@@ -120,7 +180,7 @@ pub fn key(
     sequence: &sequence::SequenceHeader,
     header: frame_header::KeyframeHeader,
     tile: &[u8],
-    encoder_info: Option<&[u8]>,
+    (content, encoder_info): (&[u8], Option<&[u8]>),
 ) -> Result<Vec<u8>> {
     let mut payload = frame_header::write_keyframe(sequence, header)?;
     payload.extend_from_slice(tile);
@@ -131,6 +191,7 @@ pub fn key(
         &sequence::write(sequence)?,
         &mut packet,
     )?;
+    obu::write(base_header(CONTENT_INTERPRETATION), content, &mut packet)?;
     if let Some(info) = encoder_info {
         let mut metadata = vec![METADATA_SHORT_HEADER];
         metadata.extend(nc_common::leb128(METADATA_TYPE_USER_DATA_UNREGISTERED));

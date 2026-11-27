@@ -6,14 +6,15 @@
 
 use super::CodecTxfmFns;
 use super::generic::{self as g, H264AddAc4, H264Idct4};
-use crate::simd::avx2::{I32x4, I32x8, transpose_i32x4};
+use crate::simd::avx2::{I32x4, I32x8};
 use core::arch::x86_64::{
-    __m128i, __m256i, _mm_add_epi16, _mm_add_epi32, _mm_cvtepi16_epi32, _mm_cvtepu8_epi16,
-    _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_extract_epi32, _mm_insert_epi32, _mm_loadl_epi64,
-    _mm_loadu_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32, _mm_srai_epi32,
-    _mm_srli_si128, _mm_storel_epi64, _mm_unpackhi_epi16, _mm_unpacklo_epi16, _mm256_add_epi32,
-    _mm256_castsi256_si128, _mm256_cvtepi16_epi32, _mm256_extracti128_si256, _mm256_loadu_si256,
-    _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set1_epi32, _mm256_srai_epi32,
+    __m128i, __m256i, _mm_add_epi16, _mm_add_epi32, _mm_cvtepu8_epi16, _mm_cvtsi32_si128,
+    _mm_cvtsi128_si32, _mm_extract_epi32, _mm_insert_epi32, _mm_loadl_epi64, _mm_loadu_si128,
+    _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32, _mm_srai_epi32, _mm_storel_epi64,
+    _mm256_add_epi16, _mm256_add_epi32, _mm256_blend_epi32, _mm256_castsi256_si128,
+    _mm256_cvtepi16_epi32, _mm256_cvtepu8_epi16, _mm256_extracti128_si256, _mm256_loadu_si256,
+    _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set_m128i, _mm256_set1_epi32,
+    _mm256_setr_epi32, _mm256_shuffle_epi32, _mm256_sign_epi32, _mm256_srai_epi32,
     _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16,
     _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
@@ -75,6 +76,27 @@ fn round_shift(v: __m128i) -> __m128i {
     _mm_srai_epi32::<6>(_mm_add_epi32(v, _mm_set1_epi32(32)))
 }
 
+/// Apply the horizontal H.264 inverse butterfly to two rows in their
+/// natural order. Each 128-bit lane holds one row throughout the pass.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn inverse_rows(input: __m256i) -> __m256i {
+    let shifted = _mm256_blend_epi32::<0xaa>(input, _mm256_srai_epi32::<1>(input));
+    let signs = _mm256_setr_epi32(1, 1, -1, -1, 1, 1, -1, -1);
+    // In each lane the four terms are c0+c2, c1+(c3>>1),
+    // c0-c2 and (c1>>1)-c3, in that order.
+    let terms = _mm256_add_epi32(
+        _mm256_sign_epi32(input, signs),
+        _mm256_shuffle_epi32::<0x4e>(shifted),
+    );
+    let signs = _mm256_setr_epi32(1, -1, 1, -1, 1, -1, 1, -1);
+    let outputs = _mm256_add_epi32(
+        _mm256_sign_epi32(terms, signs),
+        _mm256_shuffle_epi32::<0xb1>(terms),
+    );
+    _mm256_shuffle_epi32::<0x78>(outputs)
+}
+
 /// # Safety
 /// AVX2 is enabled and the destination covers a 4x4 block.
 #[inline]
@@ -83,43 +105,49 @@ unsafe fn add_single(coeffs: &[i16; 16], dst: &mut [u8], stride: usize) {
     // SAFETY: both loads read exactly eight of the sixteen coefficients.
     let (top, bottom) = unsafe {
         (
-            _mm_loadu_si128(coeffs.as_ptr().cast()),
-            _mm_loadu_si128(coeffs.as_ptr().add(8).cast()),
+            inverse_rows(_mm256_cvtepi16_epi32(_mm_loadu_si128(
+                coeffs.as_ptr().cast(),
+            ))),
+            inverse_rows(_mm256_cvtepi16_epi32(_mm_loadu_si128(
+                coeffs.as_ptr().add(8).cast(),
+            ))),
         )
     };
-    let even = _mm_unpacklo_epi16(top, bottom);
-    let odd = _mm_unpackhi_epi16(top, bottom);
-    let lo = _mm_unpacklo_epi16(even, odd);
-    let hi = _mm_unpackhi_epi16(even, odd);
-    let columns = [
-        _mm_cvtepi16_epi32(lo),
-        _mm_cvtepi16_epi32(_mm_srli_si128::<8>(lo)),
-        _mm_cvtepi16_epi32(hi),
-        _mm_cvtepi16_epi32(_mm_srli_si128::<8>(hi)),
-    ];
-    let columns = H264Idct4::butterfly(columns.map(I32x4));
-    let rows = H264Idct4::butterfly(transpose_i32x4(&columns));
-
+    let [a, b, c, d] = H264Idct4::butterfly(
+        [
+            _mm256_castsi256_si128(top),
+            _mm256_extracti128_si256::<1>(top),
+            _mm256_castsi256_si128(bottom),
+            _mm256_extracti128_si256::<1>(bottom),
+        ]
+        .map(I32x4),
+    );
+    // Each pass grows magnitudes by at most four, so the rounded
+    // residual plus the predictor fits in signed words.
+    let delta = _mm256_set_m128i(
+        _mm_packs_epi32(round_shift(c.0), round_shift(d.0)),
+        _mm_packs_epi32(round_shift(a.0), round_shift(b.0)),
+    );
     let dst = dst.as_mut_ptr();
-    for (r, [upper, lower]) in rows.as_chunks::<2>().0.iter().enumerate() {
-        // SAFETY: the destination holds four readable and writable bytes
-        // in each row. Byte arrays have alignment one.
-        unsafe {
-            let p = dst.add(2 * r * stride).cast::<[u8; 4]>();
-            let q = dst.add((2 * r + 1) * stride).cast::<[u8; 4]>();
-            let packed = _mm_insert_epi32::<1>(
-                _mm_cvtsi32_si128(i32::from_le_bytes(p.read())),
-                i32::from_le_bytes(q.read()),
-            );
-            let pred = _mm_cvtepu8_epi16(packed);
-            // Each pass grows magnitudes by at most four. After rounding
-            // and shifting by six the predictor sum fits in i16.
-            let delta = _mm_packs_epi32(round_shift(upper.0), round_shift(lower.0));
-            let sum = _mm_add_epi16(pred, delta);
-            let pixels = _mm_packus_epi16(sum, sum);
-            p.write(_mm_cvtsi128_si32(pixels).to_le_bytes());
-            q.write(_mm_extract_epi32::<1>(pixels).to_le_bytes());
-        }
+    // SAFETY: all four rows hold four readable and writable bytes.
+    unsafe {
+        let p0 = dst.cast::<[u8; 4]>();
+        let p1 = dst.add(stride).cast::<[u8; 4]>();
+        let p2 = dst.add(2 * stride).cast::<[u8; 4]>();
+        let p3 = dst.add(3 * stride).cast::<[u8; 4]>();
+        let pred = _mm_cvtsi32_si128(i32::from_le_bytes(p0.read()));
+        let pred = _mm_insert_epi32::<1>(pred, i32::from_le_bytes(p1.read()));
+        let pred = _mm_insert_epi32::<2>(pred, i32::from_le_bytes(p2.read()));
+        let pred = _mm_insert_epi32::<3>(pred, i32::from_le_bytes(p3.read()));
+        let sum = _mm256_add_epi16(_mm256_cvtepu8_epi16(pred), delta);
+        let pixels = _mm_packus_epi16(
+            _mm256_castsi256_si128(sum),
+            _mm256_extracti128_si256::<1>(sum),
+        );
+        p0.write(_mm_cvtsi128_si32(pixels).to_le_bytes());
+        p1.write(_mm_extract_epi32::<1>(pixels).to_le_bytes());
+        p2.write(_mm_extract_epi32::<2>(pixels).to_le_bytes());
+        p3.write(_mm_extract_epi32::<3>(pixels).to_le_bytes());
     }
 }
 

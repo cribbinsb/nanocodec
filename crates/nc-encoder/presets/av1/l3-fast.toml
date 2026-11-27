@@ -108,8 +108,9 @@ analysis.zero_gate_cell = 64
 rate.cadence_period = 4
 rate.cadence_base_boost = 3
 rate.cadence_startup_period = 8
-# rate.key_cap_buffer 1.0 (engine default since 2026-11-22) not screened on this rung.
-rate.key_cap_buffer = 0.8
+# Periodic keys at the engine's stillness-adaptive cap (`rate.key_cap_buffer` 0.4 to
+# `rate.key_cap_buffer_still` 1.0, owner 2026-11-27); the first key keeps this rung's 0.8.
+rate.key_cap_buffer_first = 0.8
 # Leaf penalty 1 in both modes: the fixed-QP profile codes leaf 2 (screened on medium's
 # fixed QP only, 2026-11-24).
 rate.cadence_leaf_penalty = 1
@@ -117,3 +118,5 @@ rate.cadence_leaf_penalty = 1
 # Pinned before AV1 medium adopted proactive in-frame steering (Brief 21, 2026-11-24):
 # not screened at L3/FC on this rung.
 rate.in_frame = 0
+# The split override (2026-11-27) is not screened on this layered preset: the old value.
+planner.split_override = 0

@@ -1,6 +1,8 @@
 //! The public AV1 decoder: the decoding process ([`Core`]) instantiated
 //! for the current sequence's samples, `u8` for 8-bit sequences and `u16`
-//! for 10-bit ones (`docs/handoff/high-bit-depth.md`).
+//! for 10- and 12-bit ones (`docs/handoff/high-bit-depth.md`). The chroma
+//! format is a runtime value of the sequence and its pictures
+//! (`docs/handoff/chroma-formats.md`).
 //!
 //! The instance is chosen per coded video sequence: before a temporal
 //! unit whose sequence header needs the other sample type is decoded, the
@@ -48,9 +50,9 @@ macro_rules! with_core {
     };
 }
 
-/// Stateful AV1 decoder (Main profile: 8- and 10-bit, 4:2:0 and
-/// monochrome): one temporal unit (low-overhead OBU format, as in IVF) in,
-/// the frame it shows out.
+/// Stateful AV1 decoder (Main, High and Professional profiles: 8-, 10-
+/// and 12-bit; 4:2:0, 4:2:2, 4:4:4 and monochrome): one temporal unit
+/// (low-overhead OBU format, as in IVF) in, the frame it shows out.
 #[derive(Debug)]
 pub struct Decoder {
     instance: Instance,
@@ -118,6 +120,13 @@ impl Decoder {
     /// their parameters signal; references are grain-free either way.
     pub fn set_film_grain(&mut self, apply: bool) {
         with_core!(self, core => core.set_film_grain(apply));
+    }
+
+    /// Refuse (`true`, the default) or decode frames beyond the level 6.3
+    /// size bound (AV1 Annex A.3) that guards untrusted input: lifted for
+    /// conformance streams, which exercise sizes up to the syntax's 65536.
+    pub fn set_size_limit(&mut self, limited: bool) {
+        with_core!(self, core => core.set_size_limit(limited));
     }
 
     /// Select the operating point (AV1 §7.18, §6.4.1); see

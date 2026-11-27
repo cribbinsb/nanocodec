@@ -9,7 +9,8 @@ use nc_common::{BitDepth, Sample};
 use crate::deblock::samples::{self, Edge, LANES, POSITIONS, REACH};
 use crate::simd::{I16FilterLanes, I16x8Shuffles};
 
-const SEGMENT: usize = 2;
+/// Lines of a segment where chroma is subsampled along the edge.
+pub(crate) const SEGMENT: usize = 2;
 /// Exchange the two i16 lanes of each decision segment.
 const SWAP_PAIR: [u8; 16] = [2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13];
 
@@ -29,14 +30,28 @@ pub(super) fn scalar(plane: &mut [u8], e: &ChromaEdge) {
 
 /// [`scalar`] at any sample type and depth (`e.beta`, `e.tc` scaled to it).
 pub(crate) fn scalar_at<T: Sample>(plane: &mut [T], e: &ChromaEdge, depth: BitDepth) {
+    segments_at::<T, SEGMENT>(plane, e, depth);
+}
+
+/// The edge in four-line segments, each decided on its lines 0 and 3
+/// (chroma not subsampled along the edge; scalar only).
+pub(crate) fn quads_at<T: Sample>(plane: &mut [T], e: &ChromaEdge, depth: BitDepth) {
+    segments_at::<T, QUAD>(plane, e, depth);
+}
+
+/// Lines of a segment where chroma is not subsampled along the edge.
+pub(crate) const QUAD: usize = 4;
+
+/// The edge in `N`-line segments, each decided on its first and last line.
+fn segments_at<T: Sample, const N: usize>(plane: &mut [T], e: &ChromaEdge, depth: BitDepth) {
     // Folds to the constant 8 in the 8-bit instance.
     let depth = depth.of::<T>();
     let edge = e.samples;
-    for segment in (0..edge.lines).step_by(SEGMENT) {
+    for segment in (0..edge.lines).step_by(N) {
         let at = |line: usize, pos: usize| {
             edge.base + (segment + line) * edge.along + pos * edge.across - REACH * edge.across
         };
-        let mut rows: [[T; POSITIONS]; SEGMENT] =
+        let mut rows: [[T; POSITIONS]; N] =
             std::array::from_fn(|line| std::array::from_fn(|pos| plane[at(line, pos)]));
         super::chroma_at(&mut rows, e.beta, e.tc, e.large, e.boundary, depth);
         for (line, row) in rows.iter().enumerate() {

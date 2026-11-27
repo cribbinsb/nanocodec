@@ -1,20 +1,25 @@
 //! Edge thresholds of AV2 deblocking from the quantizer index (AVM v1.0.0
 //! `df_quant_from_qindex`, `df_side_from_qindex` and the `side_thresholds`
 //! table in `av2/common/av2_loopfilter.c`; BSD-3-Clause-Clear, see
-//! `THIRD_PARTY.md`). Eight-bit video only.
+//! `THIRD_PARTY.md`); the deeper forms follow dav2d's `deblock_quant_thr`
+//! and `deblock_side_thr` (`db_apply_tmpl.c`).
 
-use crate::transform::quantizer_step_q3;
+use crate::transform::dequantizer_step;
 
 /// `QUANT_TABLE_BITS`: the AC quantizer table is in Q3.
 const QUANT_TABLE_BITS: u32 = 3;
 /// The quantizer threshold is the quantizer step divided by 64.
 const Q_THRESHOLD_SHIFT: u32 = 6;
-/// Largest native qindex (`MAXQ_8_BITS`).
+/// Largest native qindex (`MAXQ_8_BITS`), and the indices each step of
+/// two bits of depth adds (dav2d `48 * hbd`).
 const MAX_QINDEX: i32 = 255;
+const QINDEX_PER_DEPTH_STEP: i32 = 48;
 /// Eight-bit side thresholds: `(table + (1 << 4)) >> 5`, rounding the
-/// table's 1/32 units to samples.
+/// table's 1/32 units to samples; each step of depth scales the result up
+/// by two bits (dav2d `bitdepth_min_8`).
 const SIDE_ROUND: i32 = 1 << 4;
 const SIDE_SHIFT: u32 = 5;
+const BITS_PER_DEPTH_STEP: u32 = 2;
 
 /// `side_thresholds`: 32 × the fitted side threshold per qindex (AVM's
 /// comment: `32 · max(0.0444·q − 2.9936, 0.31·q − 39)`, hand-adjusted at low q).
@@ -39,28 +44,46 @@ const SIDE_TABLE: [i16; 296] = [
 
 /// `df_quant_from_qindex`: the quantizer threshold of edges whose block
 /// qindex plus frame offset is `qindex` (any integer; clamped like AVM's
-/// `av2_ac_quant_QTX`). Zero below qindex 89: such edges are not
-/// filtered.
+/// `av2_ac_quant_QTX`) in an 8-bit sequence. Zero below qindex 89: such
+/// edges are not filtered.
 #[must_use]
 pub const fn q_threshold(qindex: i32) -> u16 {
+    q_threshold_at(qindex, 0)
+}
+
+/// [`q_threshold`] in a sequence `high_bit_depth` steps of two bits deeper
+/// than 8 (dav2d `hbd`), whose qindex range is that much longer.
+#[must_use]
+pub const fn q_threshold_at(qindex: i32, high_bit_depth: u8) -> u16 {
+    let max = MAX_QINDEX + QINDEX_PER_DEPTH_STEP * high_bit_depth as i32;
     // `get_q`: qindex zero (lossless) keeps its own table entry; any other
     // value is clamped to the lossy range.
     let clamped = if qindex < 0 {
         1
-    } else if qindex > MAX_QINDEX {
-        MAX_QINDEX
+    } else if qindex > max {
+        max
     } else {
         qindex
     };
-    let step = quantizer_step_q3(clamped as u8);
+    let step = dequantizer_step(clamped) as i32;
     let rounded = (step + (1 << (QUANT_TABLE_BITS - 1))) >> QUANT_TABLE_BITS;
     (rounded >> Q_THRESHOLD_SHIFT) as u16
 }
 
 /// `df_side_from_qindex`: the side (smoothness) threshold for `qindex`
-/// plus offset.
+/// plus offset in an 8-bit sequence.
 #[must_use]
 pub const fn side_threshold(qindex: i32) -> u16 {
+    side_threshold_at(qindex, 0)
+}
+
+/// [`side_threshold`] in a sequence `high_bit_depth` steps deeper: the
+/// table is read at the 8-bit-equivalent qindex and rounded to the deeper
+/// samples (dav2d `deblock_side_thr`).
+#[must_use]
+pub const fn side_threshold_at(qindex: i32, high_bit_depth: u8) -> u16 {
+    let extra_bits = BITS_PER_DEPTH_STEP * high_bit_depth as u32;
+    let qindex = qindex - QINDEX_PER_DEPTH_STEP * high_bit_depth as i32;
     let last = SIDE_TABLE.len() as i32 - 1;
     let index = if qindex < 0 {
         0
@@ -69,8 +92,8 @@ pub const fn side_threshold(qindex: i32) -> u16 {
     } else {
         qindex
     } as usize;
-    let rounded = SIDE_TABLE[index] as i32 + SIDE_ROUND;
-    ((if rounded < 0 { 0 } else { rounded }) >> SIDE_SHIFT) as u16
+    let rounded = SIDE_TABLE[index] as i32 + (SIDE_ROUND >> extra_bits);
+    ((if rounded < 0 { 0 } else { rounded }) >> (SIDE_SHIFT - extra_bits)) as u16
 }
 
 /// Both thresholds of every block qindex for one channel's offset,
@@ -119,5 +142,25 @@ mod tests {
         assert_eq!(side_threshold(-3), 0);
         assert_eq!(side_threshold(295), (1678 + 16) >> 5);
         assert_eq!(side_threshold(1000), side_threshold(295));
+    }
+
+    #[test]
+    fn dequantizer_steps_match_the_eight_bit_table() {
+        for qindex in 0..=u8::MAX {
+            let step = crate::transform::quantizer_step_q3(qindex);
+            assert_eq!(dequantizer_step(i32::from(qindex)) as i32, step, "{qindex}");
+        }
+    }
+
+    #[test]
+    fn ten_bit_thresholds_follow_dav2d() {
+        // dav2d `deblock_quant_thr(1, 303)`: (dq_lookup(303) + 4) >> 9, with
+        // dq_lookup(303) = 60 << 12.
+        assert_eq!(i32::from(q_threshold_at(303, 1)), ((60 << 12) + 4) >> 9);
+        assert_eq!(q_threshold_at(400, 1), q_threshold_at(303, 1));
+        // `deblock_side_thr(1, q)`: the table at q - 48, (t + 4) >> 3.
+        assert_eq!(i32::from(side_threshold_at(48 + 295, 1)), (1678 + 4) >> 3);
+        assert_eq!(i32::from(side_threshold_at(48 + 79, 1)), (16 + 4) >> 3);
+        assert_eq!(side_threshold_at(10, 1), 0);
     }
 }

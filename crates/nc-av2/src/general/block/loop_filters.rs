@@ -2,16 +2,126 @@
 //! loop-filter mask updates and `decode_sb`'s per-64x64 quantizer): the
 //! deblocking edges of its luma and chroma blocks, the units with a luma
 //! residual, and its superblock's quantizer per 64x64 filter block.
+//!
+//! The deblocking contexts restart at each tile, so the edges along a
+//! tile's left and top sides first take the tile's own transform levels;
+//! once the tile is decoded they are capped by the levels the neighbouring
+//! tile left at its right or bottom side (dav2d `dav2d_deblock_slice_cols`'
+//! fix-ups at tile columns and rows from `tx_db_right_edge` and the above
+//! contexts of the tile row before; TIP frames fix tile rows only).
 
 use super::record::BlockRecord;
 use super::transform::{self, LumaTransforms, TxSize};
-use super::{Tile, context};
+use super::{Geometry, Tile, context};
 use crate::general::filters::UNITS64_LOG2;
-use crate::general::filters::edges::{self, BlockEdges, NO_SUB_PU};
+use crate::general::filters::edges::{self, BlockEdges, Direction, NO_SUB_PU};
+use crate::general::sample::Av2Sample;
 // Sub-PU edges of TIP frames keep their thresholds (dav2d `ds_subpu_mask`).
 use crate::general::frame_header::TIP_FRAME_MODE;
 
-impl Tile<'_, '_> {
+/// The deblocking contexts at tile boundaries, per luma and chroma (per
+/// unit row): the levels the tile being decoded leaves at its right side
+/// and those the tile to its left left; (per unit column) those the tile
+/// row above left at its bottom. Empty for a frame of one tile.
+#[derive(Debug, Default)]
+pub(super) struct TileEdges {
+    right: [Vec<u8>; 2],
+    left: [Vec<u8>; 2],
+    bottom: [Vec<u8>; 2],
+}
+
+impl TileEdges {
+    /// The boundary contexts of a frame of `geometry` with `tiles` tiles.
+    pub(super) fn new(geometry: Geometry, tiles: usize) -> Self {
+        if tiles == 1 {
+            return Self::default();
+        }
+        let (rows, columns) = (geometry.rows as usize, geometry.columns as usize);
+        let sides = || {
+            [
+                vec![edges::RESET_LUMA_CONTEXT; rows],
+                vec![edges::RESET_CHROMA_CONTEXT; rows.div_ceil(2)],
+            ]
+        };
+        Self {
+            right: sides(),
+            left: sides(),
+            bottom: [
+                vec![edges::RESET_LUMA_CONTEXT; columns],
+                vec![edges::RESET_CHROMA_CONTEXT; columns.div_ceil(2)],
+            ],
+        }
+    }
+
+    /// At the start of a tile: the levels the tile before it left at its
+    /// right side become those at this tile's left.
+    pub(super) fn next_tile(&mut self) {
+        std::mem::swap(&mut self.left, &mut self.right);
+    }
+}
+
+impl<T: Av2Sample> Tile<'_, '_, T> {
+    /// After superblock row `row` of a tile with another to its right:
+    /// keep the levels at its right side (dav2d `tx_db_right_edge`).
+    pub(super) fn save_right_edge(&mut self, row: u32) {
+        if self.bounds.column_end == self.geometry.columns {
+            return;
+        }
+        let rows = (self.bounds.row_end - row).min(self.geometry.superblock_units) as usize;
+        let start = context::left_index(row);
+        let luma = row as usize;
+        self.boundary_levels.right[0][luma..luma + rows]
+            .copy_from_slice(&self.contexts.left.deblock_luma[start..start + rows]);
+        let chroma_rows = rows.div_ceil(2);
+        self.boundary_levels.right[1][luma / 2..luma / 2 + chroma_rows].copy_from_slice(
+            &self.contexts.left.deblock_chroma[start / 2..start / 2 + chroma_rows],
+        );
+    }
+
+    /// Once a tile is decoded: cap the edge levels along its top and left
+    /// sides by its neighbours' (no left fix-up in TIP frames, as dav2d),
+    /// and keep the levels at its bottom for the tile row below.
+    pub(super) fn finish_tile_edges(&mut self) {
+        let bounds = self.bounds;
+        let columns = bounds.column_start as usize..bounds.column_end as usize;
+        let rows = bounds.row_start as usize..bounds.row_end as usize;
+        let halve = |range: &std::ops::Range<usize>| range.start / 2..range.end.div_ceil(2);
+        let (chroma_columns, chroma_rows) = (halve(&columns), halve(&rows));
+        let maps = &mut self.filters;
+        if bounds.row_start > 0 {
+            let (luma_row, chroma_row) = (rows.start, chroma_rows.start);
+            for column in columns.clone() {
+                let limit = self.boundary_levels.bottom[0][column];
+                maps.luma_edges
+                    .cap(Direction::Horizontal, column, luma_row, limit);
+            }
+            for column in chroma_columns.clone() {
+                let limit = self.boundary_levels.bottom[1][column];
+                maps.chroma_edges
+                    .cap(Direction::Horizontal, column, chroma_row, limit);
+            }
+        }
+        if bounds.column_start > 0 && self.frame.tip.mode != TIP_FRAME_MODE {
+            let (luma_column, chroma_column) = (columns.start, chroma_columns.start);
+            for row in rows.clone() {
+                let limit = self.boundary_levels.left[0][row];
+                maps.luma_edges
+                    .cap(Direction::Vertical, luma_column, row, limit);
+            }
+            for row in chroma_rows {
+                let limit = self.boundary_levels.left[1][row];
+                maps.chroma_edges
+                    .cap(Direction::Vertical, chroma_column, row, limit);
+            }
+        }
+        if bounds.row_end < self.geometry.rows {
+            self.boundary_levels.bottom[0][columns.clone()]
+                .copy_from_slice(&self.contexts.above.deblock_luma[columns]);
+            self.boundary_levels.bottom[1][chroma_columns.clone()]
+                .copy_from_slice(&self.contexts.above.deblock_chroma[chroma_columns]);
+        }
+    }
+
     /// Record a decoded block for the loop filters; `transforms` is its
     /// luma transform layout.
     pub(super) fn record_filters(&mut self, record: &BlockRecord, transforms: LumaTransforms) {

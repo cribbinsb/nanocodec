@@ -1810,7 +1810,9 @@ pub(crate) const MV_REF_BLOCKS: [[[i8; 2]; 8]; 13] = [
     ],
 ];
 /// Bits of a symbol of probability `p / 256` (`BIT_COST[p]`, p = 1..=255).
-pub(crate) const BIT_COST: [f32; 256] = [
+/// A `static`: as a `const`, the trellis's rate model copied all 1 KiB of
+/// it to the stack on every call (VP9 Default: 3.3 % of instructions).
+pub(crate) static BIT_COST: [f32; 256] = [
     0.0,
     8.0,
     7.0,

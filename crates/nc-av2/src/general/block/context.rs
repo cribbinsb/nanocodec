@@ -65,7 +65,7 @@ pub struct Edge {
     pub palette_size: Vec<u8>,
     /// The neighbour's palette colours, valid only with a size (dav2d
     /// `al_pal`).
-    pub palette: Vec<[u8; MAX_COLORS]>,
+    pub palette: Vec<[u16; MAX_COLORS]>,
     /// The neighbour's chroma intra mode (per chroma 4x4 unit).
     pub uv_mode: Vec<u8>,
     /// The luma coefficient context of the transform covering the unit:

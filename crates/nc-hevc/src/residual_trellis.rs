@@ -25,11 +25,11 @@ use nc_encoder::{Candidates, CoeffRateModel, Trellis};
 use crate::cabac::Context;
 use crate::contexts::{
     CODED_SUB_BLOCK_CHROMA_OFFSET, Contexts, GREATER1_CHROMA_OFFSET, GREATER2_CHROMA_OFFSET,
-    LAST_CHROMA_OFFSET, SIG_CHROMA_OFFSET,
+    LAST_CHROMA_OFFSET,
 };
 use crate::rate::BinCosts;
 use crate::residual::{
-    GROUP_IDX, MAX_GREATER1_FLAGS, MAX_RICE_PARAM, RICE_PREFIX_LIMIT, sig_ctx_inc,
+    GROUP_IDX, MAX_GREATER1_FLAGS, MAX_RICE_PARAM, RICE_PREFIX_LIMIT, sig_contexts,
 };
 use crate::scan::{SUB_BLOCK_COEFFS, SUB_BLOCK_LOG2, Scan, ScanKind};
 
@@ -118,6 +118,7 @@ pub struct RateModel<'a> {
     contexts: &'a Contexts,
     costs: &'a BinCosts,
     scan: &'a Scan,
+    sig_cases: &'static [[[u8; SUB_BLOCK_COEFFS]; 4]; 2],
     luma: bool,
     entered: Option<Entered>,
 }
@@ -131,19 +132,23 @@ impl<'a> RateModel<'a> {
             contexts,
             costs,
             scan,
+            sig_cases: sig_contexts(scan, luma),
             luma,
             entered: None,
         }
     }
 
+    #[inline]
     fn bin(&self, ctx: Context, bin: bool) -> f32 {
         self.costs.bin(ctx, bin)
     }
 
+    #[inline]
     fn side(&self) -> usize {
         1 << (self.scan.log2 - SUB_BLOCK_LOG2)
     }
 
+    #[inline]
     fn is_coded(&self, state: &ContextState, xs: usize, ys: usize) -> bool {
         let side = self.side();
         xs < side && ys < side && state.coded & (1 << (ys * side + xs)) != 0
@@ -186,8 +191,10 @@ impl<'a> RateModel<'a> {
     /// Move `state` to `scan_pos` before its level is chosen: close the
     /// previous sub-block on entering a new one, and find the
     /// `sig_coeff_flag` context, which every candidate level shares.
+    #[inline]
     fn enter(&self, state: &mut ContextState, scan_pos: usize) -> Position {
         let sub_block = scan_pos / SUB_BLOCK_COEFFS;
+        let in_sub = scan_pos % SUB_BLOCK_COEFFS;
         let is_last = state.sub_block.is_none();
         let mut bits = 0.0;
         if is_last {
@@ -203,20 +210,17 @@ impl<'a> RateModel<'a> {
 
         // sig_coeff_flag: implied for the last level, and inferred for the
         // DC of a coded sub-block (not the first) with no other level.
-        let inferred =
-            scan_pos.is_multiple_of(SUB_BLOCK_COEFFS) && sub_block > 0 && state.count == 0;
+        let inferred = in_sub == 0 && sub_block > 0 && state.count == 0;
         let significance = (!is_last && !inferred).then(|| {
-            let p = self.scan.positions[scan_pos];
-            let log2 = self.scan.log2;
-            let (xs, ys) = self.scan.sub_blocks[sub_block];
-            let pattern = (self.side() > 1).then(|| {
+            let pattern = if self.side() > 1 {
+                let (xs, ys) = self.scan.sub_blocks[sub_block];
                 usize::from(self.is_coded(state, xs + 1, ys))
                     | (usize::from(self.is_coded(state, xs, ys + 1)) << 1)
-            });
-            let (x, y) = (p & ((1 << log2) - 1), p >> log2);
-            let ctx = sig_ctx_inc(pattern, x, y, log2, self.luma, self.scan.kind);
-            let base = if self.luma { 0 } else { SIG_CHROMA_OFFSET };
-            self.contexts.sig_coeff_flag[base + ctx]
+            } else {
+                0
+            };
+            let ctx = self.sig_cases[usize::from(sub_block == 0)][pattern][in_sub];
+            self.contexts.sig_coeff_flag[usize::from(ctx)]
         });
         Position {
             bits,
@@ -227,6 +231,7 @@ impl<'a> RateModel<'a> {
 
     /// Code `level` at the position `state` has entered: its bits after
     /// the transition's, and `state` moved past it.
+    #[inline]
     fn code_level(&self, state: &mut ContextState, position: &Position, level: u32) -> f32 {
         let mut bits = 0.0;
         if let Some(ctx) = position.significance {
@@ -397,6 +402,17 @@ impl CoeffRateModel for RateModel<'_> {
         }
     }
 
+    fn zero_step(&mut self, state: &mut ContextState, scan_pos: usize) -> f32 {
+        let position = self.enter(state, scan_pos);
+        if let Some(ctx) = position.significance {
+            let sig = self.bin(ctx, false);
+            state.zero_bits += sig;
+            position.bits + sig
+        } else {
+            position.bits
+        }
+    }
+
     fn final_rate(&mut self, state: &ContextState) -> f32 {
         self.close_sub_block(&mut state.clone())
     }
@@ -448,15 +464,24 @@ impl TrellisQuantizer {
         // 2^-qbits: exact, so multiplying equals dividing by 2^qbits.
         let unit = 1.0 / (1_i64 << quantizer.qbits) as f64;
         self.candidates.clear();
-        self.candidates.extend(positions[..=last].iter().map(|&p| {
+        self.candidates.reserve(last + 1);
+        for &p in &positions[..=last] {
             let value = (i64::from(coeffs[p].unsigned_abs()) * quantizer.scale) as f64 * unit;
             let plain = u32::from(levels[p].unsigned_abs());
+            if plain == 0 && value < 0.5 {
+                self.candidates.push(Candidates {
+                    levels: [0, 0, 0],
+                    distortion: [(value * value) as f32 * quantizer.step_sse, 0.0, 0.0],
+                    count: 1,
+                });
+                continue;
+            }
             let nearest = (value.round() as u32).max(plain);
-            Candidates::around(nearest, |level| {
+            self.candidates.push(Candidates::around(nearest, |level| {
                 let error = value - f64::from(level);
                 (error * error) as f32 * quantizer.step_sse
-            })
-        }));
+            }));
+        }
         self.chosen.resize(last + 1, 0);
         let coded = self.search.quantize(
             model,

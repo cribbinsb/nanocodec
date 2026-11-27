@@ -1,20 +1,22 @@
-//! H.264 decoder for the High and High 10 profiles (Annex A.2.4, A.2.5)
-//! and the Extended profile's SP and SI slices (A.2.3): I, P, B, SP and SI
-//! slices of 8- to 10-bit 4:2:0 or 4:0:0 video in frames and field pictures
-//! (PAFF), CAVLC and CABAC, 8x8 transforms and intra prediction, scaling
-//! matrices, spatial and temporal direct prediction, explicit and implicit
-//! weighted prediction, any number of slices per picture in any order,
-//! slice groups (FMO), redundant pictures (discarded), long-term
-//! references, memory management operations, `frame_num` gaps and slice
-//! data partitioning. That covers the Baseline, Extended, Main, High and
-//! High 10 streams without MBAFF frames. Everything else (MBAFF frames,
-//! other chroma formats, deeper samples) is rejected as unsupported.
+//! H.264 decoder for the High, High 10, High 4:2:2 and High 4:4:4 Predictive
+//! profiles and their Intra profiles (Annex A.2.4 to A.2.11) and the
+//! Extended profile's SP and SI slices (A.2.3): I, P, B, SP and SI slices
+//! of 8- to 14-bit 4:0:0, 4:2:0, 4:2:2 or 4:4:4 video (also with separately
+//! coded colour planes) in frames, field pictures (PAFF) and MBAFF frames,
+//! CAVLC and CABAC, 8x8 transforms and intra prediction, lossless transform
+//! bypass, scaling matrices, spatial and temporal direct prediction,
+//! explicit and implicit weighted prediction, any number of slices per
+//! picture in any order, slice groups (FMO), redundant pictures
+//! (discarded), long-term references, memory management operations,
+//! `frame_num` gaps and slice data partitioning. That covers every profile
+//! but MBAFF frames with slice groups or data partitioning (Extended only).
 //!
 //! Module map:
 //! - parameter sets and headers: `sps`, `pps`, `scaling`, `slice`, `poc`,
-//!   `slice_groups` (FMO);
-//! - `structure`: frames and fields (field pictures are rows of their
-//!   frame's buffer);
+//!   `slice_groups` (FMO), `chroma` (the chroma format of the macroblock
+//!   layer);
+//! - `structure`: frames and fields (field pictures, and the field
+//!   macroblocks of MBAFF frames, are rows of their frame's buffer);
 //! - the decoding process of one sample type: `core` (`u8` for 8-bit
 //!   streams, `u16` deeper ones, `sample` names what differs);
 //! - reference handling: `dpb` (marking, lists) and `output` (output order);
@@ -23,8 +25,9 @@
 //!   `syntax` (the entropy interface) with `cavlc` / `vlc` and
 //!   `cabac_syntax` / `cabac`, `mbstate` (neighbour state), `mvpred`,
 //!   `direct` (B direct prediction);
-//! - reconstruction: `recon`, `intra`, `inter`, `transform`, `deblock`,
-//!   `switching` (the requantisation of SP and SI slices);
+//! - reconstruction: `recon`, `intra`, `inter`, `transform`, `lossless`
+//!   (transform bypass), `deblock`, `switching` (the requantisation of SP
+//!   and SI slices);
 //! - `reader`: the RBSP bit reader;
 //! - `stats`: coding-tool analysis (feature `analysis`;
 //!   `Decoder::collect_stats`).
@@ -40,12 +43,14 @@
 mod cabac;
 mod cabac_syntax;
 mod cavlc;
+mod chroma;
 mod core;
 mod deblock;
 mod direct;
 mod dpb;
 mod inter;
 mod intra;
+mod lossless;
 mod mb;
 mod mbstate;
 mod mvpred;
@@ -80,7 +85,8 @@ use nc_common::decode::{annex_b_units, unescape_rbsp};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
 use nc_common::{
-    BitDepths, ColourInfo, DecodedPicture, OutputPicture, Picture, PlaneViewMut, ShownPicture,
+    BitDepths, ChromaFormat, ColourInfo, DecodedPicture, OutputPicture, Picture, PlaneViewMut,
+    ShownPicture,
 };
 
 use self::core::{Core, SliceData};
@@ -140,7 +146,8 @@ macro_rules! with_core {
 /// [`Decoder::decode_shown`]) for a deeper stream.
 const EIGHT_BIT_ONLY: DecodeError = DecodeError::Unsupported("H264 bit depth above 8");
 
-/// An H.264 High / High 10 decoder of frames.
+/// An H.264 decoder of frames (High profiles of every chroma format and
+/// depth).
 #[derive(Debug)]
 pub struct Decoder {
     sps: Vec<Option<Arc<Sps>>>,
@@ -260,7 +267,8 @@ impl Decoder {
             return Err(DecodeError::Malformed("packet outputs no picture"));
         };
         let view = shown.view();
-        let mut picture = core.pool.take(view.width(), view.height(), 0)?;
+        let size = (view.width(), view.height());
+        let mut picture = core.pool.take_with_format(size, view.chroma_format(), 0)?;
         view.copy_to(&mut picture);
         Ok(picture)
     }
@@ -409,7 +417,12 @@ impl Decoder {
                     false
                 }
                 NAL_PPS => {
-                    let pps = pps::parse(&unescape_rbsp(payload)?)?;
+                    let sps = &self.sps;
+                    let pps = pps::parse(&unescape_rbsp(payload)?, |id| {
+                        sps[id as usize]
+                            .as_ref()
+                            .is_some_and(|sps| sps.format == ChromaFormat::Yuv444)
+                    })?;
                     let id = pps.id as usize;
                     self.pps[id] = Some(Arc::new(pps));
                     false

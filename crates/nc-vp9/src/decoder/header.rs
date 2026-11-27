@@ -852,7 +852,6 @@ mod tests {
     fn key_header(width: usize, height: usize) -> Vec<u8> {
         let written = crate::header::FrameHeader {
             key: true,
-            show_frame: true,
             error_resilient: false,
             context_index: 0,
             refresh_context: true,
@@ -904,7 +903,6 @@ mod tests {
             for (width, height) in [(64, 48), (640, 360), (1920, 1080)] {
                 let written = crate::header::FrameHeader {
                     key,
-                    show_frame: true,
                     error_resilient: !key && !layered,
                     context_index: u8::from(layered),
                     refresh_context: !layered,

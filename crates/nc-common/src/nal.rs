@@ -45,6 +45,23 @@ pub fn write_nal_unit(header: &[u8], rbsp: &[u8], out: &mut Vec<u8>) {
 /// Table D-1, HEVC Table D.1, VVC via ITU-T H.274).
 pub const SEI_USER_DATA_UNREGISTERED: u32 = 5;
 
+/// `payloadType` of the recovery point SEI message (H.264 Table D-1, HEVC
+/// Table D.1): the picture is a random access point whose output becomes
+/// correct some pictures later (gradual decoding refresh).
+pub const SEI_RECOVERY_POINT: u32 = 6;
+
+/// The payload bytes of an SEI message coded bit by bit in `w`, completed
+/// by `bit_equal_to_one` and `bit_equal_to_zero` up to a byte boundary when
+/// it does not end on one (H.264 §D.1 `sei_payload()`, HEVC §7.3.5
+/// `payload_bit_equal_to_one`), for [`sei_rbsp`].
+#[must_use]
+pub fn sei_payload_bytes(mut w: crate::BitWriter) -> Vec<u8> {
+    if !w.is_byte_aligned() {
+        w.trailing_bits();
+    }
+    w.into_bytes()
+}
+
 /// The `sei_payload` header bytes that code `payloadType` and
 /// `payloadSize`: a run of 0xFF bytes for each full 255, then the rest.
 const SEI_FF_BYTE: u32 = 0xFF;

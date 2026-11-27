@@ -138,6 +138,12 @@ pub(crate) fn kernels(isa: Isa) -> HevcIntraFns {
     }
 }
 
+/// The deepest samples the `u16` SIMD kernels (`high_simd`) predict
+/// exactly: their 16-bit lanes hold samples as signed values and their
+/// sums are sized for `0..=4095` (`intra_runs::high`, `lanes`); deeper
+/// samples (HEVC 16-bit range extensions) take the scalar reference.
+pub(crate) const HIGH_SIMD_MAX_BITS: u32 = 12;
+
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",

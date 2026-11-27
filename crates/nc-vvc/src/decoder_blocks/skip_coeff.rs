@@ -61,6 +61,10 @@ struct Walk<'a> {
     values: &'a mut [i32],
     budget: usize,
     bdpcm: bool,
+    /// The remainders' Rice parameter (one more than
+    /// `sh_ts_residual_coding_rice_idx_minus1`, H.266 §7.4.8.1) and
+    /// `log2TransformRange`.
+    rice: (u32, u32),
 }
 impl Walk<'_> {
     fn neighbours(&self, position: usize) -> [i32; 2] {
@@ -169,7 +173,13 @@ impl Walk<'_> {
             };
             let mut value = self.values[position].abs();
             if value >= cutoff {
-                value += (remainder(reader, 1)? as i32) << u32::from(i < first);
+                let (rice, log2_range) = self.rice;
+                let rem = if log2_range > super::coeff::BASE_LOG2_RANGE {
+                    remainder::<true>(reader, rice, log2_range)?
+                } else {
+                    remainder::<false>(reader, rice, log2_range)?
+                };
+                value += (rem as i32) << u32::from(i < first);
                 if value != 0 && i >= first {
                     signs[i] = Some(reader.bypass()?);
                 }
@@ -193,7 +203,9 @@ impl Walk<'_> {
             if negative == Some(true) {
                 self.values[position] = -self.values[position];
             }
-            if !(-32768..=32767).contains(&self.values[position]) {
+            // CoeffMinY..=CoeffMaxY (§7.4.11.11).
+            let log2_range = self.rice.1;
+            if !(-(1 << log2_range)..(1 << log2_range)).contains(&self.values[position]) {
                 return Err(DecodeError::Malformed(
                     "VVC transform-skip coefficient range",
                 ));
@@ -209,10 +221,12 @@ pub(super) fn read_into(
     arena: &mut super::CoeffArena,
     size: (usize, usize),
     bdpcm: bool,
+    rice: (u32, u32),
 ) -> Result<(u32, u16)> {
     let (width, height) = size;
-    let start = u32::try_from(arena.entries.len())
-        .map_err(|_| DecodeError::Malformed("VVC coeff arena"))?;
+    // Levels beyond 16 bits only with extended precision.
+    let wide = rice.1 > super::coeff::BASE_LOG2_RANGE;
+    let start = arena.span_start(wide)?;
     let scan = Scan::of(width, height);
     let area = width * height;
     let values = &mut arena.skip_vals[..area];
@@ -222,6 +236,7 @@ pub(super) fn read_into(
         values,
         budget: area * 7 / 4,
         bdpcm,
+        rice,
     };
     let mut groups = 0u64;
     let mut any = false;
@@ -243,10 +258,13 @@ pub(super) fn read_into(
     }
     for (pos, &val) in walk.values.iter().enumerate() {
         if val != 0 {
-            arena.entries.push((pos as u16, val as i16));
+            if wide {
+                arena.wide.push((pos as u16, val));
+            } else {
+                // The range check above kept `val` within 16 bits.
+                arena.entries.push((pos as u16, val as i16));
+            }
         }
     }
-    let count = u16::try_from(arena.entries.len() - start as usize)
-        .map_err(|_| DecodeError::Malformed("VVC coeff count"))?;
-    Ok((start, count))
+    arena.span_from(start)
 }

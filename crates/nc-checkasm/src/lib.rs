@@ -40,6 +40,7 @@ mod check_av1_restoration;
 mod check_av1_scaled;
 mod check_av1_symbol;
 mod check_av1_warp;
+mod check_av2_ccso;
 mod check_av2_gdf;
 mod check_av2_intra;
 mod check_av2_typed;

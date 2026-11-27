@@ -8,6 +8,7 @@ use super::{Plane, UNIT_LOG2};
 use crate::general::block::Tile;
 use crate::general::block::motion::Mv;
 use crate::general::block::size::BlockSize;
+use crate::general::sample::Av2Sample;
 use crate::general::warp::WarpModel;
 
 /// Taps of the 8-tap filters before and after a sample.
@@ -60,7 +61,7 @@ enum Source {
     Window(usize),
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Predict a `bw4` x `bh4` block (luma 4x4 units; chroma of the luma
     /// grid) at unit (`bx`, `by`) of `plane` by `mv` (eighth samples of
     /// luma) from reference `reference` with `filter` (dav2d `mc`).
@@ -78,6 +79,19 @@ impl Tile<'_, '_> {
     ) {
         let shift = plane.shift();
         let mul = 4 >> shift;
+        if let Some(scale) = self.references.scales[reference] {
+            let (w, h) = ((bw4 as i32 * mul) as usize, (bh4 as i32 * mul) as usize);
+            self.mc_scaled(
+                target,
+                plane,
+                (w, h),
+                (bx, by),
+                mv,
+                (reference, scale),
+                filter,
+            );
+            return;
+        }
         let phase_mask = 15 >> (1 - shift);
         let (mx, my) = (mv.x & phase_mask, mv.y & phase_mask);
         let dx = bx as i32 * mul + (mv.x >> (3 + shift));
@@ -181,6 +195,7 @@ impl Tile<'_, '_> {
         (mx, my): (i32, i32),
         filter: u8,
     ) {
+        let depth = self.depth();
         let picture = self.reference_picture(reference);
         let (reference_data, reference_stride) = kernels::plane(picture, plane.index());
         let (src, src_offset, src_stride) = match source {
@@ -199,8 +214,8 @@ impl Tile<'_, '_> {
                     filter,
                     (&mut self.planes.data[plane.index()], offset, stride),
                     (src, src_offset, src_stride),
-                    (w, h),
-                    (mx, my),
+                    ((w, h), (mx, my)),
+                    depth,
                 );
             }
             Target::Compound {
@@ -213,8 +228,8 @@ impl Tile<'_, '_> {
                     filter,
                     (&mut self.inter_scratch.compound[index], offset, stride),
                     (src, src_offset, src_stride),
-                    (w, h),
-                    (mx, my),
+                    ((w, h), (mx, my)),
+                    depth,
                 );
             }
             Target::Refine { index, stride } => {
@@ -232,8 +247,8 @@ impl Tile<'_, '_> {
                     filter,
                     (dst, 0, stride),
                     (src, src_offset, src_stride),
-                    (head, h),
-                    (mx, my),
+                    ((head, h), (mx, my)),
+                    depth,
                 );
                 if head != w {
                     kernels::put(
@@ -241,8 +256,8 @@ impl Tile<'_, '_> {
                         filter,
                         (dst, head, stride),
                         (src, src_offset + head, src_stride),
-                        (REFINE_TAIL, h),
-                        (mx, my),
+                        ((REFINE_TAIL, h), (mx, my)),
+                        depth,
                     );
                 }
             }
@@ -264,6 +279,17 @@ impl Tile<'_, '_> {
         let shift = plane.shift();
         let (bw4, bh4) = size.units();
         let (w, h) = ((bw4 << UNIT_LOG2) >> shift, (bh4 << UNIT_LOG2) >> shift);
+        if let Some(scale) = self.references.scales[reference] {
+            self.ext_warp_scaled(
+                target,
+                plane,
+                (w as i32, h as i32),
+                (bx, by),
+                (reference, scale),
+                model,
+            );
+            return;
+        }
         if !model.affine || w.min(h) < WARP_BLOCK as u32 {
             self.ext_warp(
                 target,
@@ -434,6 +460,7 @@ impl Tile<'_, '_> {
         (mx, my): (i32, i32),
         ext: bool,
     ) {
+        let depth = self.depth();
         let picture = self.reference_picture(reference);
         let (reference_data, reference_stride) = kernels::plane(picture, plane.index());
         let (src, src_offset, src_stride) = match source {
@@ -453,10 +480,11 @@ impl Tile<'_, '_> {
                     offset + y * stride + x,
                     stride,
                 );
+                let src = (src, src_offset, src_stride);
                 if ext {
-                    kernels::ext_warp(dst, (src, src_offset, src_stride), (mx, my));
+                    kernels::ext_warp(self.dsp, dst, src, (mx, my), depth);
                 } else {
-                    kernels::warp(self.dsp, dst, (src, src_offset, src_stride), abcd, (mx, my));
+                    kernels::warp(self.dsp, dst, src, (abcd, (mx, my)), depth);
                 }
             }
             Target::Compound {
@@ -469,16 +497,11 @@ impl Tile<'_, '_> {
                     offset + y * stride + x,
                     stride,
                 );
+                let src = (src, src_offset, src_stride);
                 if ext {
-                    kernels::ext_warp_prep(dst, (src, src_offset, src_stride), (mx, my));
+                    kernels::ext_warp_prep(self.dsp, dst, src, (mx, my), depth);
                 } else {
-                    kernels::warp_prep(
-                        self.dsp,
-                        dst,
-                        (src, src_offset, src_stride),
-                        abcd,
-                        (mx, my),
-                    );
+                    kernels::warp_prep(self.dsp, dst, src, (abcd, (mx, my)), depth);
                 }
             }
             Target::Refine { .. } => unreachable!("refinement windows are not warped"),

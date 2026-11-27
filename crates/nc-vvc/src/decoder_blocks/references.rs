@@ -29,6 +29,8 @@ pub(super) struct Availability {
     wavefront: Option<u8>,
     /// First luma column that the current CU may not refer to.
     right_limit: usize,
+    /// The chroma planes' subsampling (log2 `SubWidthC`, `SubHeightC`).
+    subsampling: (usize, usize),
 }
 impl Availability {
     /// `wavefront`: the CTU size (log2) of a sequence with entropy
@@ -37,12 +39,19 @@ impl Availability {
     #[cfg(test)]
     pub fn new(dimensions: [usize; 2], wavefront: Option<u8>) -> Self {
         let mut avail = Self::default();
-        avail.reset(dimensions, wavefront, 0);
+        avail.reset(dimensions, wavefront, (0, (1, 1)));
         avail
     }
     /// Prepare for a new slice of `dimensions` whose largest tile index is
-    /// `max_tile`, clearing the grid only on geometry change or `u16` wrap.
-    pub fn reset(&mut self, dimensions: [usize; 2], wavefront: Option<u8>, max_tile: u16) {
+    /// `max_tile` and whose chroma has `subsampling`, clearing the grid only
+    /// on geometry change or `u16` wrap.
+    pub fn reset(
+        &mut self,
+        dimensions: [usize; 2],
+        wavefront: Option<u8>,
+        (max_tile, subsampling): (u16, (usize, usize)),
+    ) {
+        self.subsampling = subsampling;
         let stride = dimensions[0].div_ceil(4);
         let count = stride * dimensions[1].div_ceil(4);
         let need_clear = self.dimensions != dimensions
@@ -73,17 +82,29 @@ impl Availability {
             self.right_limit = ((unit.node.x >> ctu_log2) + 1) << ctu_log2;
         }
     }
+    /// The subsampling of `channel` (0 luma, 1 chroma).
+    #[inline]
+    fn scale(&self, channel: usize) -> (usize, usize) {
+        if channel == 0 {
+            (0, 0)
+        } else {
+            self.subsampling
+        }
+    }
+    /// Whether sample `(x, y)` of `channel` (in that channel's samples) is
+    /// reconstructed and available to the current CU.
     #[inline]
     pub fn has(&self, channel: usize, x: isize, y: isize) -> bool {
+        let (sx, sy) = self.scale(channel);
         if x < 0
             || y < 0
-            || (x as usize) << channel >= self.right_limit
-            || (x as usize) >= self.dimensions[0] >> channel
-            || (y as usize) >= self.dimensions[1] >> channel
+            || (x as usize) << sx >= self.right_limit
+            || (x as usize) << sx >= self.dimensions[0]
+            || (y as usize) << sy >= self.dimensions[1]
         {
             return false;
         }
-        let cell = ((y as usize) << channel >> 2) * self.stride + ((x as usize) << channel >> 2);
+        let cell = ((y as usize) << sy >> 2) * self.stride + ((x as usize) << sx >> 2);
         self.cells[channel][cell] == self.tag
     }
     #[inline]
@@ -217,6 +238,7 @@ impl References {
         smooth: bool,
     ) -> RefView<'a> {
         let channel = usize::from(plane != PlaneIndex::Y);
+        let (sx, sy) = available.scale(channel);
         let view = picture.plane(plane).view();
         let (left_len, top_len) = (2 * height, 2 * width);
         let total = left_len + 1 + top_len;
@@ -224,13 +246,13 @@ impl References {
         let tag = available.tag;
         let cells = &available.cells[channel];
         let cell_stride = available.stride;
-        let x_limit = (available.dimensions[0] >> channel).min(available.right_limit >> channel);
-        let y_limit = available.dimensions[1] >> channel;
-        let cell_step = 4 >> channel;
+        let x_limit = (available.dimensions[0] >> sx).min(available.right_limit >> sx);
+        let y_limit = available.dimensions[1] >> sy;
+        let (cell_width, cell_height) = (4 >> sx, 4 >> sy);
         let mut any_unset = false;
         if x > 0 && x - 1 < x_limit {
             let ux = x - 1;
-            let cell_x = (ux << channel) >> 2;
+            let cell_x = (ux << sx) >> 2;
             let valid_rows = left_len.min(y_limit.saturating_sub(y));
             if valid_rows < left_len {
                 any_unset = true;
@@ -241,9 +263,9 @@ impl References {
             let mut dy = 0;
             while dy < valid_rows {
                 let ry = y + dy;
-                let run = (cell_step - (ry & (cell_step - 1))).min(valid_rows - dy);
+                let run = (cell_height - (ry & (cell_height - 1))).min(valid_rows - dy);
                 let idx_end = left_len - dy;
-                if cells[((ry << channel) >> 2) * cell_stride + cell_x] == tag {
+                if cells[((ry << sy) >> 2) * cell_stride + cell_x] == tag {
                     for k in 0..run {
                         raw[idx_end - 1 - k] = data[(ry + k) * p_stride + ux].to_i32();
                     }
@@ -255,7 +277,7 @@ impl References {
             }
             if y > 0
                 && y - 1 < y_limit
-                && cells[(((y - 1) << channel) >> 2) * cell_stride + cell_x] == tag
+                && cells[(((y - 1) << sy) >> 2) * cell_stride + cell_x] == tag
             {
                 raw[left_len] = data[(y - 1) * p_stride + ux].to_i32();
             } else {
@@ -268,14 +290,14 @@ impl References {
         }
         if y > 0 && y - 1 < y_limit && x < x_limit {
             let top_row = view.row(y - 1);
-            let row_cells = &cells[(((y - 1) << channel) >> 2) * cell_stride..];
+            let row_cells = &cells[(((y - 1) << sy) >> 2) * cell_stride..];
             let valid_cols = top_len.min(x_limit - x);
             let mut dx = 0;
             while dx < valid_cols {
                 let rx = x + dx;
-                let run = (cell_step - (rx & (cell_step - 1))).min(valid_cols - dx);
+                let run = (cell_width - (rx & (cell_width - 1))).min(valid_cols - dx);
                 let out_base = left_len + 1 + dx;
-                if row_cells[(rx << channel) >> 2] == tag {
+                if row_cells[(rx << sx) >> 2] == tag {
                     for k in 0..run {
                         raw[out_base + k] = top_row[rx + k].to_i32();
                     }

@@ -79,8 +79,20 @@ def test_both_machines_are_views_and_missing_reports_are_listed_not_invented(tmp
     write_report(tmp_path, "vc1k-out-of-sample", FAMILIES, series="c8g")
     data = bench_site.site_data(tmp_path)
     assert {v["id"] for v in data["views"]} == {"ours-c8i", "vc1k-c8g"}
-    assert {m["id"] for m in data["missing"]} == {"vc1k-c8i", "aomctc-c8i", "ours-c8g", "aomctc-c8g"}
-    assert list(data["machines"]) == ["c8i", "c8g"]  # x86 first: the pages open on it
+    assert {m["id"] for m in data["missing"]} == {
+        "vc1k-c8i", "aomctc-c8i", "ours-c8g", "aomctc-c8g",
+        "fast-c8i", "fast-c8g", "fast-mac-m4", "fast-jetson-a78ae"}
+    assert list(data["machines"])[:2] == ["c8i", "c8g"]  # x86 first: the pages open on it
+
+
+def test_the_slow_platforms_have_only_the_fast_subset(tmp_path):
+    write_report(tmp_path, "fast", FAMILIES, series="mac-m4")
+    data = bench_site.site_data(tmp_path)
+    assert [v["id"] for v in data["views"]] == ["fast-mac-m4"]
+    assert not any(m["machine"] == "mac-m4" and m["dataset"] != "fast" for m in data["missing"])
+    assert data["datasets"]["fast"]["machines"] == ["c8i", "c8g", "mac-m4", "jetson-a78ae"]
+    assert data["datasets"]["ours"]["machines"] == ["c8i", "c8g"]
+    assert list(bench_site.machines(bench_site.AWS_MACHINES)) == ["c8i", "c8g"]  # history, SVC
 
 
 def test_identically_measured_twins_are_shown_once(tmp_path):
@@ -138,7 +150,7 @@ def test_history_frames_are_the_reports_days_per_key_interval(tmp_path):
     days.write_text(json.dumps([{"day": d, "commit": c * 9, "codecs": "av1"}
                                 for d, c in (("2026-11-09", "a"), ("2026-11-10", "b"))]))
     data = bench_site.preview_history.history_data(
-        tmp_path, days, tmp_path / "no-captions.json", list(bench_site.MACHINES), {},
+        tmp_path, days, tmp_path / "no-captions.json", list(bench_site.AWS_MACHINES), {},
         bench_site.describe, bench_site.finite, bench_site.report_path)
     assert data["missing"] == [str(bench_site.report_path(tmp_path, "history", "c8g"))]
     view = data["views"][SERIES]
@@ -150,10 +162,28 @@ def test_history_frames_are_the_reports_days_per_key_interval(tmp_path):
     assert set(k150[1]["view"]["values"]) == {"av1@fast"}  # no curve, no point
     assert [f["id"] for f in k600] == ["2026-11-09", "2026-11-26"]
     # a day the days file does not list is the report's own build
-    assert k600[1]["commit"] == COMMIT[:9] and k600[1]["label"] == bench_site.preview_history.BENCHMARK_BUILD
+    assert k600[1]["commit"] == COMMIT[:9] and k600[1]["label"] == "2026-11-26"
+    assert k600[1]["caption"][0] == bench_site.preview_history.BENCHMARK_CAPTION
     assert set(view["references"]) == {"x264-medium"}  # no +drop row, no metric-tuned twin
     assert view["references"]["x264-medium"]["clips"] == 3  # the common set
     json.dumps(data, allow_nan=False)
+
+
+def test_a_listed_day_after_the_benchmark_build_keeps_its_own_frame(tmp_path):
+    families = HISTORY_FAMILIES | {"nanocodec-av1@fast": row(-14.0),
+                                   "nanocodec-av1@fast~2026-11-27": row(-16.0)}
+    write_report(tmp_path, bench_site.preview_history.REPORT_NAME, families)
+    days = tmp_path / "days.json"
+    days.write_text(json.dumps([{"day": d, "commit": c * 9, "codecs": "av1"}
+                                for d, c in (("2026-11-09", "a"), ("2026-11-27", "c"))]))
+    data = bench_site.preview_history.history_data(
+        tmp_path, days, tmp_path / "no-captions.json", list(bench_site.AWS_MACHINES), {},
+        bench_site.describe, bench_site.finite, bench_site.report_path)
+    k150 = {f["id"]: f for f in data["views"][SERIES]["series"]["k150"]}
+    # the benchmark build's families sit on its own (unlisted) day, not the newest one
+    assert k150["2026-11-26"]["view"]["values"]["av1@fast"]["j"] == -14.0
+    assert k150["2026-11-27"]["view"]["values"]["av1@fast"]["j"] == -16.0
+    assert k150["2026-11-27"]["commit"] == "c" * 9
 
 
 def test_a_days_compliance_is_the_worst_of_our_families():

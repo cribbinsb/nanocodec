@@ -68,6 +68,8 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.h264_add_scaled_mb = h264_add_scaled_mb;
     table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
     table.nonzero_mask = nonzero_mask;
+    table.h264_eliminate_luma_4x4 = super::h264_levels::neon;
+    table.h264_eliminate_luma_8x8 = super::h264_levels8::neon;
     table
 }
 

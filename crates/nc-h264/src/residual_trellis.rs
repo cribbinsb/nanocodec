@@ -91,6 +91,7 @@ impl<'a> RateModel<'a> {
 
     /// `ctxIdx` of `significant_coeff_flag` and `last_significant_coeff_flag`
     /// at scan position `i`.
+    #[inline]
     fn significance_contexts(&self, i: usize) -> (usize, usize) {
         match self.block {
             TrellisBlock::Small { cat, .. } => {
@@ -114,21 +115,16 @@ impl<'a> RateModel<'a> {
     }
 
     /// Bits of `coeff_abs_level_minus1` (UEG0, §9.3.2.3) and the sign of a
-    /// nonzero `level` in `state`.
-    fn level_bits(&self, state: LevelState, level: u32) -> f32 {
+    /// nonzero `level` given precomputed `first_ctx` and `later_ctx`.
+    #[inline]
+    fn level_bits_ctx(&self, first_ctx: usize, later_ctx: usize, level: u32) -> f32 {
         let minus1 = level - 1;
-        let first_inc = if state.gt1 != 0 {
-            0
-        } else {
-            usize::from(1 + state.eq1)
-        };
-        let later = self.level + LATER_BINS_INC + usize::from(state.gt1);
         let prefix = minus1.min(LEVEL_PREFIX_MAX);
-        let mut bits = self.bins.bin_bits(self.level + first_inc, prefix > 0);
+        let mut bits = self.bins.bin_bits(first_ctx, prefix > 0);
         if prefix > 0 {
-            bits += (prefix - 1) as f32 * self.bins.bin_bits(later, true);
+            bits += (prefix - 1) as f32 * self.bins.bin_bits(later_ctx, true);
             if prefix < LEVEL_PREFIX_MAX {
-                bits += self.bins.bin_bits(later, false);
+                bits += self.bins.bin_bits(later_ctx, false);
             }
         }
         if minus1 >= LEVEL_PREFIX_MAX {
@@ -140,6 +136,7 @@ impl<'a> RateModel<'a> {
 
 /// Bypass bins of the k = 0 Exp-Golomb suffix of `value`
 /// (`write_exp_golomb_bypass`).
+#[inline]
 fn exp_golomb_bits(value: u32) -> u32 {
     let x = value + 1;
     2 * (u32::BITS - x.leading_zeros()) - 1
@@ -176,25 +173,51 @@ impl CoeffRateModel for RateModel<'_> {
         levels: &[u32],
         bits: &mut [f32],
     ) {
+        let n = levels.len().min(bits.len());
         if !state.started {
+            let first_ctx = self.level
+                + if state.gt1 != 0 {
+                    0
+                } else {
+                    usize::from(1 + state.eq1)
+                };
+            let later_ctx = self.level + LATER_BINS_INC + usize::from(state.gt1);
             // The last level: its flags went with the end of block.
-            for (&level, bits) in levels.iter().zip(bits) {
-                *bits = self.level_bits(*state, level);
+            for i in 0..n {
+                bits[i] = self.level_bits_ctx(first_ctx, later_ctx, levels[i]);
             }
             return;
         }
         // Not the last level, so not the final scan position, which has
         // no significance flags.
         let (significant, last) = self.significance_contexts(scan_pos);
-        for (&level, bits) in levels.iter().zip(bits) {
-            *bits = if level == 0 {
-                self.bins.bin_bits(significant, false)
+        let zero_bits = self.bins.bin_bits(significant, false);
+        if n == 1 && levels[0] == 0 {
+            bits[0] = zero_bits;
+            return;
+        }
+        let first_ctx = self.level
+            + if state.gt1 != 0 {
+                0
             } else {
-                self.bins.bin_bits(significant, true)
-                    + self.bins.bin_bits(last, false)
-                    + self.level_bits(*state, level)
+                usize::from(1 + state.eq1)
+            };
+        let later_ctx = self.level + LATER_BINS_INC + usize::from(state.gt1);
+        let nz_flags = self.bins.bin_bits(significant, true) + self.bins.bin_bits(last, false);
+        for i in 0..n {
+            let level = levels[i];
+            bits[i] = if level == 0 {
+                zero_bits
+            } else {
+                nz_flags + self.level_bits_ctx(first_ctx, later_ctx, level)
             };
         }
+    }
+
+    fn zero_step(&mut self, state: &mut LevelState, scan_pos: usize) -> f32 {
+        debug_assert!(state.started);
+        let (significant, _) = self.significance_contexts(scan_pos);
+        self.bins.bin_bits(significant, false)
     }
 
     fn advance(&self, state: &mut LevelState, _scan_pos: usize, level: u32) {
@@ -254,22 +277,26 @@ impl<'a> Rounding<'a> {
     /// `|c| · mf` of the coefficient at raster position `p`: below 2^53, so
     /// its value in levels is exact and rounding it to the nearest (half
     /// away from zero) is this integer rounding.
+    #[inline]
     fn scaled(&self, coeffs: &[i16], p: usize) -> i64 {
         i64::from(coeffs[p].unsigned_abs()) * i64::from(self.scale.mf[p])
     }
 
     /// The level nearest a coefficient of `scaled` ([`Self::scaled`]), at
     /// least its plain level `plain`.
+    #[inline]
     fn nearest(&self, scaled: i64, plain: i16) -> u32 {
         (((scaled + self.half) >> self.scale.qbits) as u32).max(u32::from(plain.unsigned_abs()))
     }
 
     /// The coefficient's exact value in levels.
+    #[inline]
     fn value(&self, scaled: i64) -> f64 {
         scaled as f64 * self.unit
     }
 
     /// The distortion of coding a coefficient of `value` levels as `level`.
+    #[inline]
     fn distortion(&self, value: f64, level: u32) -> f32 {
         let error = value - f64::from(level);
         (error * error) as f32 * self.scale.step_sse
@@ -357,13 +384,23 @@ impl TrellisQuantizer {
         levels: &mut [i16],
     ) -> bool {
         self.candidates.clear();
-        self.candidates.extend(scan[..=last].iter().map(|&p| {
+        self.candidates.reserve(last + 1);
+        for &p in &scan[..=last] {
             let scaled = rounding.scaled(coeffs, p);
             let value = rounding.value(scaled);
-            Candidates::around(rounding.nearest(scaled, levels[p]), |level| {
-                rounding.distortion(value, level)
-            })
-        }));
+            if levels[p] == 0 && scaled < rounding.half {
+                self.candidates.push(Candidates {
+                    levels: [0, 0, 0],
+                    distortion: [(value * value) as f32 * rounding.scale.step_sse, 0.0, 0.0],
+                    count: 1,
+                });
+                continue;
+            }
+            self.candidates.push(Candidates::around(
+                rounding.nearest(scaled, levels[p]),
+                |level| rounding.distortion(value, level),
+            ));
+        }
         self.chosen.resize(last + 1, 0);
         let coded = self.search.quantize(
             model,

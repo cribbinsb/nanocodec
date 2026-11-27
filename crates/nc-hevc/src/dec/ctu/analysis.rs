@@ -139,7 +139,7 @@ impl<T: nc_dsp::Pixel> SegmentDecoder<'_, '_, T> {
                 w: coord(pb),
                 h: coord(pb),
                 mode,
-                mode2: cu.chroma_mode,
+                mode2: cu.chroma_modes[i],
                 class: intra_class(mode) as u8,
                 ref_idx: [-1; 2],
                 ..BlockRecord::default()

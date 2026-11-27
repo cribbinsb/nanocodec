@@ -21,15 +21,15 @@ used `--colour bt709 --range full --timing constant`, a third
 | # | Gap (before this change) | Codecs | Impact | Status |
 |---|---|---|---|---|
 | 1 | No timing in the headers by default: raw Annex-B HEVC/VVC streams had no frame rate at all (`ffprobe` r_frame_rate 1200000/1; `ffmpeg -i x.265 -c copy x.mp4` gave 25 fps, 1.2 s for a 1 s clip). AV1 had no `timing_info` (IVF carried the rate). | HEVC, VVC, AV1 | High: wrong playback speed after the commonest remux | **Fixed** |
-| 2 | Raw Annex-B output plus frame holds: a held (repeated) input frame is not coded, and Annex-B has no timestamps, so a stream of a repeat-frame source plays fast once remuxed at the nominal rate (still clip: 18 of 30 frames coded). IVF (AV1/VP9/AV2) carries per-frame pts and is fine. | H.264, HEVC, VVC | High for 15-in-30 fps cameras and frozen sources written by the CLI | **Open** (owner decision; options below) |
+| 2 | Raw Annex-B output plus frame holds: a held (repeated) input frame is not coded, and Annex-B has no timestamps, so a stream of a repeat-frame source plays fast once remuxed at the nominal rate (still clip: 18 of 30 frames coded). IVF (AV1/VP9/AV2) carries per-frame pts and is fine. | H.264, HEVC, VVC | High for 15-in-30 fps cameras and frozen sources written by the CLI | **Fixed** (round 2): MP4/MKV/WebM output keeps each frame's time; Annex-B/IVF unchanged |
 | 3 | Fixed level: VVC always signalled level 6.0 (`general_level_idc` 96) and AV1 single-layer streams `seq_level_idx` 31 ("no constraints"), whatever the size and rate. Hardware and browser decoders size (or refuse) by level. VVenC: 2.0, libaom/SVT-AV1: 2.0 for the same clip. | VVC, AV1 | Medium: device compatibility | **Fixed** (level from coded size and rate) |
-| 4 | Level ignores the bit rate (MaxBR / CPB, AV1 MaxBitrate): a small picture at a high rate (e.g. 320x180 at 3 Mbps) signals a level whose bit-rate limit it exceeds. x264 raises the level for the VBV. | H.264, HEVC, VVC, AV1 | Low at our ladder (300-1200 kbps), real at high rates | Open |
-| 5 | No recovery-point SEI (H.264/HEVC) or GDR picture (VVC) with `--intra-refresh`: a decoder joining mid-stream has no marked entry point (x264 `--intra-refresh` writes recovery-point SEI). | H.264, HEVC, VVC | Medium for intra-refresh users only (intra refresh is low priority) | Open |
+| 4 | Level ignores the bit rate (MaxBR / CPB, AV1 MaxBitrate): a small picture at a high rate (e.g. 320x180 at 3 Mbps) signals a level whose bit-rate limit it exceeds. x264 raises the level for the VBV. | H.264, HEVC, VVC, AV1 | Low at our ladder (300-1200 kbps), real at high rates | **Fixed** (round 2) |
+| 5 | No recovery-point SEI (H.264/HEVC) or GDR picture (VVC) with `--intra-refresh`: a decoder joining mid-stream has no marked entry point (x264 `--intra-refresh` writes recovery-point SEI). | H.264, HEVC, VVC | Medium for intra-refresh users only (intra refresh is low priority) | **Fixed**: H.264/HEVC recovery-point SEI, VVC GDR pictures (VVdeC skips the first sweep, see below) |
 | 6 | Encoder identification is not shown by `mediainfo` (it decodes only the x264/x265 UUIDs) nor by `ffprobe` as text; it is present and readable (`strings`, ffprobe frame side data "User Data Unregistered SEI"). | H.264, HEVC, VVC | Low | As designed |
-| 7 | AV1 metadata OBU type 6 (unregistered user private, AV1 §6.7.1) makes dav1d log "Unknown Metadata OBU type 6" once per key frame in ffmpeg-based tools. libaom and SVT-AV1 write no identification at all. | AV1 | Low (log noise) | Open (options below) |
-| 8 | AV2 rejects `--colour`/`--range` ("not yet supported"); ffprobe does not know AV2 yet. | AV2 | Low (no AV2 players) | Open |
+| 7 | AV1 metadata OBU type 6 (unregistered user private, AV1 §6.7.1) makes dav1d log "Unknown Metadata OBU type 6" once per key frame in ffmpeg-based tools. libaom and SVT-AV1 write no identification at all. | AV1, AV2 | Low (log noise) | **Fixed** (round 2): first key frame only |
+| 8 | AV2 rejects `--colour`/`--range` ("not yet supported"); ffprobe does not know AV2 yet. | AV2 | Low (no AV2 players) | **Fixed** (round 2): content interpretation OBU (colour, range, timing) and Annex A level |
 | 9 | No HRD (`--nal-hrd`), buffering-period/picture-timing SEI, AUD | all | Low: x264/x265 write none by default; needed for broadcast TS only | Not needed now |
-| 10 | No MP4/MKV output | all | Medium (see 2) | Open |
+| 10 | No MP4/MKV output | all | Medium (see 2) | **Fixed** (round 2), not AV2 (no mapping) and not VVC in Matroska (FFmpeg 8 cannot read it) |
 | 11 | Mastering display / content light | all | None: 8-bit SDR encoders; HDR metadata would be wrong to write | Not applicable |
 
 ## Per codec, ours vs the reference encoder (default streams, after the fixes)
@@ -158,3 +158,75 @@ own conformance pass against avmdec/dav2d.
   stream); or drop it by default for AV1/AV2 as libaom and SVT-AV1 do. An
   ITU-T T.35 payload would need a registered country/provider code we do not
   have.
+
+## Round 2 (coordinator decisions, same day)
+
+**Container output (gap 2, 10).** `--output x.mp4|.m4v|.mkv|.webm` writes
+that container (`crates/nc-cli/src/mux/`): MP4 with `mdat` then `moov`
+(sample entries `avc3`, `hev1`, `vvi1`, `av01`, `vp09`; `stts` durations from
+each coded frame's time, `stss` key frames, `colr` when signalled),
+Matroska/WebM with one cluster per key frame, `Cues` and `Duration`. A held
+frame lengthens the sample before it. Checked on a 60-frame 320x180 30 fps
+clip and a 15-in-30 repeat clip (32 of 60 frames coded):
+
+| | ffprobe (MP4 / MKV, WebM) | decode vs recon (ffmpeg) | headless Chromium |
+|---|---|---|---|
+| H.264 | 30 fps, 2.0 s; repeat clip 2.0 s | identical | MP4 plays, 2.0 s, seeks |
+| HEVC | 30 fps, 2.0 s | identical | not supported by Chromium |
+| VVC | MP4 30 fps, 2.0 s (MKV refused: FFmpeg 8 has no `V_MPEGI/ISO/VVC`) | identical | not supported |
+| AV1 | 30 fps, 2.0 s | identical | MP4, MKV, WebM play, seek |
+| VP9 | 30 fps, 2.0 s | identical | MP4, WebM play, seek |
+
+Before, the repeat clip's raw H.264 had 18 frames for 1 s of input and
+remuxed to 0.6 s. AV2 has no MP4/Matroska mapping yet (refused; IVF).
+
+**Bit-rate-aware levels (gap 4).** The engine hands each backend the peak
+rate and buffer of the rate control in force (`CodecBackend::set_stream_rate`,
+`nc_encoder::StreamRate`), and the next key's headers signal a level that
+covers them: H.264 `MaxBR`/`MaxCPB` (High, x1.25; Table A-1 now has levels
+2, 4.1, 6.1, 6.2), HEVC/VVC Main-tier `MaxBR`/`MaxCPB` in the shared table,
+AV1 and AV2 `MaxBitrate`. The H.264 motion-vector range stays that of the
+size level, so the coded pictures do not depend on the rate. 320x180 at
+3 Mbps: H.264 3.0, HEVC 3, VVC 3.0, AV1 3.0 (were 1.3, 2, 2.0, 2.0).
+
+**Intra-refresh entry points (gap 5).** H.264 and HEVC write a
+recovery-point SEI on each frame starting a sweep (`recovery_frame_cnt` /
+`recovery_poc_cnt` = the sweep's length less one, in frame-index units, so
+conservative under layered structures; exact_match 1). JM, HM, FFmpeg and
+ours decode bit-exactly. VVC: GDR pictures were implemented and decoded
+bit-exactly by FFmpeg and ours, but VVdeC (d261469, as VTM) withholds output
+of the first GDR picture's recovering pictures even after an IDR
+(`m_gdrRecovered`), dropping 9 of 60 frames when decoding from the start, so
+they are not used; VVC has no recovery-point SEI. Left open. This is not
+the spec's start-at-GDR rule: decoding began at the IDR picture (POC 0), so
+the GDR picture's `NoOutputBeforeRecoveryFlag` is 0 (H.266 §8.1.1) and its
+recovering pictures have `PictureOutputFlag` 1 (§8.1.2); VVdeC suppresses
+them because no GDR has yet completed (`!m_gdrRecovered`), whatever the
+flag. Using GDR would be conformant, but VVdeC-based players would skip a
+sweep of frames after every stream start.
+
+**VVC GDR, owner decision (later the same day): on.** With `--intra-refresh`
+each VVC sweep starts with a GDR picture (`sps_gdr_enabled_flag` when the
+encoder is created with intra refresh, `ph_recovery_poc_cnt` = the sweep's
+length less one). The VVdeC behaviour is documented in the FAQ resilience
+section and the `--intra-refresh` help; the conformance gate expects VVdeC's
+frames to be the others' with one contiguous run (the first sweep) left out
+(`nceval.conformance.withheld_sweep`), FFmpeg and ours bit-exact on every
+frame. Intra refresh is off in every preset, so default streams do not
+change.
+
+**Identification metadata (gap 7).** AV1 and AV2 write the encoder
+information metadata OBU with the first key frame only, and again after a
+settings change such as a rate change (one dav1d log line per stream);
+H.264/HEVC/VVC keep it on every IRAP.
+
+**AV2 signalling (gap 8).** Every key frame carries a content
+interpretation OBU (AVM `av2_write_content_interpretation_obu`): progressive
+scan, the colour description and range when given, and the timing
+(`--colour`/`--range` are no longer refused). The sequence header signals the
+Annex A level of the coded size, rate and peak bit rate (AVM
+`av2_level_defs`; 31 kept for fixed `base_q_idx` < 32, pictures under
+128x128 and random-decision streams), e.g. 2.0 at 320x180@30. avmdec and our
+decoder match the reconstruction for medium and fast, with and without
+`--colour bt709 --range full` and `--timing constant`; dav2d matches after
+its 8-row padding is cropped, as before.

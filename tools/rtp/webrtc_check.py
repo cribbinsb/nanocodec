@@ -9,6 +9,12 @@ WebRTC session (ICE, DTLS-SRTP) on the loopback, and require every picture
 Chrome decodes to equal our stream's pictures (SHA-256 of the I420 planes
 from MediaStreamTrackProcessor / VideoFrame.copyTo), all of them, in order.
 
+VP9 spatial SVC cases (`vp9-L2T1`, ...) send the whole stream, or, with a
+`-S<n>` suffix, the packets an SFU forwards to a receiver of spatial layer n
+(`nanocodec depacketize --layers n:0 --forward`, by the VP9 payload
+descriptor alone); Chrome must show that layer's pictures exactly as vpxdec
+decodes `nanocodec extract` of it (one picture per unit: the top frame).
+
 usage: webrtc_check.py --nanocodec BIN --pion BIN [--cases av1,h264,vp9,...]
                        [--chrome /usr/bin/google-chrome] [--work DIR] [--keep]
 """
@@ -28,6 +34,7 @@ from interop import FPS, HEIGHT, QP, WIDTH, make_source  # noqa: E402
 FRAMES = 60
 KEY_INTERVAL = 30
 FFMPEG = "/usr/bin/ffmpeg"
+VPXDEC = Path.home() / "nanocodec-data/anchors/x86_64/bin/vpxdec"
 PORT = 8093
 CASES = {  # name: (codec, extra encode options)
     "av1": ("av1", []),
@@ -37,6 +44,13 @@ CASES = {  # name: (codec, extra encode options)
     "av1-L2T2": ("av1", ["--scalability", "L2T2"]),
     "vp9-L1T2": ("vp9", ["--temporal-layers", "2", "--param", "layers.adaptive=0"]),
 }
+#: VP9 spatial SVC: scalability mode -> spatial layer count. Each gives a
+#: case for the whole stream and one per forwarded lower layer (`-S<n>`).
+VP9_SVC_MODES = {"L2T1": 2, "L3T1": 3, "L2T1_KEY": 2, "L3T1_KEY": 3}
+for _mode, _layers in VP9_SVC_MODES.items():
+    CASES[f"vp9-{_mode}"] = ("vp9", ["--scalability", _mode])
+    for _s in range(_layers - 1):
+        CASES[f"vp9-{_mode}-S{_s}"] = ("vp9", ["--scalability", _mode])
 CHROME_FLAGS = [
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
     "--autoplay-policy=no-user-gesture-required", "--mute-audio",
@@ -60,6 +74,35 @@ def reference_hashes(stream, width, height):
     return [hashlib.sha256(data[i:i + size]).hexdigest() for i in range(0, len(data), size)]
 
 
+def vpxdec_hashes(stream, width, height):
+    """SHA-256 of each picture vpxdec shows (one per unit: libvpx, as
+    Chrome's VP9 decoder, outputs a superframe's last frame)."""
+    data = subprocess.run([VPXDEC, "--codec=vp9", "--i420", "--rawvideo", "-o", "-", str(stream)],
+                          capture_output=True, check=True).stdout
+    size = width * height * 3 // 2
+    return [hashlib.sha256(data[i:i + size]).hexdigest() for i in range(0, len(data), size)]
+
+
+def vp9_svc_reference(name, nc, stream, capture, work):
+    """The capture to send and Chrome's expected pictures for a VP9 SVC case:
+    the whole stream, or the packets forwarded to spatial layer S (`-S<n>`)."""
+    mode, _, forward = name.removeprefix("vp9-").partition("-S")
+    layers = VP9_SVC_MODES[mode]
+    spatial = int(forward) if forward else layers - 1
+    scale = 1 << (layers - 1 - spatial)
+    width, height = WIDTH // scale, HEIGHT // scale
+    if not forward:
+        return capture, vpxdec_hashes(stream, width, height)
+    sent = work / f"{name}-forwarded.rtp"
+    key_only = ["--inter-layer", "key"] if mode.endswith("_KEY") else []
+    run([nc, "depacketize", "--codec", "vp9", "--input", capture, "--layers", f"{spatial}:0",
+         *key_only, "--forward", sent, "--output", work / f"{name}-forwarded.ivf"])
+    expected = work / f"{name}-extract.ivf"
+    run([nc, "extract", "--codec", "vp9", "--input", stream,
+         "--operating-point", layers - 1 - spatial, "--output", expected])
+    return sent, vpxdec_hashes(expected, width, height)
+
+
 def h264_fmtp(stream):
     """The SDP fmtp of an H.264 stream: profile_idc, constraint flags and
     level_idc from its first SPS (H.264 §7.3.2.1.1)."""
@@ -76,7 +119,10 @@ def check_case(name, nc, pion, chrome, work):
     run([nc, "encode", "--codec", codec, "--input", work / "source.yuv", "--width", WIDTH,
          "--height", HEIGHT, "--fps", FPS, "--frames", FRAMES, "--qp", QP,
          "--intra-period", KEY_INTERVAL, *extra, "--output", stream, "--rtp", capture])
-    reference = reference_hashes(stream, WIDTH, HEIGHT)
+    if "--scalability" in extra and codec == "vp9":
+        capture, reference = vp9_svc_reference(name, nc, stream, capture, work)
+    else:
+        reference = reference_hashes(stream, WIDTH, HEIGHT)
     result_path = work / f"{name}.json"
     fmtp = h264_fmtp(stream) if codec == "h264" else ""
     sender = subprocess.Popen([str(pion), "webrtc", "--codec", codec, "--in", str(capture),
@@ -118,7 +164,7 @@ def main():
     parser.add_argument("--nanocodec", required=True)
     parser.add_argument("--pion", required=True)
     parser.add_argument("--chrome", default="/usr/bin/google-chrome")
-    parser.add_argument("--cases", default="av1,h264,vp9,av1-L1T3,av1-L2T2,vp9-L1T2")
+    parser.add_argument("--cases", default=",".join(CASES))
     parser.add_argument("--work", default=None)
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()

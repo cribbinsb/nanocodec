@@ -126,12 +126,14 @@ impl<'a> RateModel<'a> {
 
     /// The probabilities of the token at scan position `c` (band and
     /// neighbour context, VP9 §9.3.1).
+    #[allow(clippy::inline_always)] // measured in c1c1ad202 (VP9 -1.5 % with the caps)
+    #[inline(always)]
     fn probs_at(&self, state: &TokenState, c: usize) -> &[u8; 3] {
         let ctx = if c == 0 {
             self.initial
         } else {
-            let energy = |k: usize| state.energies[usize::from(self.neighbours[k]) % WINDOW];
-            let (a, b) = (energy(2 * c), energy(2 * c + 1));
+            let a = state.energies[usize::from(self.neighbours[2 * c]) & (WINDOW - 1)];
+            let b = state.energies[usize::from(self.neighbours[2 * c + 1]) & (WINDOW - 1)];
             usize::from((1 + a + b) >> 1)
         };
         &self.probs[band(self.tx, c)][ctx]
@@ -140,10 +142,11 @@ impl<'a> RateModel<'a> {
 
 /// Bits of a magnitude above one: the Pareto tail tokens and their extra
 /// bits (`write_magnitude`).
+#[inline]
 fn magnitude_bits(magnitude: i32, pivot: u8) -> f32 {
     let mut bits = 0.0;
     write_magnitude(
-        &mut |bit, prob| bits += bit_cost(bit, prob),
+        &mut |bit, prob, _| bits += bit_cost(bit, prob),
         magnitude,
         pivot,
     );
@@ -184,27 +187,43 @@ impl ForwardCoeffRateModel for RateModel<'_> {
         } else {
             0.0
         };
-        for (&level, bits) in levels.iter().zip(bits) {
-            *bits = more
-                + if level == 0 {
-                    bit_cost(false, probs[1])
-                } else {
-                    let tail = if level > 1 {
-                        magnitude_bits(level as i32, probs[2])
-                    } else {
-                        0.0
-                    };
-                    bit_cost(true, probs[1])
-                        + bit_cost(level > 1, probs[2])
-                        + tail
-                        + bit_cost(false, SIGN_PROBABILITY)
-                };
+        if levels.len() == 1 && levels[0] == 0 {
+            bits[0] = more + bit_cost(false, probs[1]);
+            return;
+        }
+        let zero_bits = more + bit_cost(false, probs[1]);
+        let nz_bit = bit_cost(true, probs[1]);
+        let sign_bits = bit_cost(false, SIGN_PROBABILITY);
+        let one_bits = more + (nz_bit + bit_cost(false, probs[2]) + 0.0 + sign_bits);
+        let gt1_prefix = nz_bit + bit_cost(true, probs[2]);
+        let n = levels.len().min(bits.len());
+        for i in 0..n {
+            let level = levels[i];
+            bits[i] = match level {
+                0 => zero_bits,
+                1 => one_bits,
+                _ => more + (gt1_prefix + magnitude_bits(level as i32, probs[2]) + sign_bits),
+            };
         }
     }
 
+    #[inline]
     fn advance(&self, state: &mut TokenState, scan_pos: usize, level: u32) {
-        state.energies[scan_pos % WINDOW] = energy(level as i32);
+        state.energies[scan_pos & (WINDOW - 1)] = energy(level as i32);
         state.more_coefs = level != 0;
+    }
+
+    fn zero_step(&mut self, state: &mut TokenState, scan_pos: usize) -> f32 {
+        let probs = self.probs_at(state, scan_pos);
+        let more = if state.more_coefs {
+            bit_cost(true, probs[0])
+        } else {
+            0.0
+        };
+        let rate = more + bit_cost(false, probs[1]);
+        state.energies[scan_pos & (WINDOW - 1)] = 0;
+        state.more_coefs = false;
+        rate
     }
 }
 
@@ -240,17 +259,41 @@ impl TrellisQuantizer {
         let to_sse = 1.0 / f64::from(1_u32 << (2 * scale_log2));
         let eob = plain_eob.unwrap_or_else(|| model.order.end_of_block(dsp, levels));
         let scan = &model.order.scan[..eob];
+        let dc_step = i64::from(steps.dc);
+        let ac_step = i64::from(steps.ac);
+        let dc_cap = nc_dsp::Vp9QuantStep::max_level(steps.dc, shift).min(super::MAX_LEVEL as u32);
+        let ac_cap = nc_dsp::Vp9QuantStep::max_level(steps.ac, shift).min(super::MAX_LEVEL as u32);
         self.candidates.clear();
-        self.candidates.extend(scan.iter().map(|&p| {
-            let p = usize::from(p);
-            let step = i64::from(steps.step(p));
+        self.candidates.reserve(eob);
+        if let Some((&dc_p, ac_scan)) = scan.split_first() {
+            let p = usize::from(dc_p);
             let magnitude = i64::from(coefficients[p].unsigned_abs());
-            let nearest = nearest_level(magnitude, levels[p].unsigned_abs(), step, shift);
-            Candidates::around(nearest, |level| {
-                let error = (magnitude - ((i64::from(level) * step) >> shift)) as f64;
+            let nearest =
+                nearest_level_capped(magnitude, levels[p].unsigned_abs(), dc_step, shift, dc_cap);
+            self.candidates.push(Candidates::around(nearest, |level| {
+                let error = (magnitude - ((i64::from(level) * dc_step) >> shift)) as f64;
                 (error * error * to_sse) as f32
-            })
-        }));
+            }));
+            for &p in ac_scan {
+                let p = usize::from(p);
+                let magnitude = i64::from(coefficients[p].unsigned_abs());
+                let plain = levels[p].unsigned_abs();
+                if plain == 0 && (magnitude << (shift + 1)) < ac_step {
+                    let error = magnitude as f64;
+                    self.candidates.push(Candidates {
+                        levels: [0, 0, 0],
+                        distortion: [(error * error * to_sse) as f32, 0.0, 0.0],
+                        count: 1,
+                    });
+                    continue;
+                }
+                let nearest = nearest_level_capped(magnitude, plain, ac_step, shift, ac_cap);
+                self.candidates.push(Candidates::around(nearest, |level| {
+                    let error = (magnitude - ((i64::from(level) * ac_step) >> shift)) as f64;
+                    (error * error * to_sse) as f32
+                }));
+            }
+        }
         self.chosen.resize(eob, 0);
         let coded = self.search.quantize(
             model,
@@ -270,16 +313,22 @@ impl TrellisQuantizer {
 
 /// The level nearest `magnitude` (a coefficient's, before the 32x32
 /// `shift`) at `step`, from the plain quantiser's `plain` (rounded below
-/// half a step): one more when the magnitude is past the half step, unless
-/// that would leave the token range or the 16-bit dequantized range.
-fn nearest_level(magnitude: i64, plain: u32, step: i64, shift: u32) -> u32 {
-    let cap = nc_dsp::Vp9QuantStep::max_level(step as i32, shift).min(super::MAX_LEVEL as u32);
+/// half a step), bounded by pre-computed `cap`.
+#[allow(clippy::inline_always)] // measured in c1c1ad202 (VP9 -1.5 % with probs_at)
+#[inline(always)]
+fn nearest_level_capped(magnitude: i64, plain: u32, step: i64, shift: u32, cap: u32) -> u32 {
     let past_half = 2 * (magnitude << shift) >= (2 * i64::from(plain) + 1) * step;
     if past_half && plain < cap {
         plain + 1
     } else {
         plain
     }
+}
+
+#[cfg(test)]
+fn nearest_level(magnitude: i64, plain: u32, step: i64, shift: u32) -> u32 {
+    let cap = nc_dsp::Vp9QuantStep::max_level(step as i32, shift).min(super::MAX_LEVEL as u32);
+    nearest_level_capped(magnitude, plain, step, shift, cap)
 }
 
 #[cfg(test)]

@@ -160,6 +160,7 @@ impl Parser<'_> {
     /// Record the CU's final QP and chroma offsets once its residual syntax
     /// is read (a delta or offset coded in a transform unit applies to the
     /// whole CU).
+    #[inline]
     pub(super) fn end_unit_qp(&mut self, unit: &mut Unit, saved: Option<i8>) {
         unit.qp = self.groups.qp;
         unit.chroma_offsets = match self.groups.offset_index {
@@ -196,6 +197,7 @@ impl Parser<'_> {
 
     /// The QP delta and chroma offset syntax of one transform unit, after its
     /// coded flags (§7.3.11.10).
+    #[inline]
     pub(super) fn unit_qp_syntax(
         &mut self,
         r: &mut Reader<'_>,
@@ -224,9 +226,9 @@ impl Parser<'_> {
             && self.groups.enabled[1]
             && !self.groups.offset_coded[self.offset_tree(unit.channel)]
         {
-            // A chroma tree measures its own (half-size) block.
-            let shift = usize::from(separate);
-            if n.width >> shift > 64 || n.height >> shift > 64 || chroma_coded {
+            // A chroma tree measures its own (subsampled) block.
+            let (width, height) = self.sequence.scaled(separate, (n.width, n.height));
+            if width > 64 || height > 64 || chroma_coded {
                 self.groups.offset_index = self.chroma_offset_index(r)?;
                 let tree = self.offset_tree(unit.channel);
                 self.groups.offset_coded[tree] = true;

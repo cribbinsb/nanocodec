@@ -30,12 +30,16 @@ pub mod primaries {
     pub const BT601_525: u8 = 6;
 }
 
-/// Transfer characteristics code points (CICP §8.2) used by the presets.
+/// Transfer characteristics code points (CICP §8.2) used by the presets
+/// and the decoders.
 pub mod transfer {
     /// ITU-R BT.709.
     pub const BT709: u8 = 1;
     /// ITU-R BT.601 (SMPTE 170M; the same curve as BT.709).
     pub const BT601: u8 = 6;
+    /// IEC 61966-2-1 sRGB (with BT.709 primaries and the identity matrix,
+    /// AV1's sRGB colour config, §5.5.2).
+    pub const SRGB: u8 = 13;
 }
 
 /// Matrix coefficients code points (CICP §8.3) used by the presets.

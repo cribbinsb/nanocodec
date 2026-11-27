@@ -14,7 +14,7 @@ What: for each codec's medium rung, one screen of the landed build against itsel
 day's rotating draw, every stage (L1, L2, L3) and the long windows (600 f with keys every
 150, 900 f with keys every 300: --final-frames), so every point a later screen's anchor
 needs is in the cache. One aws_measure --batch on a warm Graviton box with GPU scoring
-(`--score auto`, its own fallback and budget). Its results change no decision: candidate
+(refused, never scored on a box, when the GPU cannot score; its own budget). Its results change no decision: candidate
 and anchor are the same build.
 """
 

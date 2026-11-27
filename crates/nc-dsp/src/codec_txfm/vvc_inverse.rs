@@ -11,11 +11,12 @@ use nc_common::BitDepth;
 use super::{HEVC_LEVEL_SCALE, HevcQuantizer, HevcTransform, VVC_RECT_LEVEL_SCALE};
 use crate::Dsp;
 
-/// The deepest samples the VVC inverse kernels take: Main 10 (H.266
-/// §A.3.2, `sps_bitdepth_minus8` at most 2). Deeper scaling shifts would
-/// overflow the 32-bit product clamp of the shared dequantiser
-/// (`hevc_dequant_product_limit`, `2^(16 + bdShift)`).
-const MAX_DEPTH: u32 = 10;
+/// The deepest samples the VVC inverse kernels take: Main 12 (H.266
+/// A.3.5, without extended precision). At 12 bits `bdShift` reaches 14
+/// (64x64, dependent quantisation), so the 32-bit product clamp of the
+/// shared dequantiser (`hevc_dequant_product_limit`, `2^(16 + bdShift)`)
+/// still holds; deeper shifts would overflow it.
+const MAX_DEPTH: u32 = 12;
 /// The largest `qP` at 8 bits (`QpBdOffset` 0).
 const MAX_EIGHT_BIT_QP: u8 = 63;
 /// `QpBdOffset = 6 · sps_bitdepth_minus8` (H.266 §7.4.3.4): QP steps per
@@ -94,11 +95,7 @@ fn square_inverse(
     out: &mut [i16],
     depth: BitDepth,
 ) {
-    if depth == BitDepth::EIGHT {
-        dsp.hevc_inverse(transform, coeffs, out);
-    } else {
-        crate::high_depth::inverse_whole_block(dsp, transform, coeffs, out, depth);
-    }
+    dsp.at(depth).hevc_inverse(transform, coeffs, out);
 }
 
 /// [`inverse`] of a block whose enclosing square transform has `AREA`

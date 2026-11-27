@@ -13,12 +13,15 @@
 use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 use super::{Convolve16Fn, DepthKernels, WIDTH_CLASSES};
-use crate::deblock::{Edge, H264MbEdges, h264_mb};
+use crate::deblock::scalar::{Line, chroma_line_at, luma_line_at};
+use crate::deblock::{Edge, H264EdgeParams, H264MbEdges, h264_mb};
 use crate::dispatch::{deblock_edge, h264_chroma_edge};
 use crate::mc::Filter;
 
 /// Luma reach of an edge (p3..q3) and lines per luma / chroma edge.
 const LUMA_REACH: usize = 4;
+/// Chroma reach (p1..q1).
+const CHROMA_REACH: usize = 2;
 const LUMA_LINES: usize = 16;
 /// Sides of the inverse transforms.
 const SIDE_4: usize = 4;
@@ -295,6 +298,74 @@ impl DepthKernels<'_> {
         edges: &H264MbEdges,
     ) {
         T::h264_deblock_mb_chroma_plane(self, plane, at, edges);
+    }
+
+    /// Filter one line across an H.264 luma edge with the scalar reference
+    /// (§8.7.2.3, §8.7.2.4): the line whose q0 sample is (`x`, `y`) of
+    /// `plane`, across a `vertical` edge (p samples to its left) or a
+    /// horizontal one (p samples above), with the bS and `tC0` of entry 0
+    /// of `edge` and its 8-bit thresholds. For edges whose bS and
+    /// thresholds change from line to line (H.264 MBAFF edges between frame
+    /// and field macroblocks, §8.7.1).
+    ///
+    /// # Panics
+    /// If a sample the line reads (p3..q3) lies outside `plane`, or bS
+    /// exceeds 4.
+    pub fn h264_deblock_luma_line<T: super::Pixel>(
+        self,
+        plane: &mut PlaneViewMut<'_, T>,
+        at: (usize, usize),
+        vertical: bool,
+        edge: &H264EdgeParams,
+    ) {
+        let line = self.line(plane, at, vertical, LUMA_REACH, edge);
+        luma_line_at(plane.data_mut(), &line, self.depth);
+    }
+
+    /// [`Self::h264_deblock_luma_line`] of a chroma edge (p1..q1).
+    ///
+    /// # Panics
+    /// As the luma method.
+    pub fn h264_deblock_chroma_line<T: super::Pixel>(
+        self,
+        plane: &mut PlaneViewMut<'_, T>,
+        at: (usize, usize),
+        vertical: bool,
+        edge: &H264EdgeParams,
+    ) {
+        let line = self.line(plane, at, vertical, CHROMA_REACH, edge);
+        chroma_line_at(plane.data_mut(), &line, self.depth);
+    }
+
+    /// One line of `edge` at `at` of `plane`, checked to lie inside it
+    /// with `reach` samples each side, its thresholds at this depth.
+    fn line<T: Sample>(
+        self,
+        plane: &PlaneViewMut<'_, T>,
+        at: (usize, usize),
+        vertical: bool,
+        reach: usize,
+        edge: &H264EdgeParams,
+    ) -> Line {
+        let checked = deblock_edge(
+            plane,
+            at,
+            vertical,
+            reach,
+            1,
+            edge.bs,
+            edge.tc0,
+            (edge.alpha, edge.beta),
+        );
+        let scaled = at_depth(checked, self.depth);
+        Line {
+            q0: scaled.base,
+            across: scaled.across,
+            bs: scaled.bs[0],
+            tc0: scaled.tc0[0],
+            alpha: scaled.alpha,
+            beta: scaled.beta,
+        }
     }
 
     /// The H.264 inverse 4x4 transform of scaled coefficients (raster

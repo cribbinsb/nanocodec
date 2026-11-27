@@ -225,9 +225,8 @@ const THREE_LAYER_HQ_SLOT_A: usize = 6;
 const THREE_LAYER_HQ_SLOT_B: usize = 7;
 
 /// Dedicated same-layer high-quality DPB slot (`0..8`) available to `spatial_id`
-/// for `structure.unified` without colliding with any layer's temporal hierarchy,
-/// disposable `T2` inter-layer scratch (`inter_layer_scratch_slot`), or hidden
-/// `T2` display scratch (`4..=5` in 2-layer, `6..=7` in 3-layer `T2`/`T3`).
+/// for `structure.unified` without colliding with any layer's temporal hierarchy
+/// or disposable `T2` inter-layer scratch (`inter_layer_scratch_slot`).
 #[must_use]
 pub const fn spatial_hq_slot(
     num_layers: u8,

@@ -126,7 +126,7 @@
 //! confirms each planned shape against the square plan: the variance model
 //! proposes, the coded cost decides.
 
-use std::cell::{LazyCell, OnceCell, RefCell};
+use std::cell::{Cell, LazyCell, OnceCell, RefCell};
 
 use nc_analysis::MotionAnalysis;
 use nc_analysis::preanalysis::PreAnalysis;
@@ -142,6 +142,7 @@ use crate::noise_skip::NoiseMap;
 use crate::params::PlannerParams;
 use crate::partition::Block;
 use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
+use crate::split_override::{Opening, OwedCells, SplitOverride, Survey};
 use crate::split_selector::{SelectorTerms, SplitEvidence};
 use crate::trial_inputs::TrialInputs;
 
@@ -387,6 +388,13 @@ pub(crate) struct Planner<'a, B: CodecBackend> {
     pub record_inputs: bool,
     /// The split selector's tuned correction (`split_selector::selector_terms`).
     pub selector_terms: Option<SelectorTerms>,
+    /// The split override (`planner.split_override`), `None` while off.
+    pub split_override: Option<SplitOverride>,
+    /// The cells owed a refinement, the override's second trigger (`None`:
+    /// no debts are planned).
+    pub owed: Option<OwedCells<'a>>,
+    /// The override's survey of the superblock being planned ([`Self::plan`]).
+    pub survey: Cell<Option<Survey>>,
 }
 
 /// The noise skip's test (`noise_skip.rs`) as the planner's noise split
@@ -491,6 +499,11 @@ impl<B: CodecBackend> Planner<'_, B> {
         *self.margins.borrow_mut() = (record_margins || self.record_inputs)
             .then(|| Box::new(NodeMargins::new(&sb, self.record_inputs)));
         let limits = self.limits(&sb);
+        let square = (sb.x, sb.y, sb.log2_size());
+        self.survey.set(
+            self.split_override
+                .map(|split| split.survey(self.motion, square, self.step)),
+        );
         self.plan_node(sb, limits, Known::NONE).1
     }
 
@@ -581,9 +594,15 @@ impl<B: CodecBackend> Planner<'_, B> {
     fn plan_node(&self, node: Block, limits: Limits, known: Known) -> (f32, Partition) {
         let inside = node.is_inside(self.width, self.height);
         let min_block = self.backend.min_block_log2();
+        let opening = if inside && node.log2_size() > min_block {
+            self.override_opening(&node)
+        } else {
+            Opening::Closed
+        };
         let can_split = node.log2_size() > min_block
             && (!inside
                 || node.log2_size() > limits.min_log2
+                || opening != Opening::Closed
                 || self.motion_opens_floor(&node, limits));
         let may_be_leaf = inside && node.log2_size() <= limits.max_log2;
         let lambda = self.backend.lambda() * self.params.lambda_scale;
@@ -600,7 +619,10 @@ impl<B: CodecBackend> Planner<'_, B> {
                 stats,
             )
         });
-        if can_split && leaf.is_some() && self.noise_quarters_disagree(&node) {
+        if can_split
+            && leaf.is_some()
+            && (opening == Opening::Force || self.noise_quarters_disagree(&node))
+        {
             return self.split(node, limits, children_known);
         }
         let is_static = leaf.is_some() && self.pre.is_some_and(|pre| is_static::<B>(pre, &node));
@@ -618,7 +640,10 @@ impl<B: CodecBackend> Planner<'_, B> {
             };
         }
         let leaf_cost = leaf.map(|(cost, _)| cost);
-        let selects = self.params.split_selector >= 0.5;
+        // Where the override allows the split, the selector's evidence
+        // decides it even on rungs that leave the selector off: the plain
+        // variance costs keep text blocks whole (`split_override.rs`).
+        let selects = self.params.split_selector >= 0.5 || opening == Opening::Allow;
         let guide = flip_guide::tree(self.params.flip_tree);
         let evidence = match &leaf {
             Some((_, stats)) if selects || self.record_inputs || guide.is_some() => {
@@ -754,6 +779,16 @@ impl<B: CodecBackend> Planner<'_, B> {
             .blocks
             .try_get((node.x >> log2) as isize, (node.y >> log2) as isize)
             .is_some_and(|b| b.split_sad as f32 <= ratio * b.whole_sad as f32)
+    }
+
+    /// What the split override (`split_override.rs`) does at `node`: past
+    /// the floor, depth removal and the split decision alike.
+    fn override_opening(&self, node: &Block) -> Opening {
+        self.survey.get().map_or(Opening::Closed, |survey| {
+            let square = (node.x, node.y, node.log2_size());
+            let owed = self.owed.is_some_and(|owed| owed.any_in(square));
+            survey.opening(square, owed)
+        })
     }
 
     fn noise_quarters_disagree(&self, node: &Block) -> bool {
@@ -1442,6 +1477,9 @@ mod tests {
             margins: RefCell::default(),
             record_inputs: false,
             selector_terms: None,
+            split_override: None,
+            owed: None,
+            survey: Cell::new(None),
         };
         planner.plan(Block::square(0, 0, 5), false)
     }

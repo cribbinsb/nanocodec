@@ -333,6 +333,12 @@ reader = "landing_conformance.py, tools/ci/*conformance*, tools/dev/conformance_
 regen = "tools/dev/conformance_fetch.py / vvc_conformance_fetch.py (downloads, minutes)"
 
 [[keep]]
+path = "work/av2-foreign"
+class = "tool"
+reader = "the AV2 foreign-stream corpus: tools/dev/av2_foreign/compare.py and block_trace.py, the nc-cli integration test av2_foreign (crates/nc-cli/tests/data/av2-foreign.md5)"
+regen = "vectors/: git clone of dav2d-test-data; streams/: tools/dev/av2_foreign/encode.sh (docs/handoff/av2.md, ~10 core-min of avmenc on the build box). Lost once before 2026-11-27 (undeclared)"
+
+[[keep]]
 path = "ext/vmafx"
 class = "tool"
 reader = "VMAFx source tree (docs/handoff/vmafx-gpu.md): new frozen builds are made from it"

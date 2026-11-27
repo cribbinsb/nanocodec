@@ -8,6 +8,7 @@
 use super::Tile;
 use super::record::BlockRecord;
 use super::size::BlockSize;
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 
 /// log2 of the largest transform side in 4x4 units (64 samples) and of the
@@ -277,7 +278,7 @@ fn split_type_context(size: BlockSize) -> usize {
 /// Splits up to this side (64 samples) are signalled.
 const SPLIT_MAX_UNITS: u32 = 16;
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// The luma transform layout of a block (dav2d `read_tx_part`): its
     /// partition, or a lossless block's transform size choice.
     pub(super) fn transform_partition(

@@ -62,10 +62,17 @@ pub(crate) mod generic;
 #[allow(unsafe_code)]
 pub(crate) mod h264_inverse8;
 #[allow(unsafe_code)]
+mod h264_levels;
+#[allow(unsafe_code)]
+mod h264_levels8;
+pub use h264_levels::{H264_ZIGZAG_4X4, h264_blocks_of_8x8, h264_coefficient_cost};
+pub use h264_levels8::H264_ZIGZAG_8X8;
+#[allow(unsafe_code)]
 pub(crate) mod inverse_add;
 #[allow(unsafe_code)]
 pub(crate) mod scalar;
 mod scaling_matrix;
+mod vvc_extended;
 pub(crate) mod vvc_forward;
 #[cfg(any(
     target_arch = "x86_64",
@@ -82,6 +89,7 @@ mod vvc_forward_narrow;
 mod vvc_forward_simd;
 pub(crate) mod vvc_inverse;
 pub use scaling_matrix::scale_coefficient;
+pub use vvc_extended::VvcExtendedBlock;
 mod vvc_lfnst;
 pub(crate) mod vvc_primary;
 pub(crate) use generic::{H264_MAX_LEVEL, scale_level as h264_scale_level};
@@ -791,6 +799,8 @@ pub(crate) type H264ForwardQuantizeMbFn = unsafe fn(
     q: &H264Quantizer,
     out: &mut [[i16; 64]; 4],
 ) -> [u32; 4];
+/// Drop sparse H.264 inter luma in one macroblock of four 8x8 transforms.
+type H264EliminateLuma8x8Fn = unsafe fn(&mut [[i16; 64]; 4], [u32; 4], (u32, u32)) -> u8;
 /// Inverse H.264 8x8 transform.
 pub(crate) type H264Inverse8Fn = unsafe fn(coeffs: &[i32; 64], out: &mut [i32; 64]);
 /// H.264 reconstruction of 4x4 blocks in place: scaling (`ls`, `shift`),
@@ -877,6 +887,8 @@ pub(crate) struct CodecTxfmFns {
     pub h264_hadamard_4x4: H264Blocks4Fn,
     pub h264_forward_8x8: H264Forward8Fn,
     pub h264_forward_quantize_mb: H264ForwardQuantizeMbFn,
+    pub h264_eliminate_luma_8x8: H264EliminateLuma8x8Fn,
+    pub h264_eliminate_luma_4x4: unsafe fn(&mut [[i16; 16]; 16], (u32, u32)) -> u8,
     pub h264_inverse_8x8: H264Inverse8Fn,
     pub h264_dequantize: H264ScaleFn,
     pub h264_add_inverse_4x4: H264AddInverse4Fn,

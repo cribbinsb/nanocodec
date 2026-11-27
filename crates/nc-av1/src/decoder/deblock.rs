@@ -27,7 +27,7 @@ use super::frame_header::quant::{MAX_SEGMENTS, SEG_LVL_ALT_LF_Y_V};
 use super::frame_header::{INTRA_FRAME, LoopFilter, TOTAL_REFS};
 use super::subset::Segments;
 use super::transform::{TxSize, chroma_block};
-use nc_common::{Picture, PlaneIndex, PlaneViewMut};
+use nc_common::{ChromaFormat, Picture, PlaneIndex, PlaneViewMut};
 use nc_dsp::{AV1_EDGE_LINES, Av1EdgeFilter, Av1FilterLength, EdgeRun};
 use nc_dsp::{DepthKernels, Pixel};
 
@@ -186,6 +186,8 @@ pub(super) struct EdgeMap {
     luma: PlaneSides,
     /// U and V share their areas (and sizes).
     chroma: PlaneSides,
+    /// The chroma subsampling (log2 per axis).
+    subsampling: (usize, usize),
     /// Scratch pending-run slots reused across every plane/direction pass
     /// (every pass drains its active slots back to `None`).
     pending: Vec<Option<Run>>,
@@ -193,22 +195,34 @@ pub(super) struct EdgeMap {
     lanes: nc_dsp::LoopFilterLanes,
 }
 
-/// A block's chroma plane size and transform size (log2 samples).
-fn chroma_sizes(block: BlockSize) -> ((u8, u8), (u8, u8)) {
-    let tx = TxSize::chroma(block);
-    (chroma_block(block), (tx.width_log2(), tx.height_log2()))
+/// A block's chroma plane size in a format subsampled by `subsampling`,
+/// and the size of its chroma transforms `tx` (log2 samples).
+fn chroma_sizes(block: BlockSize, subsampling: (usize, usize), tx: TxSize) -> ((u8, u8), (u8, u8)) {
+    (
+        chroma_block(block, subsampling),
+        (tx.width_log2(), tx.height_log2()),
+    )
 }
 
 impl EdgeMap {
-    /// Shape the map for a frame of `mi_cols` x `mi_rows` luma units
-    /// (4:2:0, both even). Stale records are never read: a unit an edge
-    /// reads across from is in the right column or bottom row of an area
-    /// inside the frame, written before the filter runs. Frames that are
-    /// not deblocked (`lf`'s luma levels both zero) record nothing.
-    pub(super) fn start_frame(&mut self, mi_cols: usize, mi_rows: usize, lf: &LoopFilter) {
+    /// Shape the map for a frame of `mi_cols` x `mi_rows` luma units (both
+    /// even) whose chroma is in `format`. Stale records are never read: a
+    /// unit an edge reads across from is in the right column or bottom row
+    /// of an area inside the frame, written before the filter runs. Frames
+    /// that are not deblocked (`lf`'s luma levels both zero) record
+    /// nothing.
+    pub(super) fn start_frame(
+        &mut self,
+        mi_cols: usize,
+        mi_rows: usize,
+        format: ChromaFormat,
+        lf: &LoopFilter,
+    ) {
         self.recording = deblocked(lf);
+        self.subsampling = format.subsampling();
+        let (ss_x, ss_y) = self.subsampling;
         self.luma.start_frame(mi_cols, mi_rows);
-        self.chroma.start_frame(mi_cols / 2, mi_rows / 2);
+        self.chroma.start_frame(mi_cols >> ss_x, mi_rows >> ss_y);
     }
     /// The areas recorded so far, as a bound for [`apply`].
     pub(super) fn mark(&self) -> AreaMark {
@@ -216,15 +230,18 @@ impl EdgeMap {
     }
     /// Record a block at luma unit (`mi_col`, `mi_row`), whose luma is one
     /// area of `luma_tx` transforms (`None` when its transform tree's
-    /// leaves are recorded with [`EdgeMap::leaf`]) and which carries its
-    /// chroma or not. Blocks starting outside the frame are not recorded.
+    /// leaves are recorded with [`EdgeMap::leaf`]) and whose chroma, when
+    /// it carries it, is coded in `chroma_tx` transforms (4x4 in lossless
+    /// blocks: §5.11.34 `residual` stores that size in
+    /// `LoopfilterTxSizes`, which §7.14.3 reads). Blocks starting outside
+    /// the frame are not recorded.
     #[inline]
     pub(super) fn block(
         &mut self,
         (mi_col, mi_row): (usize, usize),
         block: EdgeBlock,
         luma_tx: Option<(u8, u8)>,
-        chroma: bool,
+        chroma_tx: Option<TxSize>,
     ) {
         if !self.recording || mi_col >= self.luma.columns || mi_row >= self.luma.rows {
             return;
@@ -242,11 +259,12 @@ impl EdgeMap {
             };
             self.luma.record(area, [[l[0]; 2], [l[1]; 2]]);
         }
-        if chroma {
-            let (size, tx) = chroma_sizes(block.size);
+        if let Some(chroma_tx) = chroma_tx {
+            let (ss_x, ss_y) = self.subsampling;
+            let (size, tx) = chroma_sizes(block.size, self.subsampling, chroma_tx);
             let levels = [l[U_LEVEL], l[U_LEVEL + 1]];
             let area = Area {
-                origin: ((mi_col >> 1) as u16, (mi_row >> 1) as u16),
+                origin: ((mi_col >> ss_x) as u16, (mi_row >> ss_y) as u16),
                 size,
                 tx,
                 block: size,
@@ -418,16 +436,15 @@ pub(super) fn apply<T: Pixel>(
         if plane != PlaneIndex::Y && lf.level[index + 1] == 0 {
             continue;
         }
-        let ss = usize::from(plane != PlaneIndex::Y);
-        let areas = parts[ss].clone();
+        let areas = parts[usize::from(plane != PlaneIndex::Y)].clone();
         if areas.is_empty() {
             continue;
         }
         // The lane kernels' last group of a column reads and writes back
         // whole groups of lines, unchanged, past the frame: into the border,
         // which is extended again after the loop filters.
+        let size = recon.chroma_format().plane_size(plane, (width, height));
         let mut view = recon.plane_mut(plane).view_mut_to_end();
-        let size = ((width + ss) >> ss, (height + ss) >> ss);
         let sides = if plane == PlaneIndex::Y {
             &map.luma
         } else {
@@ -804,36 +821,50 @@ mod tests {
 
     #[test]
     fn chroma_sizes_follow_get_tx_size() {
+        let sizes = |w_log2, h_log2| {
+            let block = BlockSize::new(w_log2, h_log2).unwrap();
+            chroma_sizes(block, (1, 1), TxSize::chroma(block, (1, 1)))
+        };
         // 4x16 luma: 4x8 chroma; 128x128: 64x64 plane, 32x32 transforms;
         // 16x64: 8x32; 128x64: 64x32 plane, 32x32 transforms.
-        assert_eq!(
-            chroma_sizes(BlockSize::new(2, 4).unwrap()),
-            ((2, 3), (2, 3))
-        );
-        assert_eq!(
-            chroma_sizes(BlockSize::new(7, 7).unwrap()),
-            ((6, 6), (5, 5))
-        );
-        assert_eq!(
-            chroma_sizes(BlockSize::new(4, 6).unwrap()),
-            ((3, 5), (3, 5))
-        );
-        assert_eq!(
-            chroma_sizes(BlockSize::new(7, 6).unwrap()),
-            ((6, 5), (5, 5))
-        );
+        assert_eq!(sizes(2, 4), ((2, 3), (2, 3)));
+        assert_eq!(sizes(7, 7), ((6, 6), (5, 5)));
+        assert_eq!(sizes(4, 6), ((3, 5), (3, 5)));
+        assert_eq!(sizes(7, 6), ((6, 5), (5, 5)));
+    }
+
+    #[test]
+    fn lossless_chroma_records_its_4x4_transforms() {
+        // A lossless 32x32 block codes its 16x16 chroma in 4x4 transforms
+        // (§5.11.34): the chroma edges inside it are transform edges
+        // (Argon test8743_6421 and ten more filtered them as one 16x16).
+        let mut map = EdgeMap::default();
+        let deblocked = LoopFilter {
+            level: [1, 1, 1, 1],
+            ..LoopFilter::default()
+        };
+        map.start_frame(8, 8, ChromaFormat::Yuv420, &deblocked);
+        let block = EdgeBlock {
+            size: BlockSize::new(5, 5).unwrap(),
+            skipped_inter: false,
+            levels: [3, 4, 5, 6],
+        };
+        map.block((0, 0), block, Some((2, 2)), Some(TxSize::TX_4X4));
+        let area = map.chroma.areas[0];
+        assert_eq!((area.size, area.tx), ((4, 4), (2, 2)));
+        assert_eq!(map.chroma.right[3 * 4].tx_side(), 2);
     }
 
     #[test]
     fn frames_not_deblocked_record_nothing() {
         let mut map = EdgeMap::default();
-        map.start_frame(8, 4, &LoopFilter::default());
+        map.start_frame(8, 4, ChromaFormat::Yuv420, &LoopFilter::default());
         let block = EdgeBlock {
             size: BlockSize::new(4, 3).unwrap(),
             skipped_inter: false,
             levels: [0; 4],
         };
-        map.block((0, 0), block, Some((3, 3)), true);
+        map.block((0, 0), block, Some((3, 3)), Some(TxSize::TX_4X4));
         map.leaf::<u8>((0, 0), (3, 3), block);
         assert!(map.luma.areas.is_empty() && map.chroma.areas.is_empty());
     }
@@ -845,7 +876,7 @@ mod tests {
             level: [1, 1, 1, 1],
             ..LoopFilter::default()
         };
-        map.start_frame(8, 4, &deblocked);
+        map.start_frame(8, 4, ChromaFormat::Yuv420, &deblocked);
         let block = EdgeBlock {
             size: BlockSize::new(5, 4).unwrap(),
             skipped_inter: true,
@@ -853,7 +884,12 @@ mod tests {
         };
         // A 32x16 block at luma unit (4, 2): its right column (unit 11)
         // and bottom row (unit 5) are outside the 8x4-unit frame.
-        map.block((4, 2), block, Some((5, 4)), true);
+        map.block(
+            (4, 2),
+            block,
+            Some((5, 4)),
+            Some(TxSize::chroma(block.size, (1, 1))),
+        );
         assert!(
             map.luma
                 .right
@@ -869,7 +905,12 @@ mod tests {
             size: BlockSize::new(4, 3).unwrap(),
             ..block
         };
-        map.block((0, 0), block, Some((3, 3)), true);
+        map.block(
+            (0, 0),
+            block,
+            Some((3, 3)),
+            Some(TxSize::chroma(block.size, (1, 1))),
+        );
         let right = map.luma.right[3 * 4 + 1];
         assert_eq!((right.tx_side(), right.extent(), right.level(0)), (3, 3, 3));
         let bottom = map.luma.bottom[8 + 3];

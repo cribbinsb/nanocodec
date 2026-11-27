@@ -609,4 +609,109 @@ mod tests {
         assert!(receiver.take_keyframe_request());
         assert_eq!(receiver.take_lost_frames(), vec![65538, 65539]);
     }
+
+    /// Three VP9 pictures of two spatial layers (a key picture and two
+    /// inter pictures), each layer frame shown, as RTP packets.
+    fn two_layer_vp9_stream(inter_layer: InterLayer) -> Vec<Vec<u8>> {
+        // First bytes of a Profile 0 key and inter frame (VP9 §6.2).
+        const KEY: u8 = 0b1000_0010;
+        const INTER: u8 = 0b1000_0110;
+        let structure = LayerStructure {
+            spatial_sizes: vec![(320, 180), (640, 360)],
+            temporal_layers: 1,
+            inter_layer,
+        };
+        let mut packetizer = Packetizer::new(PacketizerConfig::new(PayloadFormat::Vp9)).unwrap();
+        let mut packets = Vec::new();
+        for picture in 0..3u64 {
+            let base = picture * 2;
+            let key = picture == 0;
+            let lower = key || inter_layer == InterLayer::Full;
+            let s0: Vec<u8> = std::iter::once(if key { KEY } else { INTER })
+                .chain((0..1500).map(|i| (i % 251) as u8))
+                .collect();
+            let s1: Vec<u8> = std::iter::once(INTER)
+                .chain((0..2500).map(|i| (i % 241) as u8))
+                .collect();
+            let s0_refs = if key { vec![] } else { vec![base - 2] };
+            let mut s1_refs = if key { vec![] } else { vec![base - 1] };
+            if lower {
+                s1_refs.push(base);
+            }
+            let frames = [
+                LayerFrame {
+                    range: Some(0..s0.len()),
+                    ..frame(0, base, &s0_refs, key)
+                },
+                LayerFrame {
+                    inter_layer: lower,
+                    range: Some(s0.len()..s0.len() + s1.len()),
+                    ..frame(1, base + 1, &s1_refs, key)
+                },
+            ];
+            let unit = [s0, s1].concat();
+            packets.extend(
+                packetizer
+                    .packetize(
+                        &unit,
+                        3000 * picture as u32,
+                        Some(UnitLayers {
+                            structure: &structure,
+                            frames: &frames,
+                        }),
+                    )
+                    .unwrap(),
+            );
+        }
+        packets
+    }
+
+    fn receive_vp9(packets: &[Vec<u8>]) -> Vec<ReceivedUnit> {
+        let mut receiver = Depacketizer::new(DepacketizerConfig::new(PayloadFormat::Vp9));
+        for packet in packets {
+            receiver.push(packet).unwrap();
+        }
+        receiver.flush();
+        std::iter::from_fn(|| receiver.pop()).collect()
+    }
+
+    fn forward(packets: &[Vec<u8>], mut filter: LayerFilter) -> Vec<Vec<u8>> {
+        packets
+            .iter()
+            .filter_map(|p| filter.filter(p).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn vp9_spatial_layers_arrive_whole_and_filter_by_layer() {
+        for inter_layer in [InterLayer::Full, InterLayer::KeyOnly] {
+            let packets = two_layer_vp9_stream(inter_layer);
+            let whole = receive_vp9(&packets);
+            assert_eq!(whole.len(), 3);
+            assert!(
+                whole
+                    .iter()
+                    .all(|u| u.complete && u.spatial_ids == vec![0, 1])
+            );
+
+            let base = receive_vp9(&forward(&packets, LayerFilter::vp9(inter_layer, 0, 0)));
+            assert_eq!(base.len(), 3);
+            assert!(base.iter().all(|u| u.complete && u.spatial_ids == vec![0]));
+
+            // K-SVC: the base goes to the upper layer's receiver on the key
+            // picture only.
+            let top = receive_vp9(&forward(&packets, LayerFilter::vp9(inter_layer, 1, 0)));
+            let expected: Vec<Vec<u8>> = match inter_layer {
+                InterLayer::Full => vec![vec![0, 1]; 3],
+                _ => vec![vec![0, 1], vec![1], vec![1]],
+            };
+            assert_eq!(
+                top.iter()
+                    .map(|u| u.spatial_ids.clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert!(top.iter().all(|u| u.complete));
+        }
+    }
 }

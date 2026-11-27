@@ -19,6 +19,7 @@ use super::motion::{DEFAULT_LEFT_EXTRA, Mv};
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::transform::LumaTransforms;
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 use nc_dsp::av2_dec::{ipred, mc};
 
@@ -85,7 +86,7 @@ struct BlockCopy {
     morph: bool,
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// An intra block-copy block: its syntax, transform partition,
     /// vector, prediction, residual and contexts; its luma transform
     /// layout for the loop filters.
@@ -303,6 +304,7 @@ impl Tile<'_, '_> {
         (bw4, bh4): (u32, u32),
         mv: Mv,
     ) -> Result<()> {
+        let depth = self.depth();
         let subsampled = u32::from(plane > 0);
         let (w, h) = (
             ((bw4 << UNIT_LOG2) >> subsampled) as usize,
@@ -340,7 +342,7 @@ impl Tile<'_, '_> {
         let destination = self
             .planes
             .offset(plane, row >> subsampled, column >> subsampled);
-        mc::put_bilinear(
+        mc::put_bilinear_at(
             &mut self.planes.data[plane],
             destination,
             stride,
@@ -349,6 +351,7 @@ impl Tile<'_, '_> {
             w + 1,
             (w, h),
             (phase(mv.x), phase(mv.y)),
+            depth,
         );
         self.window = window;
         Ok(())
@@ -359,6 +362,7 @@ impl Tile<'_, '_> {
     /// most 64x64, so never the cached scale of a larger one). Sources
     /// whose edges leave the tile stay unscaled.
     fn morph_block_copy(&mut self, record: &BlockRecord, size: BlockSize, mv: Mv) {
+        let depth = self.depth();
         let (bw4, bh4) = size.units();
         let (row, column) = (record.row, record.column);
         let b = self.bounds;
@@ -392,7 +396,7 @@ impl Tile<'_, '_> {
             };
         let stride = self.planes.stride[0] as isize;
         let plane = &self.planes.data[0];
-        let at = |y: i32, x: i32| i32::from(plane[(y as isize * stride + x as isize) as usize]);
+        let at = |y: i32, x: i32| plane[(y as isize * stride + x as isize) as usize].to_i32();
         let (block_x, block_y) = (samples(column), samples(row));
         let (mut sum_x, mut sum_y, mut sum_xy, mut sum_xx) = (0, 0, 0, 0);
         let mut add = |source: i32, own: i32| {
@@ -434,6 +438,7 @@ impl Tile<'_, '_> {
             stride,
             (alpha, beta),
             ((bw4 << UNIT_LOG2) as usize, (bh4 << UNIT_LOG2) as usize),
+            depth,
         );
     }
 }

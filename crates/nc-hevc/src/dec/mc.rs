@@ -12,8 +12,12 @@
 //! Written once over the sample type (`docs/handoff/high-bit-depth.md`):
 //! each plane's kernels run at that plane's depth, which sets the
 //! weighted-prediction shifts (`shift1 = 14 − BitDepth`, `shift2 = 15 −
-//! BitDepth`) and scales the explicit offsets (`o << (BitDepth − 8)`,
-//! eq. 8-252 with `high_precision_offsets_enabled_flag` 0).
+//! BitDepth`); the explicit offsets arrive scaled to it (`slice`).
+//!
+//! Chroma planes follow the picture's chroma format (none for 4:0:0): a
+//! block's chroma is its luma rectangle subsampled per axis, and the luma
+//! vector addresses it in eighth chroma samples scaled per axis
+//! (`crate::inter::Component`, §8.5.3.2.10).
 
 #![allow(
     clippy::many_single_char_names,
@@ -23,6 +27,8 @@
 use nc_common::{BitDepth, BitDepths, Picture, Plane, PlaneIndex};
 use nc_dsp::{DepthKernels, Dsp, HevcWeights, Pixel};
 use nc_encoder::Mv;
+
+use crate::inter::Component;
 
 use super::slice::Weight;
 
@@ -50,11 +56,14 @@ pub(super) struct Buffers {
     preds: [Vec<i16>; 2],
 }
 
-/// Predict the `w`x`h` luma block at `(x, y)` and its chroma into `dst`
-/// from one or two sources.
+/// Predict the `w`x`h` luma block at `(x, y)` and its chroma (`chroma`: how
+/// vectors address the chroma planes, `None` for 4:0:0) into `dst` from one
+/// or two sources.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn predict<T: Pixel>(
     dsp: &Dsp,
     depths: BitDepths,
+    chroma: Option<Component>,
     buffers: &mut Buffers,
     dst: &mut Picture<T>,
     (x, y): (usize, usize),
@@ -62,24 +71,64 @@ pub(super) fn predict<T: Pixel>(
     sources: &[Source<'_, T>],
     denominators: Denominators,
 ) {
-    let explicit = sources.iter().any(|s| s.weight.is_some());
-    for (c, plane) in PlaneIndex::ALL.into_iter().enumerate() {
-        let kernels = dsp.at(depths.plane(c));
-        let shift = usize::from(c > 0);
-        let (px, py, pw, ph) = (x >> shift, y >> shift, w >> shift, h >> shift);
+    let mut target = Target {
+        dsp,
+        depths,
+        buffers,
+        dst,
+        sources,
+        denominators,
+    };
+    target.plane(0, Component::Luma, (x, y), (w, h));
+    if let Some(chroma) = chroma {
+        let (sx, sy) = chroma.subsampling();
+        for c in 1..3 {
+            target.plane(c, chroma, (x >> sx, y >> sy), (w >> sx, h >> sy));
+        }
+    }
+}
+
+/// Where [`predict`] writes and what it predicts from.
+struct Target<'p, 's, T: Pixel> {
+    dsp: &'p Dsp,
+    depths: BitDepths,
+    buffers: &'p mut Buffers,
+    dst: &'p mut Picture<T>,
+    sources: &'p [Source<'s, T>],
+    denominators: Denominators,
+}
+
+impl<T: Pixel> Target<'_, '_, T> {
+    /// The `w`x`h` block at `(x, y)` of plane `c`, addressed as `component`.
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "one copy per plane kind: luma's component is constant"
+    )]
+    fn plane(
+        &mut self,
+        c: usize,
+        component: Component,
+        (x, y): (usize, usize),
+        (w, h): (usize, usize),
+    ) {
+        let sources = self.sources;
+        let plane = PlaneIndex::ALL[c];
+        let kernels = self.dsp.at(self.depths.plane(c));
+        let explicit = sources.iter().any(|s| s.weight.is_some());
         if sources.len() == 1
             && !explicit
             && fast_uni(
                 kernels,
                 sources[0].picture.plane(plane),
-                dst.plane_mut(plane),
-                (px, py),
-                (pw, ph),
+                self.dst.plane_mut(plane),
+                (x, y),
+                (w, h),
                 sources[0].mv,
-                c > 0,
+                component,
             )
         {
-            continue;
+            return;
         }
         if sources.len() == 2
             && !explicit
@@ -90,42 +139,43 @@ pub(super) fn predict<T: Pixel>(
                     sources[1].picture.plane(plane),
                 ],
                 [sources[0].mv, sources[1].mv],
-                &mut buffers.preds[0],
-                dst.plane_mut(plane),
-                (px, py),
-                (pw, ph),
-                c > 0,
+                &mut self.buffers.preds[0],
+                self.dst.plane_mut(plane),
+                (x, y),
+                (w, h),
+                component,
             )
         {
-            continue;
+            return;
         }
-        for (pred, source) in buffers.preds.iter_mut().zip(sources) {
+        for (pred, source) in self.buffers.preds.iter_mut().zip(sources) {
             crate::inter::predict_samples(
                 kernels,
                 source.picture.plane(plane),
-                (px, py),
-                (pw, ph),
+                (x, y),
+                (w, h),
                 source.mv,
-                c > 0,
+                component,
                 pred,
             );
         }
-        let [first, second] = &buffers.preds;
+        let [first, second] = &self.buffers.preds;
         let second = if sources.len() == 2 { second } else { first };
         let weights = combination(
             sources,
             c,
-            denominators[usize::from(c > 0)],
+            self.denominators[usize::from(c > 0)],
             kernels.depth(),
         );
-        let mut view = dst
+        let mut view = self
+            .dst
             .plane_mut(plane)
-            .region_mut(px as isize, py as isize, pw, ph)
+            .region_mut(x as isize, y as isize, w, h)
             .expect("prediction block inside the picture");
         kernels.hevc_weighted_prediction_centered(
             weights,
-            &first[..pw * ph],
-            &second[..pw * ph],
+            &first[..w * h],
+            &second[..w * h],
             &mut view,
         );
     }
@@ -158,9 +208,7 @@ fn combination<T: Pixel>(
     let [w0, w1] = [0, 1].map(|i| sources.get(i).and_then(|s| s.weight).unwrap_or_default());
     // Weights lie in −128..=255 (§7.4.7.3).
     let weight = |w: &Weight| w.weight[c] as i16;
-    // Offsets are coded at 8-bit scale (eq. 8-252, 8-253: `o0 = offset <<
-    // (BitDepth − 8)`).
-    let offset = |w: &Weight| w.offset[c] << depth.above_eight();
+    let offset = |w: &Weight| w.offset[c];
     if bi {
         HevcWeights {
             w0: weight(&w0),
@@ -193,6 +241,11 @@ fn block_pieces(n: usize) -> Option<[usize; 2]> {
 /// split into power-of-two pieces of at least 4 samples (interpolation is
 /// separable per sample, so pieces predict exactly as the whole block).
 /// Returns whether it ran.
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "inlined into each plane kind of `Target::plane`, as before it existed"
+)]
 fn fast_uni<T: Pixel>(
     kernels: DepthKernels<'_>,
     reference: &Plane<T>,
@@ -200,7 +253,7 @@ fn fast_uni<T: Pixel>(
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv,
-    chroma: bool,
+    component: Component,
 ) -> bool {
     let (Some(ws), Some(hs)) = (block_pieces(w), block_pieces(h)) else {
         return false;
@@ -210,7 +263,7 @@ fn fast_uni<T: Pixel>(
         let mut view = dst
             .region_mut(x as isize, y as isize, w, h)
             .expect("prediction block inside the picture");
-        crate::inter::predict_into(kernels, reference, (x, y), mv, chroma, &mut view);
+        crate::inter::predict_into(kernels, reference, (x, y), mv, component, &mut view);
         return true;
     }
     let mut oy = 0;
@@ -221,7 +274,7 @@ fn fast_uni<T: Pixel>(
             let mut view = dst
                 .region_mut(bx as isize, by as isize, pw, ph)
                 .expect("prediction block inside the picture");
-            crate::inter::predict_into(kernels, reference, (bx, by), mv, chroma, &mut view);
+            crate::inter::predict_into(kernels, reference, (bx, by), mv, component, &mut view);
             ox += pw;
         }
         oy += ph;
@@ -232,6 +285,11 @@ fn fast_uni<T: Pixel>(
 /// Default bi-prediction through [`DepthKernels::predict_compound`] +
 /// [`DepthKernels::hevc_predict_bi`] for power-of-two and AMP partitions.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "inlined into each plane kind of `Target::plane`, as before it existed"
+)]
 fn fast_bi<T: Pixel>(
     kernels: DepthKernels<'_>,
     refs: [&Plane<T>; 2],
@@ -240,13 +298,13 @@ fn fast_bi<T: Pixel>(
     dst: &mut Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
-    chroma: bool,
+    component: Component,
 ) -> bool {
     let (Some(ws), Some(hs)) = (block_pieces(w), block_pieces(h)) else {
         return false;
     };
     if ws[1] == 0 && hs[1] == 0 {
-        crate::inter::predict_samples(kernels, refs[0], (x, y), (w, h), mvs[0], chroma, first);
+        crate::inter::predict_samples(kernels, refs[0], (x, y), (w, h), mvs[0], component, first);
         let mut view = dst
             .region_mut(x as isize, y as isize, w, h)
             .expect("prediction block inside the picture");
@@ -255,7 +313,7 @@ fn fast_bi<T: Pixel>(
             refs[1],
             (x, y),
             mvs[1],
-            chroma,
+            component,
             &first[..w * h],
             &mut view,
         );
@@ -272,7 +330,7 @@ fn fast_bi<T: Pixel>(
                 (bx, by),
                 (pw, ph),
                 mvs[0],
-                chroma,
+                component,
                 first,
             );
             let mut view = dst
@@ -283,7 +341,7 @@ fn fast_bi<T: Pixel>(
                 refs[1],
                 (bx, by),
                 mvs[1],
-                chroma,
+                component,
                 &first[..pw * ph],
                 &mut view,
             );
@@ -341,6 +399,7 @@ mod tests {
         predict(
             &dsp,
             BitDepths::EIGHT,
+            Some(Component::CHROMA_420),
             &mut Buffers::default(),
             &mut dst,
             (x, y),

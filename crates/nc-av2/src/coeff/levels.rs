@@ -468,12 +468,16 @@ static LOW_FREQUENCY_LEVELS: [u8; 256] = clip_table(LOW_FREQUENCY_CLIP);
 static LOW_RANGE_LEVELS: [u8; 256] = clip_table(LOW_RANGE_CLIP);
 
 /// Half the sum of the first `N` clipped neighbours, rounded up.
+#[inline]
 fn magnitude<const N: usize>(neighbours: Neighbours, clips: &[u8; 256]) -> usize {
-    let sum: u32 = neighbours[..N]
-        .iter()
-        .map(|&level| u32::from(clips[usize::from(level)]))
-        .sum();
-    sum.div_ceil(2) as usize
+    let cap = clips[255];
+    let mut sum = 0u32;
+    let mut i = 0;
+    while i < N {
+        sum += u32::from(neighbours[i].min(cap));
+        i += 1;
+    }
+    ((sum + 1) >> 1) as usize
 }
 
 /// Context of a hidden-parity DC level (AVM `get_base_ctx_ph`): half the

@@ -15,6 +15,8 @@ pub(super) struct Saved {
     transforms: super::transform_syntax::Models,
     sbt: super::sbt::Models,
     ibc: super::ibc::Models,
+    palette: super::palette::Models,
+    palette_predictor: super::palette::Predictor,
     groups: super::quant_groups::Models,
     filters: filter_syntax::Models,
     cclm: [Context; 2],
@@ -35,6 +37,8 @@ impl Parser<'_> {
             transforms: self.transform_models.clone(),
             sbt: self.sbt_models.clone(),
             ibc: self.ibc_models.clone(),
+            palette: self.palette_models.clone(),
+            palette_predictor: self.palette_predictor.clone(),
             groups: self.groups.models(),
             filters: filters.clone(),
             cclm: self.cclm,
@@ -56,11 +60,16 @@ impl Parser<'_> {
         self.transform_models = saved.transforms.clone();
         self.sbt_models = saved.sbt.clone();
         self.ibc_models = saved.ibc.clone();
+        self.palette_models = saved.palette.clone();
+        self.palette_predictor = saved.palette_predictor.clone();
         self.groups.restart(saved.groups);
         *filters = saved.filters.clone();
         self.cclm = saved.cclm;
         self.joint = saved.joint;
         self.constraint = saved.constraint;
         self.ref_index = saved.ref_index;
+        // StatCoeff restarts with the contexts, not synchronised (VTM
+        // `riceStatReset` at each tile and entropy-coding-sync row start).
+        self.rice.reset_statistics(self.sequence.depth.bits());
     }
 }

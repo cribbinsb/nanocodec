@@ -94,6 +94,25 @@ pub const fn quantizer_step_q3(qindex: u8) -> i32 {
     QUANTIZER_STEPS_Q3[qindex as usize]
 }
 
+/// The dequantizer step of any quantizer index, in Q3 like
+/// [`quantizer_step_q3`] (dav2d `dav2d_dq_lookup`): 64 for lossless, else a
+/// 24-entry mantissa table doubling every 24 indices, so it extends past
+/// 255 for deeper sequences.
+#[must_use]
+pub const fn dequantizer_step(qindex: i32) -> u32 {
+    const LOSSLESS_STEP: u32 = 64;
+    const OCTAVE: i32 = 24;
+    const MANTISSAS: [u32; 24] = [
+        40, 41, 43, 44, 45, 47, 48, 49, 51, 52, 54, 55, 57, 59, 60, 62, 64, 66, 68, 70, 72, 74, 76,
+        78,
+    ];
+    if qindex == 0 {
+        return LOSSLESS_STEP;
+    }
+    let index = qindex - 1;
+    MANTISSAS[(index % OCTAVE) as usize] << (index / OCTAVE)
+}
+
 /// Smallest frame-level quantizer delta (AVM `read_delta_q`: a present
 /// flag, then a 7-bit two's-complement value).
 pub const MIN_DELTA_Q: i8 = -64;

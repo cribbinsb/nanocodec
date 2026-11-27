@@ -50,6 +50,11 @@ pub struct SplitSearch {
     /// The vectors the stream's level allows: a quadrant never takes one
     /// past it.
     pub range: MvRange,
+    /// The engine's split override opens this macroblock
+    /// (`CodecBackend::sub_block_motion`): neither the uniform-vector test
+    /// nor the SATD gate keeps it 16x16 (rows of screen text snap one whole
+    /// sample apart, inside the uniform limit, at a small 16x16 SATD).
+    pub forced: bool,
 }
 /// `uCoff` of the `mvd` UEG3 binarization (§9.3.2.3).
 const MVD_PREFIX_MAX: u32 = 9;
@@ -191,11 +196,12 @@ pub fn choose_partition(
     search: SplitSearch,
 ) -> (Motion, Option<Motion>) {
     let unsplit = ((MbPartition::P16x16, [mv16; 4]), None);
-    let uniform = search.uniform_qpel.is_some_and(|limit| {
-        sub_vectors
-            .iter()
-            .all(|v| (v.x - mv16.x).abs() <= limit && (v.y - mv16.y).abs() <= limit)
-    });
+    let uniform = !search.forced
+        && search.uniform_qpel.is_some_and(|limit| {
+            sub_vectors
+                .iter()
+                .all(|v| (v.x - mv16.x).abs() <= limit && (v.y - mv16.y).abs() <= limit)
+        });
     if uniform {
         return unsplit;
     }
@@ -203,7 +209,7 @@ pub fn choose_partition(
     // and gate the search (a well-predicted macroblock gains nothing from
     // splitting).
     let (cache, total16) = seed_with_16x16(dsp, source, origin, mv16, luma16);
-    if (total16 as f32) < search.gate_satd * 256.0 {
+    if !search.forced && (total16 as f32) < search.gate_satd * 256.0 {
         return unsplit;
     }
     let mut costs = QuadrantCosts {

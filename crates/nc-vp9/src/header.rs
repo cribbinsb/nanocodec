@@ -106,9 +106,6 @@ const TX_SIZES: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FrameHeader {
     pub key: bool,
-    /// `show_frame` (`VP9 §6.2`): `false` on `S0` when `S1` follows in the
-    /// same Annex B superframe, `true` otherwise.
-    pub show_frame: bool,
     /// `error_resilient_mode`: decodable without the previous frame's
     /// vectors or adapted probabilities (default contexts, no adaptation).
     pub error_resilient: bool,
@@ -184,7 +181,7 @@ impl FrameHeader {
         bits.put_bits(0, 2); // profile 0
         bits.put_bit(false); // show_existing_frame
         bits.put_bit(!self.key); // frame_type
-        bits.put_bit(self.show_frame); // show_frame
+        bits.put_bit(true); // show_frame: our encoder shows every frame
         bits.put_bit(self.error_resilient);
         if self.key {
             bits.put_bits(SYNC_CODE, 24);
@@ -192,9 +189,6 @@ impl FrameHeader {
             bits.put_bit(self.colour.full_range); // color_range
             write_size(&mut bits, self.width, self.height);
         } else {
-            if !self.show_frame {
-                bits.put_bit(false); // intra_only = 0 (VP9 §6.2)
-            }
             if !self.error_resilient {
                 bits.put_bits(0, 2); // reset_frame_context: none
             }
@@ -407,7 +401,6 @@ mod tests {
     fn colour_byte(colour: ColourSpace) -> u8 {
         let header = FrameHeader {
             key: true,
-            show_frame: true,
             error_resilient: false,
             context_index: 0,
             refresh_context: true,

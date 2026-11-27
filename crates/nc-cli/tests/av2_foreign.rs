@@ -1,7 +1,8 @@
 //! AV2 streams of other encoders (avmenc v1.0.0 and the dav2d test
 //! vectors) that the decoder decodes bit-exactly: each must still give
 //! avmdec's frame hashes, listed in `data/av2-foreign.md5`
-//! (`tools/dev/av2_foreign/compare.py --write-hashes`).
+//! (`tools/dev/av2_foreign/compare.py --write-hashes`; it lists apart the
+//! streams where the pinned dav2d disagrees with avmdec, the reference).
 //!
 //! The streams are not in the repository (`tools/dev/av2_foreign/` fetches
 //! and encodes them into `$NC_AV2_FOREIGN`, by default
@@ -10,18 +11,25 @@
 //! must exist (the nightly verifier sets it, so a missing corpus fails there),
 //! and with a corpus a missing stream fails.
 //!
-//! Three small streams are in the repository (`data/av2-odd-size`, avmenc
-//! v1.0.0 at `--cpu-used=9`, with and without `--lag-in-frames=0`, of a
-//! synthetic pattern at 202x98 and 201x99): frames whose size is not a
-//! multiple of 8, whose prediction reads the reference's coded area past
-//! the frame, and odd sizes. They are always checked.
+//! Small streams are in the repository and always checked: three in
+//! `data/av2-odd-size` (avmenc v1.0.0 at `--cpu-used=9`, with and without
+//! `--lag-in-frames=0`, of a synthetic pattern at 202x98 and 201x99):
+//! frames whose size is not a multiple of 8, whose prediction reads the
+//! reference's coded area past the frame, and odd sizes; one in
+//! `data/av2-sb256` (`tools/dev/av2_foreign/encode.sh bodycam_airport_360p
+//! ra 210 5 --sb-size=256`): 256x256 superblocks whose large TIP and
+//! compound blocks predict in 64x64 pieces.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const HASHES: &str = include_str!("data/av2-foreign.md5");
 
 /// Where the corpus keeps its streams, relative to its root.
-const STREAM_DIRS: [&str; 2] = ["streams", "vectors/dav2d-test-data/avm"];
+const STREAM_DIRS: [&str; 3] = [
+    "streams",
+    "vectors/dav2d-test-data/avm",
+    "vectors/dav2d-test-data/avm-10bit",
+];
 
 fn corpus() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os("NC_AV2_FOREIGN") {
@@ -58,10 +66,12 @@ fn check_stream(name: &str, stream: &Path, expected: &[&str]) {
     );
 }
 
-#[test]
-fn checked_in_odd_size_streams_decode_to_the_reference_hashes() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/av2-odd-size");
-    for line in include_str!("data/av2-odd-size/hashes.md5").lines() {
+/// Check every stream of a checked-in directory against its `hashes.md5`.
+fn check_checked_in(dir: &str, hashes: &str) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(dir);
+    for line in hashes.lines() {
         let mut fields = line.split_whitespace();
         let name = fields.next().expect("a stream name");
         let expected: Vec<&str> = fields.collect();
@@ -70,12 +80,23 @@ fn checked_in_odd_size_streams_decode_to_the_reference_hashes() {
 }
 
 #[test]
+fn checked_in_odd_size_streams_decode_to_the_reference_hashes() {
+    check_checked_in("av2-odd-size", include_str!("data/av2-odd-size/hashes.md5"));
+}
+
+#[test]
+fn checked_in_256_superblock_stream_decodes_to_the_reference_hashes() {
+    check_checked_in("av2-sb256", include_str!("data/av2-sb256/hashes.md5"));
+}
+
+#[test]
 fn foreign_streams_decode_to_the_reference_hashes() {
     let Some(root) = corpus() else {
         eprintln!("AV2 foreign-stream corpus not present: nothing checked");
         return;
     };
-    for line in HASHES.lines() {
+    // `#` lines are notes (compare.py marks the avmdec-only streams).
+    for line in HASHES.lines().filter(|line| !line.starts_with('#')) {
         let mut fields = line.split_whitespace();
         let name = fields.next().expect("a stream name");
         let expected: Vec<&str> = fields.collect();

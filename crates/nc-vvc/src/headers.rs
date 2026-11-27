@@ -33,10 +33,45 @@ pub(crate) const PREFIX_APS_NUT: u8 = 17;
 pub(crate) const PREFIX_SEI_NUT: u8 = 23;
 pub(crate) const IDR_N_LP: u8 = 8;
 pub(crate) const TRAIL_NUT: u8 = 0;
+/// Gradual decoding refresh picture (H.266 Table 5): an inter picture that
+/// starts an intra-refresh sweep.
+pub(crate) const GDR_NUT: u8 = 10;
+
+/// How a picture is coded, as its NAL unit type and picture header say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PictureKind {
+    /// An IDR picture (`IDR_N_LP`), all intra.
+    Idr,
+    /// A trailing inter picture (`TRAIL_NUT`).
+    Trailing,
+    /// A GDR inter picture starting an intra-refresh sweep (`GDR_NUT`):
+    /// decoding from it, pictures are exact from POC `recovery_poc_cnt`
+    /// later on (`ph_recovery_poc_cnt`, §7.4.3.8).
+    Gdr {
+        /// `ph_recovery_poc_cnt`.
+        recovery_poc_cnt: u32,
+    },
+}
+
+impl PictureKind {
+    /// Whether the picture has inter slices.
+    pub(crate) fn inter(self) -> bool {
+        self != Self::Idr
+    }
+
+    /// The NAL unit type of its slices.
+    pub(crate) fn nal_type(self) -> u8 {
+        match self {
+            Self::Idr => IDR_N_LP,
+            Self::Trailing => TRAIL_NUT,
+            Self::Gdr { .. } => GDR_NUT,
+        }
+    }
+}
 const MAIN_10_PROFILE: u32 = 1;
-/// `general_level_idc` of an SPS without timing (level 6, §A.4.1): streams
-/// coded before every SPS carried its frame rate.
-const UNTIMED_LEVEL_IDC: u32 = 96;
+/// Bits of the SPS before `general_level_idc` (IDs, sublayers, chroma
+/// format, CTU size, the PTL flag, profile and tier).
+pub(crate) const SPS_BITS_BEFORE_LEVEL: usize = 24;
 /// Bits of `ph_pic_order_cnt_lsb` (`sps_log2_max_pic_order_cnt_lsb_minus4`
 /// plus 4): references within 126 pictures (`references.rs`).
 pub(crate) const POC_BITS: u32 = 8;
@@ -63,20 +98,6 @@ pub(crate) struct Timing {
 }
 
 impl Timing {
-    /// The `general_level_idc` of a `geometry` stream timed by `timing`:
-    /// the lowest level its coded size and picture rate fit (shared with
-    /// HEVC, `nc_encoder::luma_level`); level 6 without timing, so the
-    /// decoder's SPS comparison still accepts older streams.
-    pub(crate) fn level_idc(timing: Option<Self>, geometry: &Geometry) -> u32 {
-        timing.map_or(UNTIMED_LEVEL_IDC, |t| {
-            let rate = FrameRate {
-                num: t.time_scale,
-                den: t.num_units_in_tick,
-            };
-            luma_level(geometry.coded_width, geometry.coded_height, rate).vvc_idc()
-        })
-    }
-
     /// The timing the engine's (resolved) signalling asks for.
     pub(crate) fn from_signal(signal: TimingSignal, rate: FrameRate) -> Self {
         Self {
@@ -170,6 +191,9 @@ pub(crate) struct Tools {
     /// `sps_long_term_ref_pics_flag`: the long-term reference
     /// (`ltr.interval`) is a long-term entry of the lists (`references.rs`).
     pub long_term_refs: bool,
+    /// `sps_gdr_enabled_flag`: intra-refresh sweeps start with GDR pictures
+    /// ([`PictureKind::Gdr`]).
+    pub gdr: bool,
 }
 
 impl Tools {
@@ -207,6 +231,7 @@ impl Default for Tools {
             long_term_slot: false,
             poc_bits: POC_BITS,
             long_term_refs: false,
+            gdr: false,
         }
     }
 }
@@ -242,8 +267,9 @@ pub(crate) fn sps_prefix(
     chroma_qp: &ChromaQpTable,
     tools: Tools,
     timing: Option<Timing>,
+    level_idc: u32,
 ) -> BitWriter {
-    let mut w = sps_head(geometry, tools, timing);
+    let mut w = sps_head(geometry, tools, level_idc);
     chroma_qp.write(&mut w);
     sps_tools(&mut w, tools);
     sps_timing(&mut w, timing, 1);
@@ -251,18 +277,30 @@ pub(crate) fn sps_prefix(
 }
 
 /// The SPS up to `sps_same_qp_table_for_chroma_flag` (§7.3.2.4), with the
-/// transform flags of `tools` (the largest transform, MTS) and the level
-/// of `timing` ([`Timing::level_idc`]).
-pub(crate) fn sps_head(geometry: &Geometry, tools: Tools, timing: Option<Timing>) -> BitWriter {
-    sps_layered_head(geometry, tools, timing, 1)
+/// transform flags of `tools` (the largest transform, MTS) and
+/// `general_level_idc` ([`level_idc`]).
+pub(crate) fn sps_head(geometry: &Geometry, tools: Tools, level_idc: u32) -> BitWriter {
+    sps_layered_head(geometry, tools, level_idc, 1)
 }
 
-fn sps_layered_head(
+/// The `general_level_idc` of a `geometry` stream at `frame_rate`
+/// delivered at `rate`: the lowest level that fits (shared with HEVC,
+/// `nc_encoder::luma_level`).
+pub(crate) fn level_idc(
     geometry: &Geometry,
-    tools: Tools,
-    timing: Option<Timing>,
-    layers: u8,
-) -> BitWriter {
+    frame_rate: FrameRate,
+    rate: Option<nc_encoder::StreamRate>,
+) -> u32 {
+    luma_level(
+        geometry.coded_width,
+        geometry.coded_height,
+        frame_rate,
+        rate,
+    )
+    .vvc_idc()
+}
+
+fn sps_layered_head(geometry: &Geometry, tools: Tools, level_idc: u32, layers: u8) -> BitWriter {
     let &Geometry {
         width,
         height,
@@ -280,7 +318,7 @@ fn sps_layered_head(
     w.put_bit(true); // PTL/DPB/HRD present
     w.put_bits(MAIN_10_PROFILE, 7);
     w.put_bit(false); // main tier
-    w.put_bits(Timing::level_idc(timing, geometry), 8); // general_level_idc
+    w.put_bits(level_idc, 8); // general_level_idc
     w.put_bit(true); // frame only
     w.put_bit(false); // multilayer
     w.put_bit(false); // general constraints absent
@@ -290,7 +328,7 @@ fn sps_layered_head(
     }
     w.byte_align_zero();
     w.put_bits(0, 8); // subprofiles
-    w.put_bit(false); // GDR
+    w.put_bit(tools.gdr); // sps_gdr_enabled_flag
     w.put_bit(false); // reference picture resampling
     w.put_ue(coded_w as u32);
     w.put_ue(coded_h as u32);
@@ -406,7 +444,7 @@ pub(crate) fn sps_bits_before_mts(geometry: &Geometry) -> usize {
     let mut after = BitWriter::new();
     write_mts(&mut after, None);
     write_after_mts(&mut after);
-    sps_head(geometry, Tools::default(), None).bit_len() - after.bit_len()
+    sps_head(geometry, Tools::default(), 0).bit_len() - after.bit_len()
 }
 
 /// Bits of the inter partitioning fields and the transform sizes after them.
@@ -579,8 +617,9 @@ pub(crate) fn sps(
     chroma_qp: &ChromaQpTable,
     tools: Tools,
     timing: Option<Timing>,
+    level_idc: u32,
 ) -> Vec<u8> {
-    sps_layered(geometry, colour, chroma_qp, tools, timing, 1)
+    sps_layered(geometry, colour, chroma_qp, tools, timing, level_idc, 1)
 }
 
 /// SPS for the shared engine's low-delay temporal structure.
@@ -590,12 +629,13 @@ pub(crate) fn sps_layered(
     chroma_qp: &ChromaQpTable,
     tools: Tools,
     timing: Option<Timing>,
+    level_idc: u32,
     layers: u8,
 ) -> Vec<u8> {
     let mut w = if layers == 1 {
-        sps_prefix(geometry, chroma_qp, tools, timing)
+        sps_prefix(geometry, chroma_qp, tools, timing, level_idc)
     } else {
-        let mut w = sps_layered_head(geometry, tools, timing, layers);
+        let mut w = sps_layered_head(geometry, tools, level_idc, layers);
         chroma_qp.write(&mut w);
         sps_tools(&mut w, tools);
         sps_timing(&mut w, timing, layers);
@@ -708,7 +748,11 @@ pub(crate) fn slice(
 ) -> Vec<u8> {
     slice_layered(
         qp,
-        inter,
+        if inter {
+            PictureKind::Trailing
+        } else {
+            PictureKind::Idr
+        },
         poc,
         alf,
         block_qp,
@@ -722,20 +766,25 @@ pub(crate) fn slice(
 /// `references` (`references.rs`).
 pub(crate) fn slice_layered(
     qp: u32,
-    inter: bool,
+    kind: PictureKind,
     poc: u16,
     alf: Option<SliceAlf>,
     block_qp: bool,
     temporal_mvp: Option<bool>,
     references: &crate::references::Syntax,
 ) -> Vec<u8> {
+    let inter = kind.inter();
+    let gdr = match kind {
+        PictureKind::Gdr { recovery_poc_cnt } => Some(recovery_poc_cnt),
+        PictureKind::Idr | PictureKind::Trailing => None,
+    };
     let mut w = BitWriter::new();
     w.put_bit(true); // PH embedded in slice header
-    w.put_bit(!inter); // IRAP
+    w.put_bit(!inter || gdr.is_some()); // ph_gdr_or_irap_pic_flag
     w.put_bit(inter && references.non_reference); // ph_non_ref_pic_flag
-    if !inter {
-        w.put_bit(false);
-    } // not GDR
+    if !inter || gdr.is_some() {
+        w.put_bit(gdr.is_some()); // ph_gdr_pic_flag
+    }
     w.put_bit(inter); // inter slices allowed
     if inter {
         w.put_bit(true);
@@ -743,6 +792,9 @@ pub(crate) fn slice_layered(
     w.put_ue(0); // PPS id
     let lsb_mask = (1u32 << references.poc_bits) - 1;
     w.put_bits(u32::from(poc) & lsb_mask, references.poc_bits); // ph_pic_order_cnt_lsb
+    if let Some(recovery_poc_cnt) = gdr {
+        w.put_ue(recovery_poc_cnt); // ph_recovery_poc_cnt
+    }
     if block_qp {
         // ph_cu_qp_delta_subdiv_intra_slice, then (P pictures)
         // ph_cu_qp_delta_subdiv_inter_slice: quantization groups are CTBs
@@ -758,6 +810,9 @@ pub(crate) fn slice_layered(
         }
         w.put_bit(false); // ph_mvd_l1_zero_flag; no RPL in PH
         w.put_ue(1); // P slice
+        if gdr.is_some() {
+            w.put_bit(false); // sh_no_output_of_prior_pics_flag (GDR_NUT)
+        }
         slice_alf(&mut w, alf);
         write_reference_list(&mut w, poc, references);
         w.put_ue(0); // empty local RPL1

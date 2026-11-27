@@ -21,9 +21,11 @@ use crate::backend::{Dsp, FrameKind, HORZ_ALIKE, PlaneIndex, VERT_ALIKE, gather}
 use crate::decoder_range::SymbolReader;
 use crate::segment_id::{MAX_SEGMENTS, SegmentMap, neg_deinterleave};
 use crate::tables::Partition;
-use crate::tables::{AC_QLOOKUP, AC_QLOOKUP_10, DC_QLOOKUP, DC_QLOOKUP_10};
+use crate::tables::{
+    AC_QLOOKUP, AC_QLOOKUP_10, AC_QLOOKUP_12, DC_QLOOKUP, DC_QLOOKUP_10, DC_QLOOKUP_12,
+};
 use nc_common::decode::DecodeError;
-use nc_common::{BitDepth, Picture};
+use nc_common::{BitDepth, ChromaFormat, Picture};
 use nc_dsp::{DepthKernels, Pixel};
 use std::rc::Rc;
 
@@ -183,6 +185,11 @@ pub(super) struct FrameDecoder<'a, T: Pixel> {
     cdef: bool,
     /// `mono_chrome`: no block carries chroma.
     mono_chrome: bool,
+    /// The sequence's chroma format, and each plane's subsampling
+    /// (`(0, 0)`, then `subsampling_x`, `subsampling_y` twice), which block
+    /// geometry reads per plane.
+    chroma_format: ChromaFormat,
+    plane_subsampling: [(usize, usize); 3],
     /// Coefficient scratch, kept zero between transform blocks: a block
     /// clears only the positions it coded (zeroing whole arrays per block
     /// was once the largest single cost of native AV1 decode).
@@ -203,6 +210,7 @@ pub(super) struct SequenceTools {
     pub intra_edge_filter: bool,
     pub cdef: bool,
     pub mono_chrome: bool,
+    pub chroma_format: ChromaFormat,
     pub bit_depth: BitDepth,
 }
 
@@ -267,6 +275,8 @@ struct BlockPos {
     mi_col: usize,
     mi_row: usize,
     size: BlockSize,
+    /// The frame's chroma subsampling (`subsampling_x`, `subsampling_y`).
+    subsampling: (u8, u8),
     /// `HasChroma`, derived once.
     chroma: bool,
     /// 4x4 rows of the tile above the block and columns left of it.
@@ -276,23 +286,26 @@ struct BlockPos {
 
 impl BlockPos {
     /// The `size` block at 4x4 unit (`mi_col`, `mi_row`) of `tile`, in a
-    /// frame with chroma unless `mono_chrome`.
+    /// frame with chroma subsampled by `subsampling` unless `mono_chrome`.
     fn new(
         mi_col: usize,
         mi_row: usize,
         size: BlockSize,
-        mono_chrome: bool,
+        (mono_chrome, subsampling): (bool, (usize, usize)),
         tile: &TileBounds,
     ) -> Self {
-        // `HasChroma` (§5.11.5, 4:2:0): a block 4 wide (high) at an even
-        // column (row) leaves its chroma to the block after it.
-        let thin = |mi4: usize, at: usize| mi4 == 1 && at.is_multiple_of(2);
-        let chroma =
-            !mono_chrome && !thin(size.height_mi(), mi_row) && !thin(size.width_mi(), mi_col);
+        // `HasChroma` (§5.11.5): along a subsampled axis, a block 4 wide
+        // (high) at an even column (row) leaves its chroma to the block
+        // after it.
+        let thin = |ss: usize, mi4: usize, at: usize| ss == 1 && mi4 == 1 && at.is_multiple_of(2);
+        let chroma = !mono_chrome
+            && !thin(subsampling.1, size.height_mi(), mi_row)
+            && !thin(subsampling.0, size.width_mi(), mi_col);
         Self {
             mi_col,
             mi_row,
             size,
+            subsampling: (subsampling.0 as u8, subsampling.1 as u8),
             chroma,
             tile_rows_above: mi_row - tile.row_start,
             tile_cols_left: mi_col - tile.col_start,
@@ -302,18 +315,29 @@ impl BlockPos {
     fn has_chroma(self) -> bool {
         self.chroma
     }
-    /// (`AvailU`, `AvailL`) of `plane`, inside the tile; the chroma of a
-    /// 4-wide (high) block starts a unit further left (up) (§5.11.5
-    /// `AvailUChroma`, `AvailLChroma`).
+    /// (`AvailU`, `AvailL`) of `plane`, inside the tile; along a
+    /// subsampled axis the chroma of a 4-wide (high) block starts a unit
+    /// further left (up) (§5.11.5 `AvailUChroma`, `AvailLChroma`).
     fn available(self, plane: PlaneIndex) -> (bool, bool) {
         if plane == PlaneIndex::Y {
             return (self.tile_rows_above > 0, self.tile_cols_left > 0);
         }
-        let reach = |mi4: usize| if mi4 == 1 { 2 } else { 1 };
+        let reach = |ss: u8, mi4: usize| if ss == 1 && mi4 == 1 { 2 } else { 1 };
         (
-            self.tile_rows_above >= reach(self.size.height_mi()),
-            self.tile_cols_left >= reach(self.size.width_mi()),
+            self.tile_rows_above >= reach(self.subsampling.1, self.size.height_mi()),
+            self.tile_cols_left >= reach(self.subsampling.0, self.size.width_mi()),
         )
+    }
+    /// The subsampling of `plane` (`(0, 0)` for luma).
+    fn plane_subsampling(self, plane: PlaneIndex) -> (usize, usize) {
+        if plane == PlaneIndex::Y {
+            (0, 0)
+        } else {
+            (
+                usize::from(self.subsampling.0),
+                usize::from(self.subsampling.1),
+            )
+        }
     }
     /// The block's 4x4 units (width, height).
     fn units(self) -> (usize, usize) {
@@ -321,14 +345,34 @@ impl BlockPos {
     }
 }
 
+/// Coefficient contexts of each plane over `units` luma 4x4 units along an
+/// axis whose chroma is subsampled by `ss`.
+fn plane_contexts(units: usize, ss: usize) -> [Vec<u8>; 3] {
+    [vec![0; units], vec![0; units >> ss], vec![0; units >> ss]]
+}
+
+/// The luma units a block's chroma covers: its own, widened along a
+/// subsampled axis to the whole 8-sample area of a 4-sample side.
+fn chroma_area(block: BlockPos) -> ((usize, usize), (usize, usize)) {
+    let (ss_x, ss_y) = block.plane_subsampling(PlaneIndex::U);
+    let (w4, h4) = block.units();
+    (
+        (block.mi_col & !ss_x, block.mi_row & !ss_y),
+        (w4.max(1 << ss_x), h4.max(1 << ss_y)),
+    )
+}
+
+/// `BitDepth − 8` of 10-bit samples: the middle `Dc_Qlookup` table.
+const TEN_BITS_ABOVE_EIGHT: u32 = 2;
+
 /// Dequantiser steps of `base_q_idx` with the DC and AC deltas of a plane
 /// at `depth` (§7.12.2 `dc_q`, `ac_q`: `Dc_Qlookup[(BitDepth − 8) >> 1]`).
 fn steps(base_q_idx: u32, (dc_delta, ac_delta): (i32, i32), depth: BitDepth) -> Steps {
     let q = |delta: i32| (base_q_idx as i32 + delta).clamp(0, DC_QLOOKUP.len() as i32 - 1) as usize;
-    let (dc, ac) = if depth.above_eight() == 0 {
-        (&DC_QLOOKUP, &AC_QLOOKUP)
-    } else {
-        (&DC_QLOOKUP_10, &AC_QLOOKUP_10)
+    let (dc, ac) = match depth.above_eight() {
+        0 => (&DC_QLOOKUP, &AC_QLOOKUP),
+        TEN_BITS_ABOVE_EIGHT => (&DC_QLOOKUP_10, &AC_QLOOKUP_10),
+        _ => (&DC_QLOOKUP_12, &AC_QLOOKUP_12),
     };
     Steps {
         dc: i32::from(dc[q(dc_delta)]),
@@ -355,8 +399,12 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let margin = MAX_SUPERBLOCK_MI;
         let sb_mi = sequence_tools.superblock.width_mi();
         maps.blocks.start_frame(mi_cols);
-        maps.edges
-            .start_frame(mi_cols, mi_rows, &header.loop_filter);
+        maps.edges.start_frame(
+            mi_cols,
+            mi_rows,
+            sequence_tools.chroma_format,
+            &header.loop_filter,
+        );
         maps.cdef.start_frame(mi_cols, mi_rows);
         if header.kind == FrameKind::Inter || header.allow_intrabc {
             maps.motion.start_frame(mi_cols, sb_mi);
@@ -386,25 +434,25 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let base_q_idx = header.base_q_idx;
         let (lossless, tx_types_coded) = (header.lossless[0], header.tx_types_coded[0]);
         let bit_depth = sequence_tools.bit_depth;
+        let (ss_x, ss_y) = sequence_tools.chroma_format.subsampling();
         let depth = depth_of::<T>(bit_depth);
         let plane_steps = header
             .quant_deltas
             .map(|deltas| steps(header.base_q_idx, deltas, depth));
-        let restoration = header
-            .restoration
-            .any()
-            .then(|| LrUnitReader::new(header.restoration, header.size));
+        let restoration = header.restoration.any().then(|| {
+            LrUnitReader::new(
+                header.restoration,
+                header.size,
+                sequence_tools.chroma_format,
+            )
+        });
         Self {
             levels: LevelTable::new(&header.loop_filter, header.segments.as_ref()),
             header,
             cdfs,
             maps,
-            above: [
-                vec![0; mi_cols + margin],
-                vec![0; mi_cols / 2 + margin / 2],
-                vec![0; mi_cols / 2 + margin / 2],
-            ],
-            left: [vec![0; sb_mi], vec![0; sb_mi / 2], vec![0; sb_mi / 2]],
+            above: plane_contexts(mi_cols + margin, ss_x),
+            left: plane_contexts(sb_mi, ss_y),
             steps: plane_steps,
             block_steps: plane_steps,
             block_q: base_q_idx,
@@ -423,8 +471,13 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             bit_depth,
             txfm: TxContexts::new(mi_cols),
             tile: TileBounds::frame(mi_cols, mi_rows),
-            palette: screen_content
-                .then(|| Box::new(palette::PaletteState::new(mi_cols, depth.bits()))),
+            palette: screen_content.then(|| {
+                Box::new(palette::PaletteState::new(
+                    mi_cols,
+                    depth.bits(),
+                    (ss_x, ss_y),
+                ))
+            }),
             decoded: DecodedUnits::new(mi_cols, mi_rows, sequence_tools.superblock),
             uv_smooth: ChromaSmooth::new(mi_cols),
             filter_intra: sequence_tools.filter_intra,
@@ -432,6 +485,8 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             intra_edge_filter: sequence_tools.intra_edge_filter,
             cdef: sequence_tools.cdef,
             mono_chrome: sequence_tools.mono_chrome,
+            chroma_format: sequence_tools.chroma_format,
+            plane_subsampling: [(0, 0), (ss_x, ss_y), (ss_x, ss_y)],
             restoration,
             previous_segments: None,
             mv_frame,
@@ -442,6 +497,11 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
     #[inline]
     pub(super) fn depth(&self) -> BitDepth {
         depth_of::<T>(self.bit_depth)
+    }
+    /// The subsampling of `plane` (`(0, 0)` for luma).
+    #[inline]
+    pub(super) fn subsampling(&self, plane: PlaneIndex) -> (usize, usize) {
+        self.plane_subsampling[plane as usize]
     }
     /// The kernels at the samples' depth.
     #[inline]
@@ -593,6 +653,17 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let sub = size
             .subsize(partition)
             .ok_or(DecodeError::Malformed("AV1 partition of a block size"))?;
+        // §5.11.4: every block's chroma must have a size
+        // (`get_plane_residual_size` valid), which in 4:2:2 rules out the
+        // partitions with blocks taller than wide (dav1d refuses them).
+        if self.chroma_format == ChromaFormat::Yuv422
+            && matches!(
+                partition,
+                Partition::Vert | Partition::Vert4 | Partition::VertA | Partition::VertB
+            )
+        {
+            return Err(DecodeError::Malformed("AV1 vertical partition in 4:2:2"));
+        }
         if partition == Partition::Split {
             for (dy, dx) in [(0, 0), (0, half), (half, 0), (half, half)] {
                 self.partition(r, mi_col + dx, mi_row + dy, sub)?;
@@ -703,7 +774,16 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         mi_row: usize,
         size: BlockSize,
     ) -> Result<(), DecodeError> {
-        let block = BlockPos::new(mi_col, mi_row, size, self.mono_chrome, &self.tile);
+        let block = BlockPos::new(
+            mi_col,
+            mi_row,
+            size,
+            (
+                self.mono_chrome,
+                self.plane_subsampling[PlaneIndex::U as usize],
+            ),
+            &self.tile,
+        );
         let inter_frame = self.header.kind == FrameKind::Inter;
         let near = self
             .maps
@@ -990,9 +1070,12 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             levels: self.block_levels(INTRA_FRAME, 0),
         };
         let luma_tx = (tx.width_log2(), tx.height_log2());
-        self.maps
-            .edges
-            .block(at, edge_block, Some(luma_tx), block.has_chroma());
+        self.maps.edges.block(
+            at,
+            edge_block,
+            Some(luma_tx),
+            self.recorded_chroma_tx(block),
+        );
         self.intra_residual(r, block, &modes, skip, tx)?;
         let y_mode = modes.luma.mode.symbol() as u8;
         self.maps.blocks.fill(
@@ -1005,9 +1088,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             self.intra_records(r, block, &modes, skip);
         }
         if self.intra_edge_filter && block.has_chroma() {
-            // The chroma covers whole 8x8 luma areas.
-            let origin = (block.mi_col & !1, block.mi_row & !1);
-            let span = (units.0.max(2), units.1.max(2));
+            let (origin, span) = chroma_area(block);
             self.uv_smooth
                 .fill(origin, span, modes.smooth(PlaneIndex::U));
         }
@@ -1083,8 +1164,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let units = block.units();
         self.decoded.mark(at, units);
         if self.intra_edge_filter && block.has_chroma() {
-            let origin = (block.mi_col & !1, block.mi_row & !1);
-            let span = (units.0.max(2), units.1.max(2));
+            let (origin, span) = chroma_area(block);
             self.uv_smooth.fill(origin, span, false);
         }
         if let Some(palette) = &mut self.palette {

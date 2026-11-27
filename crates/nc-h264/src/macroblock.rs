@@ -592,6 +592,10 @@ pub fn transform_macroblock(
 /// The luma half of [`transform_macroblock`]: the residual of `luma`
 /// transformed and quantised into `out` (whose kind and patterns the caller
 /// reset), the quadrants in `zero_quadrants` (8x8 kind) left uncoded.
+///
+/// Sparse luma elimination for 8x8 transform blocks, with the same
+/// per-quadrant and macroblock thresholds as 4x4, uses
+/// [`Dsp::h264_eliminate_luma_8x8`] with the quantiser's counts.
 // Always inlined: `transform_macroblock` ran this code inline before the
 // split; as a call it cost the macroblock coder 0.2 % more instructions.
 #[allow(clippy::too_many_arguments)]
@@ -662,10 +666,16 @@ pub fn transform_luma(
         ResidualKind::Inter => {
             dsp.h264_quantize_4x4(&mut out.luma, luma_q);
             apply_planned_dead_zone(out.luma.as_flattened_mut(), min_level);
-            eliminate_sparse_luma(&mut out.luma, &quantizers.elimination)
+            let limits = &quantizers.elimination;
+            dsp.h264_eliminate_luma_4x4(&mut out.luma, (limits.luma_8x8, limits.luma_mb))
         }
         ResidualKind::Inter8x8 => {
-            eliminate_sparse_luma_8x8(&mut out.luma_8x8, nonzero_8x8, &quantizers.elimination)
+            let limits = &quantizers.elimination;
+            dsp.h264_eliminate_luma_8x8(
+                &mut out.luma_8x8,
+                nonzero_8x8,
+                (limits.luma_8x8, limits.luma_mb),
+            )
         }
         ResidualKind::Intra4x4 | ResidualKind::Intra8x8 => {
             unreachable!("I_NxN luma is coded block by block")
@@ -1340,90 +1350,6 @@ pub struct Elimination {
     pub chroma_ac: u32,
 }
 
-/// Cost of a lone ±1 level by the number of zeros before it in scan order
-/// (JM `COEFF_COST4x4`); any level beyond ±1 makes the block "expensive".
-const COEFF_COST_BY_RUN: [u32; 16] = [3, 2, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-const EXPENSIVE_COEFF_COST: u32 = 9;
-
-/// The elimination cost of one 4x4 block's levels (raster), skipping the
-/// first `first` scan positions.
-fn coefficient_cost(levels: &[i16; 16], first: usize) -> u32 {
-    if all_zero(levels) {
-        return 0;
-    }
-    let mut cost = 0;
-    let mut run = 0usize;
-    for &pos in &ZIGZAG_4X4[first..] {
-        match levels[pos].unsigned_abs() {
-            0 => run += 1,
-            1 => {
-                cost += COEFF_COST_BY_RUN[run];
-                run = 0;
-            }
-            _ => return EXPENSIVE_COEFF_COST,
-        }
-    }
-    cost
-}
-
-/// Drop cheap, sparse inter luma residual (per 8x8, then the whole
-/// macroblock) and return `CodedBlockPatternLuma`.
-fn eliminate_sparse_luma(levels: &mut [[i16; 16]; 16], limits: &Elimination) -> u8 {
-    let mut total = 0;
-    for b8 in 0..4 {
-        let blocks = blocks_of_8x8(b8);
-        let cost: u32 = blocks
-            .iter()
-            .map(|&blk| coefficient_cost(&levels[blk], 0))
-            .sum();
-        if cost < limits.luma_8x8 {
-            for blk in blocks {
-                levels[blk] = [0; 16];
-            }
-        } else {
-            total += cost;
-        }
-    }
-    if total < limits.luma_mb {
-        *levels = [[0; 16]; 16];
-    }
-    (0..4).fold(0u8, |cbp, b8| {
-        let nonzero = blocks_of_8x8(b8).iter().any(|&blk| !all_zero(&levels[blk]));
-        cbp | (u8::from(nonzero) << b8)
-    })
-}
-
-/// Cost of a lone ±1 level in an 8x8 block by the number of zeros before it
-/// in scan order (JM `COEFF_COST8x8`, frame scan).
-const COEFF_COST_8X8_BY_RUN: [u32; 24] = [
-    3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-];
-
-/// The elimination cost of one 8x8 block's levels (raster).
-fn coefficient_cost_8x8(levels: &[i16; 64], nonzero: u32) -> u32 {
-    // The quantiser counted the non-zero levels: the scan stops after the
-    // last one instead of walking all 64 positions (most coded blocks hold
-    // a handful of low-frequency levels).
-    let mut remaining = nonzero;
-    let mut cost = 0;
-    let mut run = 0usize;
-    for &pos in &ZIGZAG_8X8 {
-        if remaining == 0 {
-            break;
-        }
-        match levels[pos].unsigned_abs() {
-            0 => run += 1,
-            1 => {
-                cost += COEFF_COST_8X8_BY_RUN.get(run).copied().unwrap_or(0);
-                run = 0;
-                remaining -= 1;
-            }
-            _ => return EXPENSIVE_COEFF_COST,
-        }
-    }
-    cost
-}
-
 /// [`nc_encoder::apply_planned_dead_zone`] (the planned step's dead zone,
 /// [`MbQuantizers::with_planned_step`]) where it can zero a level. Below
 /// the λ-headroom cap `min_level` is 1, which zeroes nothing, so the pass
@@ -1439,42 +1365,12 @@ fn apply_planned_dead_zone(levels: &mut [i16], min_level: i32) {
 /// level is kept.
 const NO_DEAD_ZONE: i32 = 1;
 
-/// [`eliminate_sparse_luma`] for 8x8 transform blocks, with the same
-/// per-8x8 and per-macroblock thresholds. `nonzero` holds each block's
-/// count of non-zero levels (from the quantiser).
-fn eliminate_sparse_luma_8x8(
-    levels: &mut [[i16; 64]; 4],
-    mut nonzero: [u32; 4],
-    limits: &Elimination,
-) -> u8 {
-    let mut total = 0;
-    for (block, count) in levels.iter_mut().zip(nonzero.iter_mut()) {
-        if *count == 0 {
-            continue;
-        }
-        let cost = coefficient_cost_8x8(block, *count);
-        if cost < limits.luma_8x8 {
-            *block = [0; 64];
-            *count = 0;
-        } else {
-            total += cost;
-        }
-    }
-    if total < limits.luma_mb {
-        if nonzero.iter().any(|&c| c != 0) {
-            *levels = [[0; 64]; 4];
-        }
-        return 0;
-    }
-    (0..4).fold(0u8, |cbp, b8| cbp | (u8::from(nonzero[b8] != 0) << b8))
-}
-
 /// Drop cheap, sparse inter chroma AC residual (both components together).
 fn eliminate_sparse_chroma_ac(ac: &mut [[[i16; 16]; 4]; 2], limits: &Elimination) {
     let cost: u32 = ac
         .iter()
         .flatten()
-        .map(|block| coefficient_cost(block, 1))
+        .map(|block| nc_dsp::h264_coefficient_cost(block, 1))
         .sum();
     if cost < limits.chroma_ac {
         *ac = [[[0; 16]; 4]; 2];
@@ -1488,16 +1384,7 @@ pub fn all_zero(levels: &[i16]) -> bool {
     levels.iter().fold(0, |acc, &c| acc | c) == 0
 }
 
-/// The four 4x4 blocks (`by * 4 + bx`) of 8x8 block `b8` (raster quadrants).
-pub fn blocks_of_8x8(b8: usize) -> [usize; 4] {
-    let (x, y) = (2 * (b8 % 2), 2 * (b8 / 2));
-    [
-        y * 4 + x,
-        y * 4 + x + 1,
-        (y + 1) * 4 + x,
-        (y + 1) * 4 + x + 1,
-    ]
-}
+pub use nc_dsp::h264_blocks_of_8x8 as blocks_of_8x8;
 
 #[cfg(test)]
 mod tests {

@@ -24,6 +24,8 @@ use crate::decode::DecodeError;
 
 /// `ivlCurrRange` / `codIRange` after initialisation.
 const INITIAL_RANGE: u32 = 510;
+/// `ivlCurrRange` after the bypass alignment of H.265 §9.3.4.3.6.
+const ALIGNED_RANGE: u32 = 256;
 /// Bits of the offset (and of the range after renormalisation).
 const OFFSET_BITS: u32 = 9;
 /// Position of the lowest offset bit in the window.
@@ -199,6 +201,13 @@ impl<'a> CabacReader<'a> {
     #[must_use]
     pub fn range(&self) -> u32 {
         self.range
+    }
+
+    /// The alignment before bypass bins of `cabac_bypass_alignment_enabled_flag`
+    /// (H.265 §9.3.4.3.6): `ivlCurrRange = 256`, after which each bypass
+    /// bin is one raw bit of the offset.
+    pub fn align_bypass(&mut self) {
+        self.range = ALIGNED_RANGE;
     }
 
     /// Load the next whole bytes below the valid bits (`lookahead` must be

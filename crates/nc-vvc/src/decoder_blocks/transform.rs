@@ -1,7 +1,7 @@
 //! H.266 decoder QP derivation and rectangular inverse residuals via shared DSP:
 //! each coded plane's levels to its 16-bit residual (`Transform::residuals`).
 use super::{Sequence, SliceHeader, Unit};
-use nc_dsp::{DepthKernels, VvcLfnst, VvcTransformKind};
+use nc_dsp::{DepthKernels, VvcExtendedBlock, VvcLfnst, VvcTransformKind};
 
 /// Inverse-scale and inverse-transform one non-zero plane of `transform` from
 /// its sparse `(pos, level)` entries into `residual_out[..size.0 * size.1]`,
@@ -17,27 +17,30 @@ pub(super) fn decode_plane_residual(
         &SliceHeader,
         Option<&crate::decoder_headers::ScalingLists>,
     ),
-    coeffs: &[(u16, i16)],
+    coeffs: super::Levels<'_>,
     factors: &mut Vec<u8>,
     level_buf: &mut [i32; 64 * 64],
     residual_out: &mut [i16],
 ) {
     let area = size.0 * size.1;
-    for &(pos, val) in coeffs {
-        level_buf[usize::from(pos)] = i32::from(val);
-    }
+    coeffs.scatter(&mut level_buf[..]);
     let levels = &level_buf[..area];
     let residual = &mut residual_out[..area];
     let channel = usize::from(plane != 0);
     let qp_val = qp(unit.quant(), transform.joint, plane, sequence, header);
+    let qp_val = if unit.act {
+        colour_transform_qp(qp_val, transform.joint, plane, sequence)
+    } else {
+        qp_val
+    };
     if transform.skip[plane] {
-        dsp.vvc_inverse_skip(
-            size,
-            levels,
-            qp_val.max(4 + 6 * sequence.tools.min_qp_ts),
-            unit.bdpcm[channel],
-            residual,
-        );
+        let qp = qp_val.max(4 + 6 * sequence.tools.min_qp_ts);
+        if sequence.range.extended_precision {
+            let block = extended(size, (qp, false), None, sequence);
+            dsp.vvc_inverse_skip_extended(block, unit.bdpcm[channel], levels, residual);
+        } else {
+            dsp.vvc_inverse_skip(size, levels, qp, unit.bdpcm[channel], residual);
+        }
     } else {
         let scaling = Scaling {
             qp: qp_val,
@@ -55,9 +58,7 @@ pub(super) fn decode_plane_residual(
             residual,
         );
     }
-    for &(pos, _) in coeffs {
-        level_buf[usize::from(pos)] = 0;
-    }
+    coeffs.clear(&mut level_buf[..]);
 }
 
 /// Each coded plane's levels to its residual, at the kernels' depth (the
@@ -94,7 +95,7 @@ pub(crate) fn inverse_residuals(
                 } else {
                     transform.chroma_block.unwrap()
                 };
-                let size = (block.width() >> channel, block.height() >> channel);
+                let size = sequence.scaled(plane != 0, (block.width(), block.height()));
                 let qp = qp(quant, transform.joint, plane, sequence, header);
                 let levels = &transform.levels[plane];
                 let residual = &mut transform.residuals[plane];
@@ -152,12 +153,14 @@ fn inverse_transform(
     levels: &[i32],
     residual: &mut [i16],
 ) {
+    // CCLM chroma takes the collocated luma mode, unmapped (VTM
+    // `xInvLfnst`); other chroma its `IntraPredModeC`.
     let direction = if unit.mip.is_some() {
         0
     } else if unit.channel == 0 || unit.chroma_mode >= 67 {
         unit.luma_mode
     } else {
-        unit.chroma_mode
+        super::reconstruct::chroma_direction(unit, sequence)
     };
     let lfnst = (unit.lfnst != 0 && (plane == 0 || !unit.combined)).then(|| VvcLfnst {
         index: unit.lfnst,
@@ -179,8 +182,18 @@ fn inverse_transform(
         lists,
         factors,
     } = scaling;
-    if let Some(lists) = lists.filter(|_| super::scaling_lists::applies(sequence, lfnst.is_some()))
-    {
+    // With ACT, the SPS may keep the matrices to one colour space.
+    let colour_space = sequence.tools.act_scaling != Some(unit.act);
+    let lists =
+        lists.filter(|_| colour_space && super::scaling_lists::applies(sequence, lfnst.is_some()));
+    if sequence.range.extended_precision {
+        let matrix = lists.map(|lists| {
+            super::scaling_lists::factors(lists, unit.inter.is_none(), plane, size, factors);
+            &factors[..]
+        });
+        let block = extended(size, (qp, dependent), matrix, sequence);
+        dsp.vvc_inverse_extended(block, (kinds, lfnst), levels, residual);
+    } else if let Some(lists) = lists {
         let intra = unit.inter.is_none();
         super::scaling_lists::factors(lists, intra, plane, size, factors);
         dsp.vvc_inverse_with_matrix(
@@ -196,6 +209,22 @@ fn inverse_transform(
         dsp.vvc_inverse_lfnst(size, lfnst, levels, qp, dependent, residual);
     } else {
         dsp.vvc_inverse_primary(size, kinds, levels, qp, dependent, residual);
+    }
+}
+
+/// One block of extended-precision inverse scaling and transform
+/// (`sps_extended_precision_flag`, §7.4.3.22).
+fn extended<'a>(
+    size: (usize, usize),
+    quantizer: (u8, bool),
+    matrix: Option<&'a [u8]>,
+    sequence: &Sequence,
+) -> VvcExtendedBlock<'a> {
+    VvcExtendedBlock {
+        size,
+        quantizer,
+        matrix,
+        log2_range: sequence.log2_transform_range(),
     }
 }
 
@@ -227,6 +256,17 @@ pub(super) fn qp(
 
 /// The largest QP (`QpY`, chroma QPs) at every depth (H.266 §7.4.3.4).
 const MAX_QP: i32 = 63;
+
+/// The QP offsets of ACT CUs' Y, Cb, Cr and joint `CbCr` residuals (H.266
+/// §8.7.1: `ActQpOffsetY` and the others; −5, 1, 3, 1).
+const ACT_QP_OFFSETS: [i32; 4] = [-5, 1, 3, 1];
+
+/// `qp` (a `Qp′` of [`qp`]) of an ACT CU's `plane`, moved by its ACT
+/// offset and clipped to `0 ..= 63 + QpBdOffset` (§8.7.1).
+fn colour_transform_qp(qp: u8, joint: u8, plane: usize, sequence: &Sequence) -> u8 {
+    let component = if plane != 0 && joint == 3 { 3 } else { plane };
+    (i32::from(qp) + ACT_QP_OFFSETS[component]).clamp(0, MAX_QP + sequence.qp_bd_offset()) as u8
+}
 
 pub(super) fn primary_kinds(unit: &Unit, sequence: &Sequence) -> [VvcTransformKind; 2] {
     use VvcTransformKind::{Dct2, Dct8, Dst7};

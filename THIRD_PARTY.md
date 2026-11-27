@@ -72,6 +72,10 @@ Used in `crates/nc-dsp`:
   with its per-size row shifts (`av1/common/av1_inv_txfm2d.c`). Golden
   hashes in `crates/nc-checkasm/tests/av1_inverse_golden.rs` come from
   libaom's `av1_inv_txfm2d_add_*_c` and `av1_highbd_iwht4x4_16_add_c`.
+- `src/txfm/avx2.rs`: word-lane absolute value, reciprocal multiplication
+  and sign restoration following libaom v3.15.3's
+  `av1/encoder/x86/av1_quantize_avx2.c`. The shared exact quantizer
+  chooses its own reciprocal for the coefficient range.
 - `src/av1_forward.rs`: the forward ADST4/8/16 butterflies and identity
   scales (`av1/encoder/av1_fwd_txfm1d.c`), the 2-D column/row driver with its
   flips, rectangular scale and per-size shifts and cosine precisions
@@ -1029,6 +1033,9 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
 - `crates/nc-dsp/src/av2_dec/mc.rs` (intra block copy's bilinear
   prediction and block-adaptive scaling): from `src/mc_tmpl.c`
   (`put_bilin_c`, `morph_c`).
+- `crates/nc-dsp/src/av2_dec/mc_8tap.rs` and the 4×4 extended-warp
+  SIMD kernels in `av2_dec/mc_8tap/` and `mc/av1_avx2/extended_warp.rs`
+  adapt dav2d's scalar, AVX2 and NEON `ext_warp4x4` schedules.
 - The general decoder's in-loop filters: `crates/nc-av2/src/general/filters/`
   (`edges.rs` from `src/lf_mask.c`, `deblock.rs` from
   `src/db_apply_tmpl.c` and `src/deblock_tmpl.c`'s threshold set-up,
@@ -1040,7 +1047,11 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   (`gdf_prep_c`, `gdf_add_c`), and its AVX2 preparation kernel in
   `av2_dec/gdf/avx2.rs` from `src/x86/looprestoration_avx2.asm`
   (`gdf_prep_8bpc_avx2`, Copyright © 2026, VideoLAN and dav2d authors
-  and Two Orioles, LLC). `av2_dec/gdf/vector8.rs` adapts that schedule to
+  and Two Orioles, LLC). The shared CCSO byte classifier and nibble
+  lookup in `crates/nc-dsp/src/av2_dec/ccso/avx2.rs` adapt
+  `src/x86/ccso_avx2.asm` (`ccso_prep_*` and `ccso_add_8bpc_avx2`,
+  Copyright © 2025–2026, VideoLAN and dav2d authors and Two Orioles, LLC).
+  `av2_dec/gdf/vector8.rs` adapts that schedule to
   the shared eight-lane kernels. `gdf_tables.rs` is generated from
   `src/gdf_tables.c` by `tools/codegen/gen_av2_gdf_tables.py`;
   `filters/restoration.rs` from `src/lr_apply_tmpl.c`, and
@@ -1132,7 +1143,11 @@ and subpicture layout of H.266 §6.5.1 and §7.3.2.4/7.3.2.5 in our own Rust, ch
 against VTM's `PPS::initRectSliceMap`, `PPS::initSubPic` and `HLSyntaxReader` (the same
 inferences and slice ordering).
 `crates/nc-dsp/src/mc/rpr.rs` takes the reference-picture-resampling filter coefficients
-(RPR luma, affine luma and chroma sets) from VTM's `InterpolationFilter`. No other VTM code is linked or copied; its decoder is the
+(RPR luma, affine luma and chroma sets) from VTM's `InterpolationFilter`.
+`crates/nc-vvc/src/decoder_blocks/palette.rs` reimplements palette mode (H.266 §7.3.11.13,
+§8.4.5.3) in our own Rust following the structure of VTM's `CABACReader::cu_palette_info`,
+`CodingStructure::reorderPrevPLT` and `DecCu::xReconPLT`, with VTM's palette context
+initialisation values. No other VTM code is linked or copied; its decoder is the
 reference our foreign-corpus streams are compared with.
 
 ## VVdeC — BSD-3-Clause-Clear
@@ -1341,7 +1356,11 @@ HM and VTM are distributed under the BSD-3-Clause licence (copyright the
 ITU-T/ISO/IEC and their contributors): HM's text is
 [docs/licenses/hm/COPYING](docs/licenses/hm/COPYING), and VTM's is reproduced in the
 VTM section above. JM is distributed under the copyright notice in its own
-distribution; from JM only the published λ formula is used, no code. Sources: https://vcgit.hhi.fraunhofer.de/jvet/HM,
+distribution; from JM only the published λ formula is used, no code (the H.264
+decoder's 4:2:2 chroma DC code tables, `crates/nc-h264/src/tables/cavlc_422.rs`, and
+its 4:4:4 CABAC context initialisation are the Recommendation's values, checked
+against JM's tables; JM's output order of GBR pictures is undone in
+`tools/dev/conformance_manifest.py`). Sources: https://vcgit.hhi.fraunhofer.de/jvet/HM,
 https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM,
 https://vcgit.hhi.fraunhofer.de/jvet/JM.
 

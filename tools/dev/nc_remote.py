@@ -147,8 +147,12 @@ DAILY_BUDGET_USD = 40.0
 #: On-demand only when RECLAIMED_TYPES_FOR_ON_DEMAND distinct types were
 #: reclaimed within the window, or when no remaining spot pool has capacity
 #: (owner, 2026-11-17: never pay on-demand longer than needed).
+#: The window is 1 h since 2026-11-27 (2 h before), and the exclusion never leaves the
+#: fleet without a type: with every type reclaimed in the window, all are offered again
+#: (2026-11-27: c7i at 11:05 and c6i at 11:34 left the two-type fleet empty, and the build
+#: box could not launch for two hours).
 SPOT, ON_DEMAND = "spot", "on-demand"
-RECLAIM_WINDOW = datetime.timedelta(hours=2)
+RECLAIM_WINDOW = datetime.timedelta(hours=1)
 RECLAIMED_TYPES_FOR_ON_DEMAND = 3
 #: Owner, 2026-11-26: spot only, never on-demand ("don't spend 10x more"). With no spot
 #: capacity anywhere, the launch fails and is retried later; the rules above that would
@@ -945,6 +949,11 @@ def plan_market(boxes: list[Box], now: datetime.datetime) -> MarketPlan:
                           f"on-demand: spot reclaimed {len(excluded)} types within "
                           f"{WINDOW_TEXT} ({', '.join(sorted(excluded))})")
     types = tuple(t for t in INSTANCE_TYPES if t not in excluded)
+    if not types:
+        return MarketPlan(SPOT, INSTANCE_TYPES,
+                          f"spot, every type again: all of {', '.join(sorted(excluded))} were "
+                          f"reclaimed within {WINDOW_TEXT}, and leaving them all out would "
+                          f"launch nothing")
     reason = "spot"
     if excluded:
         reason += f" without {', '.join(sorted(excluded))} (reclaimed within {WINDOW_TEXT})"

@@ -13,6 +13,7 @@ use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::syntax::Neighbour;
 use super::transform::{LumaTransforms, TxPartition};
+use crate::general::sample::Av2Sample;
 use nc_common::decode::{DecodeError, Result};
 
 /// dav2d `enum IntraPredMode` values of the modes the syntax names.
@@ -184,7 +185,7 @@ fn fsc_size_context(size: BlockSize) -> usize {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// An intra block: modes, transform partition, reconstruction, contexts;
     /// its luma transform layout for the loop filters.
     pub(super) fn intra_block(

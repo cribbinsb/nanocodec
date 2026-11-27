@@ -8,7 +8,8 @@ use super::intra::{IntraModes, mode};
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::transform::{TxPartition, TxSize};
-use nc_common::BitDepth;
+use crate::general::sample::Av2Sample;
+use nc_common::Sample;
 use nc_dsp::av2_dec::ipred::{
     self, ANGLE_DIP_FLAG, ANGLE_HAS_LEFT_FLAG, ANGLE_HAS_TOP_FLAG, ANGLE_IBP_FLAG, ANGLE_IS_LUMA,
     ANGLE_MRL_IDX_SHIFT, ANGLE_MULTI_MRL_FLAG, ANGLE_SEQHDR_IBP_FLAG, ANGLE_SMOOTH_LEFT_EDGE_FLAG,
@@ -51,21 +52,21 @@ const UNTRANSPOSED_MODES: [u8; 4] = [2, 6, 8, mode::SMOOTH_HORIZONTAL];
 /// The frame being reconstructed: three planes padded to whole
 /// superblocks, so transforms that overhang the picture stay inside.
 #[derive(Debug, Clone)]
-pub struct Planes {
+pub struct Planes<T> {
     /// Y, U and V samples, row-major.
-    pub data: [Vec<u8>; 3],
+    pub data: [Vec<T>; 3],
     /// Each plane's row stride.
     pub stride: [usize; 3],
 }
 
-impl Planes {
+impl<T: Sample> Planes<T> {
     /// Planes for a frame `columns` x `rows` 4x4 units, rounded up to
     /// `superblock` units.
     #[must_use]
     pub fn new(columns: u32, rows: u32, superblock: u32) -> Self {
         let width = (columns.next_multiple_of(superblock) << UNIT) as usize;
         let height = (rows.next_multiple_of(superblock) << UNIT) as usize;
-        let plane = |w: usize, h: usize| vec![0; w * h];
+        let plane = |w: usize, h: usize| vec![T::default(); w * h];
         Self {
             data: [
                 plane(width, height),
@@ -121,7 +122,7 @@ fn dpcm(mode: u8) -> Dpcm {
     }
 }
 
-impl Tile<'_, '_> {
+impl<T: Av2Sample> Tile<'_, '_, T> {
     /// Predict one luma transform (dav2d `recon_b_luma_tx`, "b->intra").
     pub(super) fn predict_luma(
         &mut self,
@@ -194,6 +195,7 @@ impl Tile<'_, '_> {
         topleft: usize,
         (max_width, max_height): (i32, i32),
     ) {
+        let depth = self.depth();
         let offset = self
             .planes
             .offset(plane, request.y as u32, request.x as u32);
@@ -211,7 +213,7 @@ impl Tile<'_, '_> {
             row_above,
             &mut self.edge,
             topleft,
-            BitDepth::EIGHT,
+            depth,
         );
         let (tw, th) = (
             (request.tw4 << UNIT) as usize,
@@ -229,7 +231,7 @@ impl Tile<'_, '_> {
             request.intra_flags,
             max_width,
             max_height,
-            BitDepth::EIGHT,
+            depth,
         );
     }
 
@@ -314,6 +316,7 @@ impl Tile<'_, '_> {
         mut eob: u16,
     ) {
         let size = rect(tx);
+        let depth = self.depth();
         let extra = (residual.tx_type >> tx_type::EXTRA_SHIFT) as u8;
         let mut coefficients = std::mem::take(&mut self.luma_coefficients);
         if extra != 0 {
@@ -326,7 +329,7 @@ impl Tile<'_, '_> {
                 extra,
                 transpose,
                 eob,
-                BitDepth::EIGHT,
+                depth,
             );
         }
         let mut kind = TxType(residual.tx_type & tx_type::TYPE_MASK);
@@ -345,7 +348,7 @@ impl Tile<'_, '_> {
             &mut coefficients,
             (size, kind),
             eob,
-            BitDepth::EIGHT,
+            depth,
         );
         self.luma_coefficients = coefficients;
     }
@@ -385,6 +388,7 @@ impl Tile<'_, '_> {
             (cbw4.div_ceil(2) - ctw4) as usize,
             (cbh4.div_ceil(2) - cth4) as usize,
         );
+        let depth = self.depth();
         let luma_offset = self.planes.offset(0, cby, cbx);
         let chroma_offset = self.planes.offset(1, cby >> 1, cbx >> 1);
         let [luma_stride, chroma_stride, _] = self.planes.stride;
@@ -421,7 +425,7 @@ impl Tile<'_, '_> {
             ctw,
             cth,
             flags,
-            BitDepth::EIGHT,
+            depth,
         );
     }
 
@@ -510,8 +514,9 @@ impl Tile<'_, '_> {
         }
         let flags = edges | u32::from(direction);
         let filter = u32::from(self.sequence.intra.cfl_downsample_filter);
-        let mut luma = vec![0_u8; CFL_MH_MAX_LUMA_SIZE];
-        let mut imat = [[0_u8; CFL_MH_MAX_EDGE_SAMPLES]; 2];
+        let depth = self.depth();
+        let mut luma = vec![T::default(); CFL_MH_MAX_LUMA_SIZE];
+        let mut imat = [[T::default(); CFL_MH_MAX_EDGE_SAMPLES]; 2];
         let mut mat = [[0_i32; 4]; 3];
         let luma_offset = self.planes.offset(0, cby, cbx);
         let luma_stride = self.planes.stride[0];
@@ -533,15 +538,7 @@ impl Tile<'_, '_> {
             );
         }
         if has_t || has_l {
-            ipred::cfl_mh_gen_mat(
-                &mut mat,
-                &mut imat,
-                &luma,
-                refw,
-                refh,
-                flags,
-                BitDepth::EIGHT,
-            );
+            ipred::cfl_mh_gen_mat(&mut mat, &mut imat, &luma, refw, refh, flags, depth);
         }
         let source = SampleRef::new(&luma, top_rows as usize * CFL_MH_TOP_STRIDE);
         let mh = match direction {
@@ -567,7 +564,7 @@ impl Tile<'_, '_> {
                     &mat,
                     &imat,
                     flags,
-                    BitDepth::EIGHT,
+                    depth,
                 );
             }
             ipred::cfl_mh_pred(
@@ -580,7 +577,7 @@ impl Tile<'_, '_> {
                 cth,
                 &alpha,
                 flags,
-                BitDepth::EIGHT,
+                depth,
             );
         }
     }
@@ -666,6 +663,7 @@ impl Tile<'_, '_> {
         index: usize,
         intra: bool,
     ) {
+        let depth = self.depth();
         let mut store = std::mem::take(&mut self.chroma_residuals);
         let [u_residual, v_residual] = store.residuals[index];
         let (Some(mut u_res), Some(mut v_res)) = (u_residual, v_residual) else {
@@ -683,7 +681,7 @@ impl Tile<'_, '_> {
                 &mut u[start..start + length],
                 &mut v[start..start + length],
                 &itx::CCTX_ANGLES[usize::from(cross) - 1],
-                BitDepth::EIGHT,
+                depth,
             );
             let larger = if eob(&v_res) > eob(&u_res) {
                 v_res.eob
@@ -717,7 +715,7 @@ impl Tile<'_, '_> {
                 &mut store.coefficients[plane][start..],
                 (size, kind),
                 eob,
-                BitDepth::EIGHT,
+                depth,
             );
         }
         self.chroma_residuals = store;

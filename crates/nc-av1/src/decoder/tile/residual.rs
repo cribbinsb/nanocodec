@@ -42,8 +42,13 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         if self.block_lossless {
             TxSize::TX_4X4
         } else {
-            TxSize::chroma(size)
+            TxSize::chroma(size, self.subsampling(PlaneIndex::U))
         }
+    }
+    /// The chroma transform the loop filter records for `block`: its
+    /// [`Self::chroma_tx`] when the block carries its chroma.
+    pub(super) fn recorded_chroma_tx(&self, block: BlockPos) -> Option<TxSize> {
+        block.has_chroma().then(|| self.chroma_tx(block.size))
     }
     /// `read_tx_size()` of an intra block (§5.11.16): the largest
     /// transform, split `tx_depth` times in `TX_MODE_SELECT` frames.
@@ -95,83 +100,101 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         luma_tx: TxSize,
     ) -> Result<(), DecodeError> {
         let (mi_cols, mi_rows) = (self.header.width / 4, self.header.height / 4);
-        let max_w4 = block.size.width_mi().min(mi_cols - block.mi_col);
-        let max_h4 = block.size.height_mi().min(mi_rows - block.mi_row);
-        let planes: &[PlaneIndex] = if block.has_chroma() {
-            &PlaneIndex::ALL
-        } else {
-            &[PlaneIndex::Y]
-        };
+        let visible = (
+            block.size.width_mi().min(mi_cols - block.mi_col),
+            block.size.height_mi().min(mi_rows - block.mi_row),
+        );
+        let subsampling = self.subsampling(PlaneIndex::U);
         let chroma_tx = self.chroma_tx(block.size);
-        let (chroma_w, chroma_h) = chroma_block(block.size);
-        // The end of the block's decoded luma (`MaxLumaW`, `MaxLumaH`).
-        let mut max_luma: (usize, usize) = (0, 0);
-        for row in strided(0..max_h4, CHUNK_MI) {
-            for col in strided(0..max_w4, CHUNK_MI) {
-                for &plane in planes {
-                    let ss = usize::from(plane != PlaneIndex::Y);
-                    let (tx, block_units) = if ss == 0 {
-                        (luma_tx, (block.size.width_mi(), block.size.height_mi()))
-                    } else {
-                        (chroma_tx, (1 << (chroma_w - 2), 1 << (chroma_h - 2)))
-                    };
-                    let (step_w, step_h) = (tx.width() / 4, tx.height() / 4);
-                    let end_w = ((col + CHUNK_MI).min(max_w4) + ss) >> ss;
-                    let end_h = ((row + CHUNK_MI).min(max_h4) + ss) >> ss;
-                    let origin = (block.mi_col >> ss, block.mi_row >> ss);
-                    let fills_block = (tx.width() / 4, tx.height() / 4) == block_units;
-                    for blk_row in strided((row >> ss)..end_h, step_h) {
-                        for blk_col in strided((col >> ss)..end_w, step_w) {
-                            let x = (origin.0 + blk_col) * 4;
-                            let y = (origin.1 + blk_row) * 4;
-                            let geometry = PlaneTransform {
-                                block_origin: origin,
-                                block_size: block_units,
-                                offset: (blk_col, blk_row),
-                                size: (step_w, step_h),
-                                subsampled: ss != 0,
-                            };
-                            let edge_filter = self.edge_filter(plane, block);
-                            let avail = self.edge_avail(plane, block, &geometry);
-                            let luma_extent = (
-                                max_luma.0.saturating_sub(x * 2),
-                                max_luma.1.saturating_sub(y * 2),
-                            );
-                            let transform = IntraTransform {
-                                plane,
-                                origin: (x, y),
-                                size: (tx.width(), tx.height()),
-                                avail,
-                                edge_filter,
-                            };
-                            self.predict_intra(transform, modes, luma_extent)?;
-                            if ss == 0 {
-                                max_luma = (x + tx.width(), y + tx.height());
-                            }
-                            let source = if ss == 0 {
-                                self.tx_type_source(
-                                    plane,
-                                    tx,
-                                    false,
-                                    modes.luma.intra_dir(),
-                                    Av1TxType::DctDct,
-                                )
-                            } else {
-                                let kind = intra_mode_tx_type(modes.uv);
-                                self.tx_type_source(plane, tx, false, 0, kind)
-                            };
-                            self.transform_block(
-                                reader,
-                                plane,
-                                skip,
-                                tx,
-                                fills_block,
-                                (x, y),
-                                source,
-                            )?;
-                        }
-                    }
+        let (chroma_w, chroma_h) = chroma_block(block.size, subsampling);
+        let chroma_units = (1 << (chroma_w - 2), 1 << (chroma_h - 2));
+        let luma_units = (block.size.width_mi(), block.size.height_mi());
+        let mut walk = IntraWalk {
+            block,
+            modes,
+            skip,
+            visible,
+            chunk: (0, 0),
+            max_luma: (0, 0),
+        };
+        for row in strided(0..visible.1, CHUNK_MI) {
+            for col in strided(0..visible.0, CHUNK_MI) {
+                walk.chunk = (col, row);
+                self.intra_plane::<0, 0>(reader, &mut walk, PlaneIndex::Y, (luma_tx, luma_units))?;
+                if !block.has_chroma() {
+                    continue;
                 }
+                for plane in [PlaneIndex::U, PlaneIndex::V] {
+                    let transforms = (chroma_tx, chroma_units);
+                    match subsampling {
+                        (1, 1) => self.intra_plane::<1, 1>(reader, &mut walk, plane, transforms),
+                        (1, 0) => self.intra_plane::<1, 0>(reader, &mut walk, plane, transforms),
+                        _ => self.intra_plane::<0, 0>(reader, &mut walk, plane, transforms),
+                    }?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The transform blocks of one plane of an intra block inside the
+    /// walk's chunk: `tx` transforms over a plane block of `block_units`
+    /// 4x4 units, the plane subsampled by (`SX`, `SY`). The subsampling is
+    /// a constant so the luma and 4:2:0 walks fold their shifts.
+    #[inline]
+    fn intra_plane<const SX: usize, const SY: usize>(
+        &mut self,
+        reader: &mut SymbolReader<'_>,
+        walk: &mut IntraWalk<'_>,
+        plane: PlaneIndex,
+        (tx, block_units): (TxSize, (usize, usize)),
+    ) -> Result<(), DecodeError> {
+        let IntraWalk {
+            block,
+            modes,
+            skip,
+            visible: (max_w4, max_h4),
+            chunk: (col, row),
+            ..
+        } = *walk;
+        let (step_w, step_h) = (tx.width() / 4, tx.height() / 4);
+        let end_w = ((col + CHUNK_MI).min(max_w4) + SX) >> SX;
+        let end_h = ((row + CHUNK_MI).min(max_h4) + SY) >> SY;
+        let origin = (block.mi_col >> SX, block.mi_row >> SY);
+        let fills_block = (step_w, step_h) == block_units;
+        for blk_row in strided((row >> SY)..end_h, step_h) {
+            for blk_col in strided((col >> SX)..end_w, step_w) {
+                let x = (origin.0 + blk_col) * 4;
+                let y = (origin.1 + blk_row) * 4;
+                let geometry = PlaneTransform {
+                    block_origin: origin,
+                    block_size: block_units,
+                    offset: (blk_col, blk_row),
+                    size: (step_w, step_h),
+                    subsampling: (SX, SY),
+                };
+                let edge_filter = self.edge_filter(plane, block);
+                let avail = self.edge_avail(plane, block, &geometry);
+                let luma_extent = (
+                    walk.max_luma.0.saturating_sub(x << SX),
+                    walk.max_luma.1.saturating_sub(y << SY),
+                );
+                let transform = IntraTransform {
+                    plane,
+                    origin: (x, y),
+                    size: (tx.width(), tx.height()),
+                    avail,
+                    edge_filter,
+                };
+                self.predict_intra(transform, modes, luma_extent)?;
+                let source = if plane == PlaneIndex::Y {
+                    walk.max_luma = (x + tx.width(), y + tx.height());
+                    self.tx_type_source(plane, tx, false, modes.luma.intra_dir(), Av1TxType::DctDct)
+                } else {
+                    let kind = intra_mode_tx_type(modes.uv);
+                    self.tx_type_source(plane, tx, false, 0, kind)
+                };
+                self.transform_block(reader, plane, skip, tx, fills_block, (x, y), source)?;
             }
         }
         Ok(())
@@ -209,9 +232,12 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                 left && near.left.is_some_and(BlockInfo::smooth),
             )
         } else {
+            // The chroma of a sub-8x8 area is the last block's of it
+            // (§7.11.2.8: `c++` / `r--` along a subsampled axis).
+            let (ss_x, ss_y) = self.subsampling(plane);
             (
-                above && self.uv_smooth.above(block.mi_col | 1),
-                left && self.uv_smooth.left(block.mi_row | 1),
+                above && self.uv_smooth.above(block.mi_col | ss_x),
+                left && self.uv_smooth.left(block.mi_row | ss_y),
             )
         };
         Some(EdgeFilterCtx {
@@ -225,15 +251,23 @@ impl<T: Pixel> FrameDecoder<'_, T> {
     /// carries. This is what its transform blocks would leave one by one
     /// (units beyond the frame always hold 0).
     pub(super) fn reset_block_contexts(&mut self, block: BlockPos) {
-        let planes = if block.has_chroma() { 3 } else { 1 };
         let (w4, h4) = block.units();
-        for index in 0..planes {
-            let ss = usize::from(index > 0);
-            let span = |at: usize, units: usize| (at >> ss)..((at + units - 1) >> ss) + 1;
-            let columns = span(block.mi_col, w4);
-            let rows = span(block.mi_row, h4);
-            let first = rows.start % (self.superblock.height_mi() >> ss);
-            splat_bytes(&mut self.above[index][columns], 0);
+        let sb_rows = self.superblock.height_mi();
+        let first = block.mi_row % sb_rows;
+        splat_bytes(&mut self.above[0][block.mi_col..block.mi_col + w4], 0);
+        splat_bytes(&mut self.left[0][first..first + h4], 0);
+        if !block.has_chroma() {
+            return;
+        }
+        // U and V share their units.
+        let (ss_x, ss_y) = self.subsampling(PlaneIndex::U);
+        let span = |at: usize, units: usize, ss: usize| (at >> ss)..((at + units - 1) >> ss) + 1;
+        let columns = span(block.mi_col, w4, ss_x);
+        let rows = span(block.mi_row, h4, ss_y);
+        let first = rows.start % (sb_rows >> ss_y);
+        for plane in [PlaneIndex::U, PlaneIndex::V] {
+            let index = plane as usize;
+            splat_bytes(&mut self.above[index][columns.clone()], 0);
             splat_bytes(&mut self.left[index][first..first + rows.len()], 0);
         }
     }
@@ -250,17 +284,17 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         value: u8,
     ) {
         let index = plane as usize;
-        let ss = usize::from(index > 0);
+        let (ss_x, ss_y) = self.subsampling(plane);
         let (columns, rows) = (
-            (self.header.width / 4) >> ss,
-            (self.header.height / 4) >> ss,
+            (self.header.width / 4) >> ss_x,
+            (self.header.height / 4) >> ss_y,
         );
         let above = &mut self.above[index][x4..x4 + w4];
         splat_bytes(above, value);
         if x4 + w4 > columns {
             splat_bytes(&mut above[columns.saturating_sub(x4)..], 0);
         }
-        let row = y4 % (self.superblock.height_mi() >> ss);
+        let row = y4 % (self.superblock.height_mi() >> ss_y);
         let left = &mut self.left[index][row..row + h4];
         splat_bytes(left, value);
         if y4 + h4 > rows {
@@ -327,7 +361,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         source: TxTypeSource,
     ) -> Result<Av1TxType, DecodeError> {
         let plane_index = plane as usize;
-        let shift = usize::from(plane_index > 0);
+        let shift = self.subsampling(plane).1;
         let (w4, h4) = (tx.width() / 4, tx.height() / 4);
         let (x4, y4) = (x / 4, y / 4);
         let row = y4 % (self.superblock.height_mi() >> shift);
@@ -400,4 +434,16 @@ fn inverse_wht<T: Pixel>(
     let coefficients: [i32; TX_4X4_COEFFICIENTS] =
         core::array::from_fn(|i| coefficients[i].to_i32());
     kernels.av1_inverse_wht_add(&coefficients, dst);
+}
+
+/// An intra block's residual walk: the block, its modes and `skip`, its
+/// 4x4 units inside the frame, the 64x64 chunk being decoded (luma 4x4
+/// offset) and the end of its decoded luma (`MaxLumaW`, `MaxLumaH`).
+struct IntraWalk<'m> {
+    block: BlockPos,
+    modes: &'m IntraModes,
+    skip: bool,
+    visible: (usize, usize),
+    chunk: (usize, usize),
+    max_luma: (usize, usize),
 }

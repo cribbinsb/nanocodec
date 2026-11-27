@@ -50,8 +50,8 @@ Each arm is two standard screens on the day's draw, run side by side:
 An arm passes when L3 is BETTER and the final check is not WORSE, or L3 is NEUTRAL
 (identical streams: the change touches only periodic keys) and the final check BETTER (a
 periodic-key pulse makes it WORSE). By default every screen runs on its own
-rented spot box (aws_measure.py: CPU scoring, cloud points kept in the cloud
-cache), all at once; --local runs them here through the slot engine.
+rented spot box (aws_measure.py: encoded there, scored on this PC's GPU,
+never on a box's CPU), all at once; --local runs them here through the slot engine.
 
 On a pass the unit's candidates are marked bundled-pass, the exact preset
 diff and a commit-message block are printed; nothing lands here: the caller

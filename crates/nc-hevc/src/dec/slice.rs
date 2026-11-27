@@ -36,7 +36,8 @@ pub(super) enum SliceType {
 }
 
 /// Explicit weighted prediction of one reference (§7.4.7.3): luma and
-/// Cb/Cr weight and offset.
+/// Cb/Cr weight and offset, the offset at the sample depth (`o0 =
+/// luma_offset_l0 << WpOffsetBdShiftY`, eq. 8-252, 8-253).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Weight {
     pub weight: [i32; 3],
@@ -88,6 +89,8 @@ pub(super) struct SliceHeader {
     pub qp: i32,
     pub cb_qp_offset: i32,
     pub cr_qp_offset: i32,
+    /// `cu_chroma_qp_offset_enabled_flag`.
+    pub chroma_qp_offsets: bool,
     pub deblock_disabled: bool,
     pub beta_offset_div2: i32,
     pub tc_offset_div2: i32,
@@ -146,6 +149,7 @@ pub(super) fn parse(
     sps: &Sps,
     pps: &Pps,
 ) -> Result<SliceSegment, DecodeError> {
+    pps.check(sps)?;
     let mut r = BitReader::new(rbsp);
     let first_in_picture = r.read_bit()?;
     let irap = (nal::BLA_W_LP..=nal::RSV_IRAP_23).contains(&nal_type);
@@ -224,6 +228,16 @@ fn independent(
         2 => SliceType::I,
         _ => return Err(DecodeError::Malformed("slice_type")),
     };
+    // Interpolation above 12 bits shifts differently (§8.5.3.3.3.1:
+    // `shift1 = Min(4, BitDepth − 8)`) and leaves the 14-bit prediction
+    // samples the kernels hold. Only Monochrome 16 allows it (A.3.5), and
+    // no conformance stream codes it.
+    let deepest = sps.depths.luma.bits().max(sps.depths.chroma.bits());
+    if slice_type != SliceType::I && deepest > MAX_INTER_BIT_DEPTH {
+        return Err(DecodeError::Unsupported(
+            "HEVC inter prediction above 12 bits",
+        ));
+    }
     let pic_output = !pps.output_flag_present || r.read_bit()?;
     let idr = matches!(nal_type, nal::IDR_W_RADL | nal::IDR_N_LP);
     let mut poc_lsb = 0;
@@ -254,7 +268,8 @@ fn independent(
     }
     let mut sao = [false; 2];
     if sps.sao {
-        sao = [r.read_bit()?, r.read_bit()?];
+        // slice_sao_luma_flag, and slice_sao_chroma_flag unless 4:0:0.
+        sao = [r.read_bit()?, sps.chroma.is_some() && r.read_bit()?];
     }
     let mut num_ref_idx = [0; 2];
     let mut list_entries = [None, None];
@@ -315,7 +330,7 @@ fn independent(
         if (pps.weighted_pred && slice_type == SliceType::P)
             || (pps.weighted_bipred && slice_type == SliceType::B)
         {
-            weights = Some(pred_weight_table(r, &num_ref_idx[..lists])?);
+            weights = Some(pred_weight_table(r, sps, &num_ref_idx[..lists])?);
         }
         max_merge_candidates = 5usize
             .checked_sub(r.read_ue()? as usize)
@@ -339,6 +354,7 @@ fn independent(
             return Err(DecodeError::Malformed("slice chroma QP offset"));
         }
     }
+    let chroma_qp_offsets = pps.range.chroma_qp_offsets.is_some() && r.read_bit()?;
     let control = pps.deblock;
     let mut deblock_disabled = control.disabled;
     let (mut beta_offset_div2, mut tc_offset_div2) =
@@ -374,6 +390,7 @@ fn independent(
         qp,
         cb_qp_offset,
         cr_qp_offset,
+        chroma_qp_offsets,
         deblock_disabled,
         beta_offset_div2,
         tc_offset_div2,
@@ -437,17 +454,48 @@ fn long_term_entries(
     Ok(entries)
 }
 
-/// `pred_weight_table()` (§7.3.6.3, semantics §7.4.7.3), 8-bit samples.
-fn pred_weight_table(r: &mut BitReader<'_>, num_ref_idx: &[usize]) -> Result<Weights, DecodeError> {
+/// The offset range of explicit weighted prediction at `depth`
+/// (§7.4.7.3): `WpOffsetHalfRange` (`1 << 7`, or `1 << (BitDepth − 1)`
+/// with `high_precision_offsets_enabled_flag`) and `WpOffsetBdShift`, the
+/// shift from the coded offset to the sample depth (`BitDepth − 8`, or 0).
+fn offset_range(depth: nc_common::BitDepth, high_precision: bool) -> (i32, u32) {
+    if high_precision {
+        (1 << (depth.bits() - 1), 0)
+    } else {
+        (1 << WP_OFFSET_BITS, depth.above_eight())
+    }
+}
+
+/// The deepest samples inter prediction decodes (Main 4:4:4 12, A.3.5;
+/// the 16-bit 4:4:4 profiles are intra).
+const MAX_INTER_BIT_DEPTH: u32 = 12;
+/// `WpOffsetHalfRange` bits without high precision offsets.
+const WP_OFFSET_BITS: u32 = 7;
+
+/// `pred_weight_table()` (§7.3.6.3, semantics §7.4.7.3). Without chroma
+/// (4:0:0) only luma weights are coded.
+fn pred_weight_table(
+    r: &mut BitReader<'_>,
+    sps: &Sps,
+    num_ref_idx: &[usize],
+) -> Result<Weights, DecodeError> {
     let luma_denom = r.read_ue()?;
     if luma_denom > 7 {
         return Err(DecodeError::Malformed("luma_log2_weight_denom"));
     }
-    let chroma_denom = i64::from(luma_denom) + i64::from(r.read_se()?);
+    let chroma = sps.chroma.is_some();
+    let chroma_denom = if chroma {
+        i64::from(luma_denom) + i64::from(r.read_se()?)
+    } else {
+        i64::from(luma_denom)
+    };
     if !(0..=7).contains(&chroma_denom) {
         return Err(DecodeError::Malformed("delta_chroma_log2_weight_denom"));
     }
     let chroma_denom = chroma_denom as u32;
+    let high_precision = sps.range.high_precision_offsets;
+    let (luma_range, luma_shift) = offset_range(sps.depths.luma, high_precision);
+    let (chroma_range, chroma_shift) = offset_range(sps.depths.chroma, high_precision);
     let mut weights = Weights {
         log2_denom: [luma_denom, chroma_denom],
         lists: [Vec::new(), Vec::new()],
@@ -458,8 +506,10 @@ fn pred_weight_table(r: &mut BitReader<'_>, num_ref_idx: &[usize]) -> Result<Wei
         for f in &mut luma_flags[..count] {
             *f = r.read_bit()?;
         }
-        for f in &mut chroma_flags[..count] {
-            *f = r.read_bit()?;
+        if chroma {
+            for f in &mut chroma_flags[..count] {
+                *f = r.read_bit()?;
+            }
         }
         for i in 0..count {
             let mut w = Weight {
@@ -469,23 +519,28 @@ fn pred_weight_table(r: &mut BitReader<'_>, num_ref_idx: &[usize]) -> Result<Wei
             if luma_flags[i] {
                 let delta = r.read_se()?;
                 let offset = r.read_se()?;
-                if !(-128..=127).contains(&delta) || !(-128..=127).contains(&offset) {
+                if !(-128..=127).contains(&delta) || !(-luma_range..luma_range).contains(&offset) {
                     return Err(DecodeError::Malformed("luma weight"));
                 }
                 w.weight[0] += delta;
-                w.offset[0] = offset;
+                w.offset[0] = offset << luma_shift;
             }
             if chroma_flags[i] {
                 for c in 1..3 {
                     let delta = r.read_se()?;
                     let delta_offset = r.read_se()?;
-                    if !(-128..=127).contains(&delta) || !(-512..=511).contains(&delta_offset) {
+                    let delta_range = 4 * chroma_range;
+                    if !(-128..=127).contains(&delta)
+                        || !(-delta_range..delta_range).contains(&delta_offset)
+                    {
                         return Err(DecodeError::Malformed("chroma weight"));
                     }
                     w.weight[c] += delta;
-                    // Equation 7-56 with wpOffsetHalfRangeC = 128.
-                    w.offset[c] = (128 + delta_offset - ((128 * w.weight[c]) >> chroma_denom))
-                        .clamp(-128, 127);
+                    // Equation 7-56.
+                    let offset = (chroma_range + delta_offset
+                        - ((chroma_range * w.weight[c]) >> chroma_denom))
+                        .clamp(-chroma_range, chroma_range - 1);
+                    w.offset[c] = offset << chroma_shift;
                 }
             }
             weights.lists[list].push(w);

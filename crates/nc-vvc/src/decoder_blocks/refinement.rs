@@ -445,8 +445,7 @@ pub(super) fn predict<T: Pixel>(
     scratch: &mut super::inter_prediction::InterScratch<T>,
     out: &mut [T],
 ) {
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let size = (block.width() >> chroma, block.height() >> chroma);
+    let (_, size) = references.plane_rect(plane, block);
     let mut dst = PlaneViewMut::new(&mut out[..size.0 * size.1], size.0, size.0, size.1).unwrap();
     predict_direct(dsp, references, unit, plane, block, scratch, &mut dst);
 }
@@ -468,9 +467,9 @@ pub(super) fn predict_direct<T: Pixel>(
     dst: &mut PlaneViewMut<'_, T>,
 ) {
     let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
-    let step = 16 >> chroma;
+    let (sx, sy) = references.subsampling(plane);
+    let (position, size) = references.plane_rect(plane, block);
+    let step = (REGION_SIDE >> sx, REGION_SIDE >> sy);
     let base = unit.motion.unwrap();
     let (s0, p0_rest) = scratch.s0.split_at_mut(REGION_SIDE * REGION_SIDE);
     let (s1, p1_rest) = scratch.s1.split_at_mut(REGION_SIDE * REGION_SIDE);
@@ -483,11 +482,12 @@ pub(super) fn predict_direct<T: Pixel>(
         pixels: &mut scratch.pixels,
         window_buf: &mut scratch.window[..23 * 23],
     };
-    for y in (0..size.1).step_by(step) {
-        for x in (0..size.0).step_by(step) {
-            let (width, height) = (step.min(size.0 - x), step.min(size.1 - y));
-            let index = (block.y - unit.node.y + (y << chroma)) / 16 * unit.node.width.div_ceil(16)
-                + (block.x - unit.node.x + (x << chroma)) / 16;
+    for y in (0..size.1).step_by(step.1) {
+        for x in (0..size.0).step_by(step.0) {
+            let (width, height) = (step.0.min(size.0 - x), step.1.min(size.1 - y));
+            let index = (block.y - unit.node.y + (y << sy)) / REGION_SIDE
+                * unit.node.width.div_ceil(REGION_SIDE)
+                + (block.x - unit.node.x + (x << sx)) / REGION_SIDE;
             let region = unit.dmvr.get(index).copied();
             let mut sub_dst = dst.sub_view_mut(x, y, width, height).unwrap();
             predict_sub_pu(
@@ -512,7 +512,9 @@ fn predict_sub_pu<T: Pixel>(
     bufs: &mut SubPuScratch<'_, T>,
     sub_dst: &mut PlaneViewMut<'_, T>,
 ) {
-    let motion = region.map_or(base, |r| refined(base, r.delta));
+    // Chroma is refined by the luma delta, then scaled to its own units.
+    let motion = references.plane_motion(region.map_or(base, |r| refined(base, r.delta)), plane);
+    let base = references.plane_motion(base, plane);
     let bdof = chroma == 0 && region.map_or(unit_bdof, |r| r.bdof);
     let edges = references.edges(plane);
     let bits = 4 + chroma;

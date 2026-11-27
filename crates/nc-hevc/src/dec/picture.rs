@@ -16,10 +16,11 @@ use nc_common::decode::DecodeError;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use nc_common::{BitDepths, Picture, PictureRecycler};
+use nc_common::{BitDepths, ChromaFormat, Picture, PictureRecycler, PlaneIndex};
 use nc_dsp::Pixel;
 use nc_encoder::Mv;
 
+use super::deblock::SliceTables;
 use super::loop_filter::Progress;
 use super::params::{Pps, Sps, Tiles};
 use super::sao::CtbSao;
@@ -281,6 +282,9 @@ pub(super) struct PictureState<T: Pixel> {
     pub samples: Picture<T>,
     /// The SPS's `BitDepthY` and `BitDepthC`.
     pub depths: BitDepths,
+    /// `ChromaArrayType` (`None`: 4:0:0, whose picture is 4:2:0 with chroma
+    /// planes left unused).
+    pub chroma: Option<ChromaFormat>,
     pub width: usize,
     pub height: usize,
     /// Shared by the pictures of one SPS/PPS pair.
@@ -301,6 +305,12 @@ pub(super) struct PictureState<T: Pixel> {
     pub progress: Progress,
     /// Deblocking-grid edge pieces of each CTB row.
     pub edges: EdgePieces,
+    /// The deblocking parameters of each slice so far (`deblock`).
+    pub deblock_tables: Vec<SliceTables>,
+    /// Whether any block so far carries [`flag::NO_FILTER`]: SAO scans a
+    /// band's blocks for it only then (most streams never set it, and the
+    /// scan of every 4x4 block cost 1.8% of a 1080p decode).
+    pub filter_exempt: bool,
 }
 
 /// Buffers of pictures that left the DPB, reused by new pictures so that
@@ -359,9 +369,14 @@ impl<T: Pixel> Default for Pool<T> {
 }
 
 impl<T: Pixel> Pool<T> {
-    /// A `width` x `height` picture with the decoder's border, contents
-    /// unspecified.
-    pub fn picture(&mut self, width: usize, height: usize) -> Result<Picture<T>, DecodeError> {
+    /// A `width` x `height` picture of chroma `format` with the decoder's
+    /// border, contents unspecified.
+    pub fn picture(
+        &mut self,
+        width: usize,
+        height: usize,
+        format: ChromaFormat,
+    ) -> Result<Picture<T>, DecodeError> {
         // Pictures the caller has since released from output.
         let mut i = 0;
         while i < self.shared.len() {
@@ -373,7 +388,9 @@ impl<T: Pixel> Pool<T> {
                 i += 1;
             }
         }
-        Ok(self.pictures.take(width, height, BORDER)?)
+        Ok(self
+            .pictures
+            .take_with_format(width, height, format, BORDER)?)
     }
 
     /// Take back the buffers of a picture leaving the DPB; samples still
@@ -393,14 +410,28 @@ impl<T: Pixel> Pool<T> {
 
 impl<T: Pixel> PictureState<T> {
     pub fn new(sps: &Sps, layout: Rc<Layout>, pool: &mut Pool<T>) -> Result<Self, DecodeError> {
+        let mut samples = pool.picture(
+            sps.width,
+            sps.height,
+            sps.chroma.unwrap_or(ChromaFormat::Yuv420),
+        )?;
+        if sps.chroma.is_none() {
+            // 4:0:0 pictures show mid-grey chroma to whoever shows three
+            // planes (the decoding-order API); raw output omits it.
+            let grey = T::from_i32(sps.depths.chroma.mid());
+            for plane in [PlaneIndex::U, PlaneIndex::V] {
+                samples.plane_mut(plane).view_mut().fill(grey);
+            }
+        }
         let stride = sps.width >> GRID_LOG2;
         let blocks = stride * (sps.height >> GRID_LOG2);
         let ctbs = layout.ctb_w * layout.ctb_h;
         let progress = Progress::new(layout.ctb_w, layout.ctb_h);
         let rows = layout.ctb_h;
         Ok(Self {
-            samples: pool.picture(sps.width, sps.height)?,
+            samples,
             depths: sps.depths.of::<T>(),
+            chroma: sps.chroma,
             width: sps.width,
             height: sps.height,
             layout,
@@ -417,6 +448,8 @@ impl<T: Pixel> PictureState<T> {
             sao: refill(pool.sao.pop(), ctbs, CtbSao::default()),
             progress,
             edges: EdgePieces::new(pool.edges.take(), rows),
+            deblock_tables: Vec::new(),
+            filter_exempt: false,
         })
     }
 
@@ -436,6 +469,7 @@ impl<T: Pixel> PictureState<T> {
                 stride: self.stride,
                 width: self.width,
                 height: self.height,
+                chroma: self.chroma,
             },
         )
     }
@@ -448,7 +482,12 @@ impl<T: Pixel> PictureState<T> {
 
     /// The availability process of §6.4.1 for the block at `(xn, yn)` seen
     /// from `(x, y)` by slice `slice` (index + 1).
-    #[inline]
+    // Always inlined: `#[inline]` left it out of line, called per 4x4
+    // neighbour of every intra edge, merge and AMVP candidate (4.2M calls
+    // at 58 instructions in a 1080p stream; inlined, decoding it takes
+    // 0.15 % fewer instructions, the Axis 1080p stream 0.27 %).
+    #[allow(clippy::inline_always, reason = "per-neighbour availability test")]
+    #[inline(always)]
     pub fn available(&self, (x, y): (usize, usize), (xn, yn): (isize, isize), slice: u16) -> bool {
         if xn < 0 || yn < 0 || xn as usize >= self.width || yn as usize >= self.height {
             return false;
@@ -646,6 +685,7 @@ pub(super) struct Blocks<'a> {
     pub stride: usize,
     pub width: usize,
     pub height: usize,
+    pub chroma: Option<ChromaFormat>,
 }
 
 impl Blocks<'_> {

@@ -173,7 +173,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         }
         self.maps
             .edges
-            .block(at, edge_block, whole, block.has_chroma());
+            .block(at, edge_block, whole, self.recorded_chroma_tx(block));
     }
 
     /// `residual()` of a non-skipped inter block (§5.11.34): per 64x64
@@ -188,6 +188,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
     ) -> Result<(), DecodeError> {
         let (max_w4, max_h4) = self.visible_units(block);
         let luma_block = (block.size.width(), block.size.height());
+        let chroma = block.has_chroma().then(|| self.chroma_transform(block));
         for row in strided(0..max_h4, CHUNK_MI) {
             for col in strided(0..max_w4, CHUNK_MI) {
                 let rows = row..row + CHUNK_MI;
@@ -213,9 +214,9 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                     )?;
                     self.maps.tx_leaves[index].kind = kind;
                 }
-                if block.has_chroma() {
+                if let Some(chroma) = chroma {
                     for plane in [PlaneIndex::U, PlaneIndex::V] {
-                        self.inter_chroma_chunk(r, block, plane, (col, row))?;
+                        self.inter_chroma_chunk(r, block, (plane, chroma), (col, row))?;
                     }
                 }
             }
@@ -223,26 +224,35 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         Ok(())
     }
 
-    /// The transforms of one chroma plane inside the chunk at luma 4x4
-    /// offset (`col`, `row`).
+    /// The chroma transform of a block with chroma and whether it fills
+    /// the block's chroma, the same for every chunk.
+    fn chroma_transform(&self, block: BlockPos) -> (TxSize, bool) {
+        let tx = self.chroma_tx(block.size);
+        let size = chroma_block(block.size, self.subsampling(PlaneIndex::U));
+        (tx, (tx.width_log2(), tx.height_log2()) == size)
+    }
+
+    /// The transforms of one chroma plane, whose transform is `tx` (filling
+    /// the block's chroma or not), inside the chunk at luma 4x4 offset
+    /// (`col`, `row`).
     fn inter_chroma_chunk(
         &mut self,
         r: &mut SymbolReader<'_>,
         block: BlockPos,
-        plane: PlaneIndex,
+        (plane, (tx, fills)): (PlaneIndex, (TxSize, bool)),
         (col, row): (usize, usize),
     ) -> Result<(), DecodeError> {
         let (max_w4, max_h4) = self.visible_units(block);
-        let tx = self.chroma_tx(block.size);
-        let (chroma_w, chroma_h) = chroma_block(block.size);
-        let fills = (tx.width_log2(), tx.height_log2()) == (chroma_w, chroma_h);
+        let (ss_x, ss_y) = self.subsampling(plane);
         let (step_w, step_h) = (tx.width() / MI_SIZE, tx.height() / MI_SIZE);
-        let end_w = ((col + CHUNK_MI).min(max_w4) + 1) >> 1;
-        let end_h = ((row + CHUNK_MI).min(max_h4) + 1) >> 1;
-        let origin = (block.mi_col >> 1, block.mi_row >> 1);
-        for blk_row in strided((row >> 1)..end_h, step_h) {
-            for blk_col in strided((col >> 1)..end_w, step_w) {
-                let luma = self.luma_tx_type((blk_col << 1, blk_row << 1));
+        let end_w = ((col + CHUNK_MI).min(max_w4) + ss_x) >> ss_x;
+        let end_h = ((row + CHUNK_MI).min(max_h4) + ss_y) >> ss_y;
+        let origin = (block.mi_col >> ss_x, block.mi_row >> ss_y);
+        for blk_row in strided((row >> ss_y)..end_h, step_h) {
+            for blk_col in strided((col >> ss_x)..end_w, step_w) {
+                // §5.11.40: the luma transform at the chroma transform's
+                // position (`Max(MiCol, ...)`: offset 0 in the block).
+                let luma = self.luma_tx_type((blk_col << ss_x, blk_row << ss_y));
                 let source = self.tx_type_source(plane, tx, true, 0, luma);
                 let at = (
                     (origin.0 + blk_col) * MI_SIZE,

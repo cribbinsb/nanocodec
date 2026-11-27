@@ -13,6 +13,9 @@ pub(crate) fn install(table: &mut CodecTxfmFns) {
     table.h264_forward_4x4 = forward;
     table.h264_forward_quantize_mb = forward_quantize_mb;
     table.h264_inverse_4x4 = inverse;
+    if std::arch::is_x86_feature_detected!("popcnt") {
+        table.h264_eliminate_luma_8x8 = super::h264_levels8::icl;
+    }
 }
 
 /// Shared H.264 lines, with four blocks carried in independent sublanes.

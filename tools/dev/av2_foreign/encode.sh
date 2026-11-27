@@ -2,14 +2,18 @@
 # encode.sh <clip-name> <config: ai|ldp|ra|min|minai> <qp> <frames> [extra avmenc args...]
 # One avmenc v1.0.0 stream of a quick360 clip into the foreign-stream corpus
 # (~/nanocodec-data/work/av2-foreign/streams), which compare.py decodes.
+# Optional environment: NC_AV2_CLIPS, the clip directory (default quick360);
+# TAG, a name part for streams made with extra arguments
+# (<clip>.<config>.<TAG>.f<frames>.ivf).
 # The corpus of 2026-11-15: three clips (bodycam_airport_360p,
 # crowd_mot17_09_360p, pan_jaad_0117_360p) at QP 210: ai, ldp, min and minai
 # with 10 frames, ra with 9, minai with 1.
 set -euo pipefail
 clip=$1; cfg=$2; qp=$3; frames=$4; shift 4
 root=$HOME/nanocodec-data
-yuv=$root/clips/quick360/$clip.yuv
-out=$root/work/av2-foreign/streams/$clip.$cfg.f$frames.ivf
+yuv=${NC_AV2_CLIPS:-$root/clips/quick360}/$clip.yuv
+out=$root/work/av2-foreign/streams/$clip.$cfg${TAG:+.$TAG}.f$frames.ivf
+mkdir -p "$(dirname "$out")"
 common=(--good --passes=1 --cpu-used=9 --threads=1 --row-mt=0 --end-usage=q "--qp=$qp"
         --disable-warning-prompt --bit-depth=8 --input-bit-depth=8 --width=640 --height=360
         --i420 --fps=30/1 "--limit=$frames" --ivf)

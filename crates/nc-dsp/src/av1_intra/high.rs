@@ -21,7 +21,7 @@ use super::generic::{paeth_distances, paeth_select};
 use crate::Isa;
 use crate::av1_mc::high_blend::BlendSample;
 use crate::deblock::samples::transpose;
-use crate::intra_prediction::av1_block::cfl::{CFL_MAX_SIDE, cfl_predict_scalar};
+use crate::intra_prediction::av1_block::cfl::{CFL_MAX_SIDE, cfl_predict_420_scalar};
 use crate::intra_prediction::av1_block::{BlockEdges, IntraKind, ZoneBlock};
 use crate::intra_prediction::directional::{self, DirectionalKernels};
 use crate::intra_prediction::filter::{
@@ -117,8 +117,8 @@ impl HighAv1IntraFns {
         smooth_u16: scalar_smooth::<u16>,
         smooth_u8: scalar_smooth::<u8>,
         zones_u8: None,
-        cfl_u16: cfl_predict_scalar::<u16>,
-        cfl_u8: cfl_predict_scalar::<u8>,
+        cfl_u16: cfl_predict_420_scalar::<u16>,
+        cfl_u8: cfl_predict_420_scalar::<u8>,
     };
 
     pub fn for_isa(isa: Isa) -> Self {
@@ -514,7 +514,7 @@ unsafe fn cfl_predict_lanes<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: I
         return;
     }
     if alpha_q3.abs() > 16 || depth.bits() > 12 {
-        cfl_predict_scalar(luma, (luma_width, luma_height), dc, alpha_q3, dst, depth);
+        cfl_predict_420_scalar(luma, (luma_width, luma_height), dc, alpha_q3, dst, depth);
         return;
     }
     let (stored_w, stored_h) = (luma_width / 2, luma_height / 2);

@@ -26,10 +26,12 @@ HOME = Path.home()
 DAV2D = Path(os.environ.get("DAV2D_BLOCKS", HOME / "nanocodec-data/work/av2-dec/dav2d-debug/build-blk/tools/dav2d"))
 OURS = Path(os.environ.get("TRACE_BLOCKS", HOME / "nanocodec-data/targets/av2-dec2/gate/examples/trace_blocks"))
 LINE = re.compile(r"^\s*([A-Za-z_-]+)\[")
+# dav2d zero-pads some numbers (16-bit palettes print as %03x).
+PADDED = re.compile(r"(?<![\w.])0+(?=[0-9a-f])")
 
 
 def lines(text):
-    return [line.rstrip() for line in text.splitlines() if LINE.match(line)]
+    return [PADDED.sub("", line.rstrip()) for line in text.splitlines() if LINE.match(line)]
 
 
 def main():
