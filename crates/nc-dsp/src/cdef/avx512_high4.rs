@@ -4,15 +4,14 @@
 
 use super::{CDEF_PADDING, CDEF_UNAVAILABLE, CdefArgs, CdefSource, DIRECTIONS};
 use core::arch::x86_64::{
-    __m128i, __m512i, _mm_cvtsi32_si128, _mm_extract_epi64, _mm_mask_permutexvar_epi16,
-    _mm_maskz_loadu_epi16, _mm_set1_epi16, _mm_setr_epi16, _mm_storel_epi64, _mm_sub_epi16,
-    _mm256_castsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
+    __m128i, __m512i, _mm_cvtsi32_si128, _mm_extract_epi64, _mm_mask_loadu_epi16, _mm_set1_epi16,
+    _mm_storel_epi64, _mm256_castsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
     _mm256_inserti128_si256, _mm512_abs_epi16, _mm512_add_epi16, _mm512_add_epi32,
-    _mm512_and_si512, _mm512_castsi256_si512, _mm512_cmplt_epi16_mask, _mm512_cvtepi32_epi16,
-    _mm512_dpwssd_epi32, _mm512_inserti64x4, _mm512_loadu_si512, _mm512_mask_sub_epi16,
-    _mm512_max_epi16, _mm512_max_epi32, _mm512_min_epi32, _mm512_min_epu16,
-    _mm512_permutex2var_epi16, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512,
-    _mm512_srai_epi32, _mm512_srl_epi16, _mm512_srli_epi32, _mm512_sub_epi16, _mm512_subs_epu16,
+    _mm512_castsi256_si512, _mm512_cmplt_epi16_mask, _mm512_cvtepi32_epi16, _mm512_dpwssd_epi32,
+    _mm512_inserti64x4, _mm512_loadu_si512, _mm512_mask_sub_epi16, _mm512_max_epi16,
+    _mm512_min_epi16, _mm512_min_epu16, _mm512_permutex2var_epi16, _mm512_set1_epi16,
+    _mm512_set1_epi32, _mm512_setzero_si512, _mm512_srai_epi32, _mm512_srl_epi16,
+    _mm512_srli_epi32, _mm512_sub_epi16, _mm512_subs_epu16,
 };
 
 const SIDE: usize = 4;
@@ -98,13 +97,15 @@ unsafe fn filter<const PRI: bool, const SEC: bool>(
             let shift = _mm_cvtsi32_si128(shift as i32);
             let near = _mm512_permutex2var_epi16(a, _mm512_add_epi16(indices, offset), b);
             let far = _mm512_permutex2var_epi16(a, _mm512_sub_epi16(indices, offset), b);
-            for p in [near, far] {
-                if PRI && SEC {
-                    min = _mm512_min_epu16(min, p);
-                    max = _mm512_max_epi16(max, p);
-                }
-                sum = _mm512_dpwssd_epi32(sum, constrain(p, center, strength, shift), weights);
+            if PRI && SEC {
+                min = _mm512_min_epu16(min, _mm512_min_epu16(near, far));
+                max = _mm512_max_epi16(max, _mm512_max_epi16(near, far));
             }
+            let pairs = _mm512_add_epi16(
+                constrain(near, center, strength, shift),
+                constrain(far, center, strength, shift),
+            );
+            sum = _mm512_dpwssd_epi32(sum, pairs, weights);
         };
         if PRI {
             accumulate(dir, args.pri, args.pri_shift, args.pri_taps);
@@ -117,13 +118,14 @@ unsafe fn filter<const PRI: bool, const SEC: bool>(
             _mm512_add_epi32(sum, _mm512_set1_epi32(8)),
             _mm512_srai_epi32::<31>(sum),
         ));
-        let low_word = _mm512_set1_epi32(65535);
-        let mut output = _mm512_add_epi32(_mm512_and_si512(center, low_word), rounded);
+        // Only the low word of each dword is stored. The adjacent copy
+        // participates in the signed word clamp without affecting it.
+        let mut output = _mm512_add_epi16(center, rounded);
         if PRI && SEC {
             let min = _mm512_min_epu16(min, _mm512_srli_epi32::<16>(min));
             let max = _mm512_max_epi16(max, _mm512_srli_epi32::<16>(max));
-            output = _mm512_max_epi32(output, _mm512_and_si512(min, low_word));
-            output = _mm512_min_epi32(output, _mm512_and_si512(max, low_word));
+            output = _mm512_max_epi16(output, min);
+            output = _mm512_min_epi16(output, max);
         }
         let rows = _mm512_cvtepi32_epi16(output);
         let (lo, hi) = (
@@ -173,20 +175,17 @@ pub(super) unsafe fn border(
     let rows = (HALO - top).min(src.height() - first_y);
     let start = src.index(first_x, first_y);
     let input = &src.samples()[start..][..(rows - 1) * width + columns];
-    let mask = ((1u16 << columns) - 1) as u8;
-    let valid = mask << left;
+    let valid = (((1u16 << columns) - 1) << left) as u8;
     let end = top + rows;
     // SAFETY: every unmasked source lane lies in the checked source span.
     unsafe {
         let missing = _mm_set1_epi16(CDEF_UNAVAILABLE);
-        let indices = _mm_sub_epi16(
-            _mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7),
-            _mm_set1_epi16(left as i16),
-        );
         let load = |i: usize| {
-            let ptr = input.as_ptr().add(i * width);
-            let pixels = _mm_maskz_loadu_epi16(mask, ptr.cast());
-            _mm_mask_permutexvar_epi16(missing, valid, indices, pixels)
+            // At the left edge the base lies before the row. The mask
+            // suppresses exactly those columns, so only the valid part
+            // of the row is accessed even at the start of the allocation.
+            let ptr = input.as_ptr().add(i * width).wrapping_sub(left);
+            _mm_mask_loadu_epi16(missing, valid, ptr.cast())
         };
         let [a, b] = match (top, rows) {
             (2, 6) => [

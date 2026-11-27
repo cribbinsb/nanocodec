@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.0 (2026-11-27)
+
+Builds published on crates.io carry source only; no PGO.
+
+### Results
+
+- Benchmark procedure BP-4 (CBR, low delay, one thread) measured development build 23c962d8b, shortly before
+  this release, on Arm (AWS Graviton 4) and x86 (Intel Granite Rapids):
+  https://cribbinsb.github.io/nanocodec/results/.
+
+### Encoders
+
+- **Rate control:** strict 1 s buffer handling for the first and periodic keys (first-key hysteresis,
+  key buffer caps), temporal-persistence AQ on later keys, MC-confidence QP concentration on cadence base
+  frames, spare-budget refinement of held frames on by default.
+- **Presets:** retuned ladders across all six formats (among them AV1 period-8 QP cadence, AV1 trellis
+  lambda 0.8, HEVC key trellis lambda 0.5, H.264 slower intra searches, VP9 and AV1 fast-rung gates).
+- **Streams:** an encoder-information SEI / metadata on every key frame (`stream.encoder_info`, on by
+  default).
+- **Speed:** many exact kernel speed-ups (streams unchanged), including NEON I8MM and SVE2 paths on Arm
+  (H.264, VP9 and AV1-family interpolation, SSE, SAD), AVX2 / AVX-512 kernels ported from dav1d, rav1e and SVT-AV1,
+  and fused H.264 residual, transform and quantisation paths.
+
+### Decoders
+
+- Faster high-bit-depth decoding: AV1 film grain, CDEF and motion compensation (AVX-512 Ice Lake and NEON),
+  HEVC / VVC SAO and Main 10 prediction (NEON, SVE2), AV2 guided detail and CCSO.
+- Browser decoding in output order for H.264 and VVC.
+- Fuzzing fixes: AV2 rejects band-only CCSO beyond 64 bands; VP9 caps the picture area at level 6.2.
+
+### Platforms
+
+- Linux AArch64 SVE2 dispatch alongside NEON (selected at run time).
+
 ## 0.6.0 (2026-11-21)
 
 ### Breaking: preset names moved

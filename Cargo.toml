@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.90"
 license = "BSD-3-Clause"
@@ -34,16 +34,16 @@ categories = ["multimedia::video", "multimedia::encoding"]
 # Published as `nanocodec-*` (crates.io), used as `nc_*` in Rust: each key is
 # the directory and library name. The version is what a published crate
 # resolves; the path is what the workspace builds.
-nc-common = { package = "nanocodec-common", version = "0.6.0", path = "crates/nc-common" }
-nc-dsp = { package = "nanocodec-dsp", version = "0.6.0", path = "crates/nc-dsp" }
-nc-analysis = { package = "nanocodec-analysis", version = "0.6.0", path = "crates/nc-analysis" }
-nc-encoder = { package = "nanocodec-encoder", version = "0.6.0", path = "crates/nc-encoder" }
-nc-av1 = { package = "nanocodec-av1", version = "0.6.0", path = "crates/nc-av1" }
-nc-av2 = { package = "nanocodec-av2", version = "0.6.0", path = "crates/nc-av2" }
-nc-vp9 = { package = "nanocodec-vp9", version = "0.6.0", path = "crates/nc-vp9" }
-nc-h264 = { package = "nanocodec-h264", version = "0.6.0", path = "crates/nc-h264" }
-nc-hevc = { package = "nanocodec-hevc", version = "0.6.0", path = "crates/nc-hevc" }
-nc-vvc = { package = "nanocodec-vvc", version = "0.6.0", path = "crates/nc-vvc" }
+nc-common = { package = "nanocodec-common", version = "0.7.0", path = "crates/nc-common" }
+nc-dsp = { package = "nanocodec-dsp", version = "0.7.0", path = "crates/nc-dsp" }
+nc-analysis = { package = "nanocodec-analysis", version = "0.7.0", path = "crates/nc-analysis" }
+nc-encoder = { package = "nanocodec-encoder", version = "0.7.0", path = "crates/nc-encoder" }
+nc-av1 = { package = "nanocodec-av1", version = "0.7.0", path = "crates/nc-av1" }
+nc-av2 = { package = "nanocodec-av2", version = "0.7.0", path = "crates/nc-av2" }
+nc-vp9 = { package = "nanocodec-vp9", version = "0.7.0", path = "crates/nc-vp9" }
+nc-h264 = { package = "nanocodec-h264", version = "0.7.0", path = "crates/nc-h264" }
+nc-hevc = { package = "nanocodec-hevc", version = "0.7.0", path = "crates/nc-hevc" }
+nc-vvc = { package = "nanocodec-vvc", version = "0.7.0", path = "crates/nc-vvc" }
 
 [workspace.lints.rust]
 # `deny`, not `forbid`, so that nc-dsp can allow it on its kernel modules
