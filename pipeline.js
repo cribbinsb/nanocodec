@@ -32,6 +32,7 @@ import { codesTick, tickAt, tickMs } from './timeline.js';
 import { framesToDecode, streamFrameAtTick } from './reference.js';
 import { SourcePicture } from './colour.js';
 import { compiledModule } from './wasm.js';
+import { lossRateHint } from './link-panel.js';
 
 /**
  * Frames captured but not yet decoded by both views: one per stage (capture
@@ -166,7 +167,12 @@ class LiveView extends View {
   codes(tick) { return codesTick(this.panel.current.step, tick); }
   requestKeyframe() { this.encoder.postMessage({ type: 'keyframe' }); }
   updateRate() { this.encoder.postMessage({ type: 'rate', config: this.panel.current }); }
-  updateNetwork() { this.decoder.postMessage({ type: 'network', network: this.panel.current.link.network }); }
+  /** The running link's new network settings: to the decoder's emulated network, and their loss as loss-aware CBR's hint. */
+  updateNetwork() {
+    this.decoder.postMessage({ type: 'network', network: this.panel.current.link.network });
+    const lossRate = lossRateHint(this.panel.current.link);
+    if (lossRate !== null) this.encoder.postMessage({ type: 'loss-rate', lossRate });
+  }
   /** Keep a decoded result's coded frames (frame holds code nothing) for `replayFrames`. */
   retain({ earlier = [], ...shown }) {
     for (const coded of [...earlier, shown]) {

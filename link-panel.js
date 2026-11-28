@@ -12,6 +12,14 @@ import { TIMELINE_LANES } from './rtp-link.js';
 export const LINK_MODES = { bitstream: 'bitstream', rtp: 'rtp', lossy: 'lossy' };
 /** Frames between long-term reference marks with LTR feedback on: the loss simulator's checked setting (docs/handoff/loss-resilience.md). */
 const LTR_INTERVAL = 15;
+/**
+ * The packet loss rate (0..1) loss-aware CBR takes as its hint: the lossy network's
+ * loss setting while `link` runs over it with loss-aware CBR on, else null.
+ */
+export function lossRateHint(link) {
+  if (link?.mode !== LINK_MODES.lossy || !link.resilience?.lossAwareRc) return null;
+  return (link.network?.lossPercent ?? 0) / 100;
+}
 /** The intra-refresh sweep: one second of frames. */
 const refreshPeriod = fps => fps;
 /** The timeline shows this much source time. */
@@ -33,6 +41,8 @@ const TIPS = {
   refreshSpatial: 'Intra refresh is not combined with spatial layers (docs/FAQ.md)',
   refreshSecondRef: 'Intra refresh is not combined with the second reference (Advanced)',
   keyRequests: 'Key frame on request: when the receiver cannot decode (a loss with no long-term reference to repair from), it asks the encoder for a key frame (a PLI), repeated every round trip while the picture stays frozen. Off: the picture stays frozen until the next periodic key frame.',
+  lossAwareRc: 'Loss-aware CBR (rate.loss_aware=1, CBR only; off by default): the encoder estimates packet loss from the receiver\'s feedback (and, over the lossy network, takes its loss setting as a hint, live), caps key and large inter frames so they are likely to arrive whole, shrinks key frames further after each lost key, and spends the bits a capped key saved on the frames after it (crates/nc-encoder/src/loss_rate.rs).',
+  lossAwareSpatial: 'Loss-aware CBR is not combined with spatial layers: each layer\'s rate control codes without the receiver\'s feedback',
   temporalLayers: 'Temporal layers: no frame predicts from the top layer, so a lost top-layer frame is dropped by the receiver and the picture goes on (a skip, not a freeze). Over RTP the structure is fixed (layers.adaptive=0): the presets\' adaptive layers would code flat while the content allows.',
 };
 
@@ -63,6 +73,7 @@ export class LinkControls {
           <label class="toggle ltr-option"><input class="ltr" type="checkbox" checked>Long-term reference + loss feedback</label>
           <label class="toggle refresh-option"><input class="refresh" type="checkbox">Intra refresh</label>
           <label class="toggle key-option" title="${escapeHtml(TIPS.keyRequests)}"><input class="key-requests" type="checkbox" checked>Key frame on request</label>
+          <label class="toggle loss-aware-option" title="${escapeHtml(TIPS.lossAwareRc)}"><input class="loss-aware" type="checkbox">Loss-aware CBR</label>
         </div>
       </div>
       <details class="network-advanced" hidden><summary>Network emulator</summary><div class="network-grid">
@@ -87,7 +98,7 @@ export class LinkControls {
     this.mode = LINK_MODES.bitstream;
     this.settingsBox = $('.link-settings'); this.advanced = $('.network-advanced');
     this.preset = $('.network-preset');
-    this.ltr = $('.ltr'); this.refresh = $('.refresh'); this.keyRequests = $('.key-requests');
+    this.ltr = $('.ltr'); this.refresh = $('.refresh'); this.keyRequests = $('.key-requests'); this.lossAware = $('.loss-aware');
     this.temporalLayers = temporalLayers;
     temporalLayers.title = TIPS.temporalLayers;
     $('.resilience').append(temporalLayers);
@@ -107,7 +118,7 @@ export class LinkControls {
       if (Object.keys(NETWORK_PRESETS.good).includes(this.fieldName(field))) this.preset.value = CUSTOM;
       changed('network');
     });
-    for (const control of [this.ltr, this.refresh, this.keyRequests, this.mtu, this.sfuSpatial, this.sfuTemporal]) control.addEventListener('change', () => changed());
+    for (const control of [this.ltr, this.refresh, this.keyRequests, this.lossAware, this.mtu, this.sfuSpatial, this.sfuTemporal]) control.addEventListener('change', () => changed());
     // The visitor's LTR choice, restored when spatial layers no longer rule it out.
     this.ltr.addEventListener('change', () => { this.ltrWanted = this.ltr.checked; });
   }
@@ -152,6 +163,7 @@ export class LinkControls {
     if (!ltrWhy && this.ltrWanted !== undefined) this.ltr.checked = this.ltrWanted;
     const refreshWhy = !s.intraRefresh ? TIPS.refreshUnsupported : spatialLayers > 1 ? TIPS.refreshSpatial : secondReference ? TIPS.refreshSecondRef : null;
     offer(this.element.querySelector('.refresh-option'), this.refresh, !refreshWhy, TIPS.refresh, refreshWhy);
+    offer(this.element.querySelector('.loss-aware-option'), this.lossAware, spatialLayers <= 1, TIPS.lossAwareRc, TIPS.lossAwareSpatial);
     const fill = (select, count, name) => {
       // "All layers" stays all layers when the count changes; a chosen limit is kept where it still exists.
       const all = select.value === '' || +select.value === select.options.length - 1;
@@ -176,20 +188,28 @@ export class LinkControls {
    */
   settings(fps, temporalLayers) {
     if (this.mode === LINK_MODES.bitstream) return { link: { mode: this.mode }, overrides: [] };
-    const resilience = { ltr: this.ltr.checked, intraRefresh: this.refresh.checked, keyRequests: this.keyRequests.checked };
-    const overrides = [...(resilience.ltr ? [`ltr.interval=${LTR_INTERVAL}`] : []), ...(resilience.intraRefresh ? [`refresh.period=${refreshPeriod(fps)}`] : []),
-      ...(temporalLayers > 1 ? [FIXED_LAYERS] : [])];
+    const network = this.network();
+    const resilience = { ltr: this.ltr.checked, intraRefresh: this.refresh.checked, keyRequests: this.keyRequests.checked, lossAwareRc: this.lossAware.checked };
     const sfu = { spatial: +(this.sfuSpatial.value || 0), temporal: +(this.sfuTemporal.value || 0) };
-    return { link: { mode: this.mode, network: this.network(), resilience, sfu }, overrides };
+    const link = { mode: this.mode, network, resilience, sfu };
+    // The starting hint is a parameter too, so the CLI command shown under the view codes the same stream;
+    // later network changes reach the running encoder as live hints (pipeline.js `updateNetwork`).
+    const hint = lossRateHint(link);
+    const overrides = [...(resilience.ltr ? [`ltr.interval=${LTR_INTERVAL}`] : []), ...(resilience.intraRefresh ? [`refresh.period=${refreshPeriod(fps)}`] : []),
+      ...(resilience.lossAwareRc ? ['rate.loss_aware=1', ...(hint ? [`rate.loss_rate=${hint.toFixed(3)}`] : [])] : []),
+      ...(temporalLayers > 1 ? [FIXED_LAYERS] : [])];
+    return { link, overrides };
   }
   /** One line for the rate status: the link and its settings. */
   static describe(link) {
     if (!link || link.mode === LINK_MODES.bitstream) return '';
+    // Loss-aware CBR is a rate-control mode, not a repair: its state always shows, on or off.
+    const lossAware = ` · loss-aware CBR ${link.resilience.lossAwareRc ? 'on' : 'off'}`;
+    if (link.mode === LINK_MODES.rtp) return ` · RTP (MTU ${link.network.mtu})${lossAware}`;
     const on = Object.entries({ LTR: link.resilience.ltr, 'intra refresh': link.resilience.intraRefresh, 'key requests': link.resilience.keyRequests })
       .filter(([, value]) => value).map(([name]) => name);
-    if (link.mode === LINK_MODES.rtp) return ` · RTP (MTU ${link.network.mtu})`;
     const n = link.network;
-    return ` · RTP, ${n.lossPercent} % ${n.lossModel === 'burst' ? `bursts of ${n.burstLength}` : 'random'} loss${n.lossScope === 'all' ? '' : ` (${LOSS_SCOPES[n.lossScope].toLowerCase()})`}, ${n.delayMs} ms ± ${n.jitterMs} ms, RTT ${roundTripMs(n)} ms · ${on.length ? on.join(', ') : 'no resilience'}`;
+    return ` · RTP, ${n.lossPercent} % ${n.lossModel === 'burst' ? `bursts of ${n.burstLength}` : 'random'} loss${n.lossScope === 'all' ? '' : ` (${LOSS_SCOPES[n.lossScope].toLowerCase()})`}, ${n.delayMs} ms ± ${n.jitterMs} ms, RTT ${roundTripMs(n)} ms · ${on.length ? on.join(', ') : 'no resilience'}${lossAware}`;
   }
 }
 

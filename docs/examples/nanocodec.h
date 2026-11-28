@@ -167,6 +167,11 @@ nc_status nc_encoder_report_loss(nc_encoder *encoder, uint64_t index);
 nc_status nc_encoder_acknowledge_layer(nc_encoder *encoder, uint64_t index, uint8_t spatial_id);
 nc_status nc_encoder_report_layer_loss(nc_encoder *encoder, uint64_t index, uint8_t spatial_id);
 
+/* The transport's packet loss rate (0..0.5), a hint for loss-aware CBR
+ * (--param rate.loss_aware=1; ignored when off). Out of range or NaN:
+ * NC_ERROR_INVALID_ARGUMENT. */
+nc_status nc_encoder_set_packet_loss_rate(nc_encoder *encoder, float loss_rate);
+
 /* Resolution change from the next frame on (a key frame with new parameter
  * sets / sequence header); later frames must have the new size. */
 nc_status nc_encoder_set_resolution(nc_encoder *encoder, uint32_t width, uint32_t height);

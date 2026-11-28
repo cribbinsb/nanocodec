@@ -284,6 +284,11 @@ export class BrowserEncoder {
    */
   disable_rate_control(): void;
   /**
+   * Supply an explicit transport packet-loss rate hint (`0.0..=0.5`) for
+   * loss-aware CBR (`rate.loss_aware=1`).
+   */
+  set_packet_loss_rate(loss_rate: number): void;
+  /**
    * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
    * `preset_name` is a rung of the speed ladder: "medium" (the codec's
    * Default), "slow", "slower", "fast", "faster" (every codec), "veryslow"
@@ -621,6 +626,7 @@ export interface InitOutput {
   readonly browserencoder_repeat: (a: number) => number;
   readonly browserencoder_report_lost_frame: (a: number, b: number, c: number) => void;
   readonly browserencoder_request_keyframe: (a: number) => void;
+  readonly browserencoder_set_packet_loss_rate: (a: number, b: number) => void;
   readonly browserencoder_set_rate_control: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly browserencoder_temporal_layer: (a: number) => number;
   readonly browserencoder_wants_look_ahead: (a: number) => number;

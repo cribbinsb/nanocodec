@@ -985,6 +985,14 @@ export class BrowserEncoder {
         wasm.browserencoder_disable_rate_control(this.__wbg_ptr);
     }
     /**
+     * Supply an explicit transport packet-loss rate hint (`0.0..=0.5`) for
+     * loss-aware CBR (`rate.loss_aware=1`).
+     * @param {number} loss_rate
+     */
+    set_packet_loss_rate(loss_rate) {
+        wasm.browserencoder_set_packet_loss_rate(this.__wbg_ptr, loss_rate);
+    }
+    /**
      * Whether the last encoded packet is a key frame.
      * @returns {boolean}
      */

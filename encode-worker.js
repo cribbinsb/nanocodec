@@ -170,6 +170,9 @@ async function receive({ data: message }) {
     } else if (message.type === 'keyframe') {
       encoder.request_keyframe();
       keyRequested = true;
+    } else if (message.type === 'loss-rate') {
+      // Loss-aware CBR's hint, from the lossy network's live loss setting (pipeline.js `updateNetwork`).
+      encoder.set_packet_loss_rate(message.lossRate);
     } else if (message.type === 'rate') {
       config = message.config;
       configureRate(config);

@@ -50,6 +50,7 @@ export const browserencoder_quantizer: (a: number) => number;
 export const browserencoder_repeat: (a: number) => number;
 export const browserencoder_report_lost_frame: (a: number, b: number, c: number) => void;
 export const browserencoder_request_keyframe: (a: number) => void;
+export const browserencoder_set_packet_loss_rate: (a: number, b: number) => void;
 export const browserencoder_set_rate_control: (a: number, b: number, c: number, d: number, e: number) => void;
 export const browserencoder_temporal_layer: (a: number) => number;
 export const browserencoder_wants_look_ahead: (a: number) => number;
