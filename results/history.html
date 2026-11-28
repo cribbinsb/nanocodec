@@ -3,69 +3,80 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex">
+  <meta name="description" content="How nanocodec's encoders moved on the headline chart from 2026-11-07 to 2026-11-23: one build per day, re-measured with one protocol.">
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
-  <title>nanocodec front history</title>
+  <title>nanocodec results history</title>
   <link rel="stylesheet" href="../site-header.css">
-  <link rel="stylesheet" href="site.css">
-  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; } .day-control label > span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .day-control { min-width: 0; } html { overflow-y: scroll; }</style>
+  <link rel="stylesheet" href="site.css?v=4d0cf667ce">
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
-<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
 <div class="results-bar">
   <nav class="results-nav" aria-label="Results pages">
     <a href="./">Overview</a>
     <a href="codecs.html">By codec</a>
-    <a href="history.html" aria-current="page">History</a>
-    <a href="compliance.html">Rate control</a>
-    <a href="svc.html">SVC</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="fixed-qp.html">Fixed QP</a>
     <a href="clips.html">Clips</a>
-    <a href="decoders.html">Decoders</a>
+    <a href="svc.html">SVC</a>
     <a href="method.html">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
   </nav>
-  <div class="machine-picker"></div>
 </div>
 <main>
-  <h1>History of the front</h1>
-  <p class="lede">Our encoders' presets and the Pareto frontier they form, one frame per day's last build, each
-    measured again under the benchmark procedure on the same timing machines as the other pages, against one zero line.</p>
-  <div class="disclaimer results-banner" role="note"></div>
+  <h1>History of the headline chart</h1>
+  <p class="lede">nanocodec's code was written and is maintained by AI coding agents (mostly Anthropic's Claude,
+    also OpenAI's Codex and Google's Gemini) under the direction of one person. This page shows its encoders'
+    presets on the overview chart and the Pareto frontier they form, one frame per day from 2026-11-07 (the first build with CBR rate
+    control) to 2026-11-23, with the main landings and the git activity since the previous frame. Each frame is that day's last build, measured again now with one protocol, so the frames
+    compare with each other. The dated charts of those days do not: their clip sets, zero line, timing
+    machine and preset names changed during the period.</p>
+
   <div class="disclaimer">
-    <strong>What this measures.</strong>
-    <ul class="history-notes"></ul>
+    <strong>What this measures.</strong> Every preset each build shipped, on a fixed slice of the held-out
+    fresh clips, not the full set the overview uses. Every build's fps were timed on AWS c8a (Zen 5), one
+    core, the chart's machine, as plain release builds (the overview times PGO builds). The reference encoders are fixed points: today's versions, their
+    quality on the same slice. <a href="method.html">How the chart is measured</a>.
   </div>
 
-  <p class="disclaimer history-absent" role="note" hidden></p>
   <section id="history" aria-label="History animation">
     <div class="controls">
       <button type="button" class="play" aria-pressed="false">Play</button>
       <label class="control ladder-control"><span>Show every preset</span><input type="checkbox" class="all-toggle" aria-label="Show every preset, not only those on the frontier"></label>
-      <div class="control day-control"><label><span>Frame <output class="day-label"></output></span><input type="range" min="0" max="0" step="1" value="0" aria-label="Frame"></label><div class="day-ticks" aria-hidden="true"></div></div>
+      <div class="control day-control"><label><span>Day <output class="day-label"></output></span><input type="range" min="0" max="0" step="1" value="0" aria-label="Day"></label><div class="day-ticks" aria-hidden="true"></div></div>
     </div>
     <div class="chart-card">
       <div class="frame-head">
-        <p class="chart-title">BD-J vs <span class="zero-name"></span>, against encode speed</p>
-        <p class="chart-sub"><span class="frame-day"></span> · common set · bold: our Pareto frontier that day (over every codec and preset, or one codec's: Front of), bars its 95 % bootstrap intervals over clips · orange: references, the same report and clips, dashed: their front · faint: earlier frames' frontiers · lower is fewer bits, right is faster</p>
-        <p class="chart-sub frame-presets"></p>
-        <p class="chart-sub frame-compliance"></p>
+        <p class="chart-title">BD-J vs x264 medium --tune zerolatency,psnr, against single-thread encode speed</p>
+        <p class="chart-sub"><span class="frame-day"></span> · every preset · real-time CBR · held-out fresh clips (fixed slice) · bold: our Pareto frontier (over every codec and preset, or one codec's presets: Front of), its presets marked (ringed: a Default) · faint: earlier frames' frontiers · lower is fewer bits, right is faster</p>
+        <p class="chart-sub">How full each encoder's buffer gets in the release charts is measured on <a href="buffer.html">Rate control and the buffer</a>; these frames span builds from before and after its changes.</p>
         <ul class="frame-caption" aria-live="polite"></ul>
+        <p class="frame-activity"></p>
+        <p class="frame-front"></p>
       </div>
       <div class="chart"></div>
+      <div class="change-charts" aria-label="How the whole front moved"></div>
       <div class="tooltip" role="tooltip" hidden></div>
     </div>
-    <details class="table-view" open>
-      <summary>Every frame as a table</summary>
+    <p class="change-note note"></p>
+    <p class="view-note"></p>
+    <details class="table-view">
+      <summary>Every day as a table</summary>
       <div class="table-slot"></div>
     </details>
-    <p class="note history-source"></p>
-    <p class="note">The captions are the earlier history page's structural landings per day (commit and what landed); its measured figures, from the withdrawn procedure, are not repeated.</p>
+    <p class="note">Data: <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-23/history.json"><code>history-2026-11-23/history.json</code></a>
+      (tools/dev/history_chart.py); the animation as <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-23/history.gif">GIF</a>
+      and <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-23/history.mp4">MP4</a>.</p>
   </section>
 </main>
 <footer>
   <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
-    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264
-    and Kvazaar are its comparison points here (VVenC is not charted: it has no real-time CBR mode). With thanks to all of them.</p>
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
 </footer>
-<script type="module" src="history.js"></script>
+<script type="module" src="history.js?v=4d0cf667ce"></script>
 </body>
 </html>

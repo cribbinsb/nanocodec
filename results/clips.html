@@ -3,41 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex">
+  <meta name="description" content="The clips behind every results chart: name, source collection, resolution, frames and content class.">
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
-  <title>nanocodec benchmark clips</title>
+  <title>nanocodec clips</title>
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="site.css">
-  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; } tr.out td { color: var(--muted); } .clip-table td:first-child { width: 30%; min-width: 220px; white-space: normal; word-break: break-all; } .clip-table th { white-space: normal; }</style>
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
-<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
 <div class="results-bar">
   <nav class="results-nav" aria-label="Results pages">
     <a href="./">Overview</a>
     <a href="codecs.html">By codec</a>
-    <a href="history.html">History</a>
-    <a href="compliance.html">Rate control</a>
-    <a href="svc.html">SVC</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="fixed-qp.html">Fixed QP</a>
     <a href="clips.html" aria-current="page">Clips</a>
+    <a href="svc.html">SVC</a>
     <a href="method.html">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
   </nav>
-  <div class="machine-picker"></div>
 </div>
 <main>
-  <h1>The clips</h1>
-  <p class="lede">Every clip each benchmark dataset coded: its size, rate, windows and the rungs the shared ladder gives it, and, for the chosen timing machine, which encoders' curves on it were malformed. Names and numbers only: no frame or stream is published.</p>
-  <div class="disclaimer results-banner" role="note"></div>
+  <h1>The clips behind the charts</h1>
+  <p class="lede">Every clip each chart measures, generated from the same clip sets and exclusion lists the
+    charts use. Names and source collections only: the videos themselves are not published.</p>
   <div id="clips">
     <div class="controls"></div>
-    <p class="summary note measured"></p>
+    <p class="note summary"></p>
     <div class="clip-table"></div>
   </div>
 </main>
 <footer>
   <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
-    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264
-    and Kvazaar are its comparison points here (VVenC is not charted: it has no real-time CBR mode). With thanks to all of them.</p>
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
 </footer>
 <script type="module" src="clips.js"></script>
 </body>

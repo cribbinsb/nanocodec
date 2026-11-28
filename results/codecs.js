@@ -1,55 +1,71 @@
-// Results by codec (codecs.html): for each format, our presets and the reference encoders of
-// that format in every dataset reported on the chosen timing machine, on the common set, for
-// the chosen metric. Data: data/bp3.json (tools/bench/preview.py).
-import { CODEC_NAMES, control, el, fail, loadData, pct, segmented, table } from './common.js';
-import { NAMES, SHORT, SPEED_UNIT, allChoices, banner, chosenMachine, machinePicker, mean, speed, statement, viewTitle, viewsOn } from './bp3.js';
+// Results by codec (codecs.html): for each format, our presets and the reference
+// encoders of that format, on the fresh and all held-out clips and the development
+// clips, for the chosen zero line and metric. Data: data/chart.json.
+import {
+  CODEC_NAMES, METRIC_NAMES, METRIC_SHORT, ZERO_NAMES, control, el, fail, fps, loadData, measuredNote, pct,
+  segmented, sources, table,
+} from './common.js';
 
-const state = { metric: 'j', machine: null };
+const TUNED_ZERO = 'x264-medium~psnr';
+const PRESET_ORDER = ['Slow', 'Medium', 'Fast', 'Faster', 'Veryfast'];
+const state = { zero: TUNED_ZERO, metric: 'j' };
 
-/** A family's figures in a view; a twin the report measured identically has its kept row's. */
-const valuesOf = (view, family) => view.values[view.same_streams[family] || family];
+function views(data) {
+  const zid = state.zero === TUNED_ZERO ? 'psnr' : 'default';
+  const byId = Object.fromEntries(data.views.map((v) => [v.id, v]));
+  return [
+    { title: 'Held-out, fresh', view: byId[`fresh-${zid}`] },
+    { title: 'Held-out, all', view: byId[`heldout-${zid}`] },
+    { title: 'Development', view: byId[`dev-${zid}`] },
+    ...Object.entries(data.datasets).map(([id, d]) => ({ title: d.short, view: byId[`${id}-${zid}`] })),
+  ].filter((c) => c.view);
+}
 
-/** "BD (clips)" of a family in a view, or a dash where it has none; a +drop row's clips are
- * its own. */
-function cell(view, family) {
-  const v = valuesOf(view, family);
-  const value = v ? mean(v.bd[state.metric]) : null;
-  return value === null ? '–' : `${pct(value)} (${v.clips}${v.own_only ? ', own' : ''})`;
+function cellOf(view, family) {
+  const v = view.values[family];
+  if (!v || v[state.metric] === null || v[state.metric] === undefined) return '–';
+  return pct(v[state.metric]) + (v.clips_scored ? ` (${v.clips_scored})` : '');
 }
 
 function render(data, root) {
-  const views = viewsOn(data, state.machine);
-  const speedOf = (f) => views.map((v) => v.values[f]?.speed).find(Boolean) ?? 0;
+  const columns = views(data);
+  const fresh = columns[0].view;
   const out = data.codec_order.map((codec) => {
-    const families = Object.keys(data.points).filter((f) => data.points[f].codec === codec && views.some((v) => valuesOf(v, f)))
-      .sort((a, b) => (data.points[b].ours - data.points[a].ours) || speedOf(a) - speedOf(b));
-    if (!families.length) return null;
+    const families = Object.keys(data.points).filter((f) => {
+      const p = data.points[f];
+      return p.codec === codec && columns.some((c) => c.view.values[f]) && (!p.tune || f === state.zero);
+    });
+    const ours = families.filter((f) => data.points[f].ours)
+      .sort((a, b) => PRESET_ORDER.indexOf(data.points[a].preset) - PRESET_ORDER.indexOf(data.points[b].preset));
+    const refs = families.filter((f) => !data.points[f].ours)
+      .sort((a, b) => (fresh.values[b]?.fps.jetson ?? 0) - (fresh.values[a]?.fps.jetson ?? 0));
+    const speedOf = (f) => columns.map((c) => c.view.values[f]).find(Boolean)?.fps;
     return el('section', {},
       el('h2', { id: codec }, CODEC_NAMES[codec]),
       table([
         { label: 'Encoder', cell: (f) => [el('span', { class: `swatch ${data.points[f].ours ? 'ours' : 'ref'}` }), data.points[f].label] },
-        ...views.flatMap((view) => [
-          { label: `${viewTitle(data, view)}: BD (clips)`, num: true, cell: (f) => cell(view, f) },
-          { label: 'own clips', num: true, cell: (f) => String(valuesOf(view, f)?.own_clips ?? '–') },
-          { label: SPEED_UNIT, num: true, cell: (f) => speed(valuesOf(view, f)?.speed) },
-        ]),
-      ], families, (f) => (data.points[f].ours ? 'ours' : '')));
+        ...columns.map((c) => ({ label: `${c.title} (clips)`, num: true, cell: (f) => cellOf(c.view, f) })),
+        { label: 'fps Jetson', num: true, cell: (f) => fps(speedOf(f)?.jetson) },
+        { label: 'fps PC', num: true, cell: (f) => fps(speedOf(f)?.x86) },
+      ], [...ours, ...refs], (f) => (data.points[f].ours ? 'ours' : '') + (f === state.zero ? ' zero' : '')));
   });
   root.querySelector('.codec-tables').replaceChildren(
-    el('p', { class: 'note' }, `${NAMES[state.metric]} on ${data.machines[state.machine].name}; in brackets, the clips averaged: the common set (every family over the same clips), or a +drop row's own clips. Each dataset has its BD, each family's own anchor-valid clip count, then its loaded speed. A tune twin that a report measured identically to another row (the overview lists them) shows that row's figures.`),
-    ...(views.length ? out.filter(Boolean) : [el('p', { class: 'note' }, 'No report found on this machine yet.')]),
-    ...views.map((view) => el('p', { class: 'note measured' }, el('strong', {}, `${viewTitle(data, view)}. `), statement(data, view))));
+    el('p', { class: 'note' }, `${METRIC_NAMES[state.metric]} against ${ZERO_NAMES[state.zero]}; in brackets, the clips with a reliable BD. Clip counts per set: ${columns.filter((c) => c.view.clips).map((c) => `${c.title} ${c.view.clips}`).join(', ')}.`),
+    ...out, ...columns.map((c) => measuredNote(`${c.title}: ${c.view.measured.caption}`, c.view.measured.buffer_note)),
+    sources([...new Set(columns.flatMap((c) => c.view.source))]));
 }
 
 async function main() {
   const root = document.getElementById('codecs');
   try {
-    const data = await loadData('bp3');
-    state.machine = chosenMachine(data.machines, data.views);
-    machinePicker(data.machines, state.machine, (machine) => { state.machine = machine; banner(data, machine); render(data, root); }, allChoices(data));
-    banner(data, state.machine);
-    root.querySelector('.controls').append(control('Metric', segmented('Metric',
-      data.metrics.map((m) => ({ value: m, label: SHORT[m] })), state.metric, (v) => { state.metric = v; render(data, root); })));
+    const data = await loadData('chart');
+    // the lede names each published outside dataset (data.datasets) after our clip sets
+    document.querySelector('.datasets-note').textContent = Object.values(data.datasets)
+      .map((d) => `, and on ${d.name}, ${d.credit}, numbers only`).join('');
+    root.querySelector('.controls').append(
+      control('Metric', segmented('Metric', ['j', 'psnr', 'vmaf'].map((m) => ({ value: m, label: METRIC_SHORT[m] })),
+        state.metric, (v) => { state.metric = v; render(data, root); })),
+    );
     render(data, root);
   } catch (error) {
     fail(root, error);

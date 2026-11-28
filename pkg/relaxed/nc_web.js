@@ -269,6 +269,11 @@ export function check_parameters(codec, text) {
     }
 }
 
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 let cachedFloat64ArrayMemory0 = null;
 
 function getFloat64ArrayMemory0() {
@@ -283,11 +288,6 @@ function passArrayF64ToWasm0(arg, malloc) {
     getFloat64ArrayMemory0().set(arg, ptr / 8);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
-}
-
-function getArrayU8FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
 let cachedUint16ArrayMemory0 = null;
@@ -328,6 +328,11 @@ function passArray32ToWasm0(arg, malloc) {
     getUint32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
+}
+
+function getArrayF64FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
 }
 
 const BrowserDecoderFinalization = (typeof FinalizationRegistry === 'undefined')
@@ -928,6 +933,52 @@ export class BrowserEncoder {
         return ret !== 0;
     }
     /**
+     * Loss feedback: the receiver decoded layer picture `frame_number`,
+     * which acknowledges a long-term reference marked on it
+     * (`Encoder::acknowledge_layer`).
+     * # Errors
+     * Rejects numbers that are not non-negative integers.
+     * @param {number} frame_number
+     */
+    acknowledge_frame(frame_number) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.browserencoder_acknowledge_frame(retptr, this.__wbg_ptr, frame_number);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Loss feedback: the receiver is missing layer picture `frame_number`
+     * (the 16-bit number `RtpReceiver` reports, `RtpReceiver::lost_frames`,
+     * matched against the encoder's recent frames). The
+     * next frame repairs it from the acknowledged long-term reference, or
+     * is a key frame (a lost enhancement layer: an enhancement repair);
+     * a lost top-temporal-layer picture needs nothing
+     * (`Encoder::report_loss`, `Encoder::report_layer_loss`).
+     * # Errors
+     * Rejects numbers that are not non-negative integers.
+     * @param {number} frame_number
+     */
+    report_lost_frame(frame_number) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.browserencoder_report_lost_frame(retptr, this.__wbg_ptr, frame_number);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Return to the fixed quantizer supplied at construction.
      */
     disable_rate_control() {
@@ -1170,6 +1221,393 @@ export class DecodeOutcome {
     }
 }
 if (Symbol.dispose) DecodeOutcome.prototype[Symbol.dispose] = DecodeOutcome.prototype.free;
+
+const RtpLayerFilterFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_rtplayerfilter_free(ptr >>> 0, 1));
+/**
+ * Forwards the packets of one decode target, as a selective forwarding
+ * server does (by the Dependency Descriptor alone).
+ */
+export class RtpLayerFilter {
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        RtpLayerFilterFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_rtplayerfilter_free(ptr, 0);
+    }
+    /**
+     * Forward spatial layers up to `spatial` and temporal layers up to
+     * `temporal`, reading the descriptor at `dependency_descriptor_id`.
+     * @param {number} dependency_descriptor_id
+     * @param {number} spatial
+     * @param {number} temporal
+     */
+    constructor(dependency_descriptor_id, spatial, temporal) {
+        const ret = wasm.rtplayerfilter_new(dependency_descriptor_id, spatial, temporal);
+        this.__wbg_ptr = ret >>> 0;
+        RtpLayerFilterFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The packet to forward (renumbered), or `None` to drop it.
+     * # Errors
+     * A packet that does not parse.
+     * @param {Uint8Array} packet
+     * @returns {Uint8Array | undefined}
+     */
+    filter(packet) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(packet, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.rtplayerfilter_filter(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            if (r3) {
+                throw takeObject(r2);
+            }
+            let v2;
+            if (r0 !== 0) {
+                v2 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export3(r0, r1 * 1, 1);
+            }
+            return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+}
+if (Symbol.dispose) RtpLayerFilter.prototype[Symbol.dispose] = RtpLayerFilter.prototype.free;
+
+const RtpReceiverFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_rtpreceiver_free(ptr >>> 0, 1));
+/**
+ * Turns RTP packets into units for `BrowserDecoder::decode`.
+ */
+export class RtpReceiver {
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        RtpReceiverFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_rtpreceiver_free(ptr, 0);
+    }
+    /**
+     * Frames found lost or undecodable since the last call, by frame
+     * number, for loss reports to the encoder.
+     * @returns {Float64Array}
+     */
+    lost_frames() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.rtpreceiver_lost_frames(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export3(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Packets that arrived after their place was given up.
+     * @returns {number}
+     */
+    get late_packets() {
+        const ret = wasm.rtpreceiver_late_packets(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Packets declared lost (their gap outlived the reorder window).
+     * @returns {number}
+     */
+    get lost_packets() {
+        const ret = wasm.rtpreceiver_lost_packets(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Units (or their layer frames) not delivered.
+     * @returns {number}
+     */
+    get dropped_units() {
+        const ret = wasm.rtpreceiver_dropped_units(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * True once after decoding stopped for want of a key frame: ask the
+     * sender for one (a PLI or FIR).
+     * @returns {boolean}
+     */
+    keyframe_needed() {
+        const ret = wasm.rtpreceiver_keyframe_needed(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Playout deadline (the page's jitter buffer): packets of RTP
+     * timestamp `timestamp` or older are due, and a gap before one of
+     * them is loss now.
+     * @param {number} timestamp
+     */
+    set_playout_deadline(timestamp) {
+        wasm.rtpreceiver_set_playout_deadline(this.__wbg_ptr, timestamp);
+    }
+    /**
+     * Whether the last popped unit is a key unit.
+     * @returns {boolean}
+     */
+    key() {
+        const ret = wasm.rtpreceiver_key(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * A receiver for `codec` ("h264", "hevc", "vvc", "av1", "vp9").
+     * `dependency_descriptor_id`: the negotiated extension id of the
+     * Dependency Descriptor (0: none). `deliver_after_loss`: keep
+     * delivering after a loss instead of waiting for a key frame.
+     * # Errors
+     * Rejects other codec names.
+     * @param {string} codec
+     * @param {number} dependency_descriptor_id
+     * @param {boolean} deliver_after_loss
+     */
+    constructor(codec, dependency_descriptor_id, deliver_after_loss) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.rtpreceiver_new(retptr, ptr0, len0, dependency_descriptor_id, deliver_after_loss);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            this.__wbg_ptr = r0 >>> 0;
+            RtpReceiverFinalization.register(this, this.__wbg_ptr, this);
+            return this;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * The next unit for `BrowserDecoder::decode`, if one is ready.
+     * @returns {Uint8Array | undefined}
+     */
+    pop() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.rtpreceiver_pop(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export3(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Take one RTP packet (header included), in any order.
+     * # Errors
+     * A malformed packet (it is dropped; the stream goes on).
+     * @param {Uint8Array} packet
+     */
+    push(packet) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(packet, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.rtpreceiver_push(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * End of stream: release what is held for reordering.
+     */
+    flush() {
+        wasm.rtpreceiver_flush(this.__wbg_ptr);
+    }
+    /**
+     * Packets accepted so far.
+     * @returns {number}
+     */
+    get packets() {
+        const ret = wasm.rtpreceiver_packets(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * The frame numbers of the last popped unit's layer frames, when its
+     * packets carry them (the Dependency Descriptor's 16-bit numbers): the
+     * encoder's frame numbers modulo 2^16, which a receiver acknowledges
+     * (`BrowserEncoder::acknowledge_frame`).
+     * @returns {Float64Array}
+     */
+    frame_ids() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.rtpreceiver_frame_ids(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export3(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * RTP timestamp of the last popped unit.
+     * @returns {number}
+     */
+    timestamp() {
+        const ret = wasm.rtpreceiver_timestamp(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) RtpReceiver.prototype[Symbol.dispose] = RtpReceiver.prototype.free;
+
+const RtpSenderFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_rtpsender_free(ptr >>> 0, 1));
+/**
+ * Turns a `BrowserEncoder`'s units into RTP packets.
+ */
+export class RtpSender {
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        RtpSenderFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_rtpsender_free(ptr, 0);
+    }
+    /**
+     * Spatial id of packet `index`'s frame.
+     * @param {number} index
+     * @returns {number}
+     */
+    packet_spatial_id(index) {
+        const ret = wasm.rtpsender_packet_spatial_id(this.__wbg_ptr, index);
+        return ret;
+    }
+    /**
+     * Temporal id of packet `index`'s frame.
+     * @param {number} index
+     * @returns {number}
+     */
+    packet_temporal_id(index) {
+        const ret = wasm.rtpsender_packet_temporal_id(this.__wbg_ptr, index);
+        return ret;
+    }
+    /**
+     * A sender for `codec` ("h264", "hevc", "vvc", "av1", "vp9"), with
+     * RTP packets of at most `mtu` bytes. `dependency_descriptor_id`: the
+     * extension id of the Dependency Descriptor (0: none; any format may
+     * carry it, which gives every codec frame numbers and dependencies).
+     * # Errors
+     * Other codec names, an extension id outside 1-14, a tiny MTU.
+     * @param {string} codec
+     * @param {number} mtu
+     * @param {number} dependency_descriptor_id
+     */
+    constructor(codec, mtu, dependency_descriptor_id) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.rtpsender_new(retptr, ptr0, len0, mtu, dependency_descriptor_id);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            this.__wbg_ptr = r0 >>> 0;
+            RtpSenderFinalization.register(this, this.__wbg_ptr, this);
+            return this;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Packet `index` of the latest [`Self::packetize`] (empty past the end).
+     * @param {number} index
+     * @returns {Uint8Array}
+     */
+    packet(index) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.rtpsender_packet(retptr, this.__wbg_ptr, index);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export3(r0, r1 * 1, 1);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Packetize `unit`, the packet `encoder` just returned for a frame
+     * captured at `timestamp_us` (microseconds), with the encoder's layer
+     * information; returns the packet count (0 for a held or dropped
+     * frame), read with [`Self::packet`].
+     * # Errors
+     * A unit that does not parse as its format.
+     * @param {BrowserEncoder} encoder
+     * @param {Uint8Array} unit
+     * @param {number} timestamp_us
+     * @returns {number}
+     */
+    packetize(encoder, unit, timestamp_us) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            _assertClass(encoder, BrowserEncoder);
+            const ptr0 = passArray8ToWasm0(unit, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.rtpsender_packetize(retptr, this.__wbg_ptr, encoder.__wbg_ptr, ptr0, len0, timestamp_us);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 >>> 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+}
+if (Symbol.dispose) RtpSender.prototype[Symbol.dispose] = RtpSender.prototype.free;
 
 const SourceFrameFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }

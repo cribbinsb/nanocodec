@@ -16,6 +16,13 @@
 // slow machine: ~550 samples and as many unclosed 720p VideoFrames, and the
 // decoder then stalled for 1-9 s at a time (the demo's periodic pauses;
 // tests/clip-pauses.py).
+//
+// A decoder may hold more samples than that before its first output: WebKit's
+// GStreamer-backed decoder (Playwright's WebKit 26.4 on Linux) gave the first
+// frame of the 720p clips after 18 samples, and with a hard bound of 16 the page
+// waited for ever. So while a frame is waited for and the decoder has taken every
+// sample given (its `dequeue` event, decodeQueueSize 0), it gets one more sample
+// at a time past the bound, until the frame comes out.
 import { readMp4, trackKbps } from './mp4.js';
 
 const MICROSECONDS_PER_SECOND = 1e6;
@@ -72,6 +79,8 @@ export class ClipSource {
       output: frame => this.received(frame),
       error: error => { this.error = error; this.rejectWaiters(error); },
     });
+    // A dequeue can still arrive after a restart or close() replaced or closed this decoder.
+    decoder.addEventListener('dequeue', () => { if (decoder === this.decoder && decoder.state === 'configured') this.feed(); });
     decoder.configure(this.config);
     return decoder;
   }
@@ -84,6 +93,10 @@ export class ClipSource {
     else if (index <= this.lastTaken || [...this.waiters.keys()].some(wanted => wanted > index)) frame.close();
     else this.ready.set(index, frame);
     this.feed();
+  }
+  /** Whether a frame is waited for while the decoder holds every sample fed (see the file comment). */
+  holdsForLatency() {
+    return this.waiters.size > 0 && this.decoder.decodeQueueSize === 0;
   }
   /** Frame `index` (0 to frameCount - 1) as a VideoFrame the caller owns and closes. */
   async frame(index) {
@@ -110,7 +123,7 @@ export class ClipSource {
    * after the last sample, flush it so the frames it holds for reordering come out.
    */
   feed() {
-    while (this.next < this.samples.length && this.pending < MAX_PENDING_SAMPLES
+    while (this.next < this.samples.length && (this.pending < MAX_PENDING_SAMPLES || this.holdsForLatency())
       && (this.waiters.size || this.ready.size + this.pending < DECODE_AHEAD_FRAMES)) {
       const sample = this.samples[this.next++];
       this.decoder.decode(new EncodedVideoChunk({ type: sample.key ? 'key' : 'delta',

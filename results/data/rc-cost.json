@@ -1,0 +1,338 @@
+{
+ "source": [
+  "docs/results/rc-cost-2026-11-19.csv"
+ ],
+ "measured": {
+  "date": "2026-11-19",
+  "builds": [
+   "release 0.4.0, PGO build (c9cff89f)"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, PGO build (c9cff89f). Quality only (BD-rate on the 11 development clips, 150 frames, one key frame; python3 -m nceval.rc_cost): no timing. References: x264 medium (0.165), default and --tune psnr."
+ },
+ "build_commit": "c9cff89f",
+ "ladder_kbps": "150/300/600/1200",
+ "frames": 150,
+ "rows": [
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium",
+   "j": -46.1,
+   "psnr": -48.6,
+   "vmaf": -51.2,
+   "ms_ssim": -35.5,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium",
+   "j": -39.0,
+   "psnr": -37.6,
+   "vmaf": -34.0,
+   "ms_ssim": -34.8,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium",
+   "j": -46.5,
+   "psnr": -47.3,
+   "vmaf": -50.4,
+   "ms_ssim": -37.9,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium",
+   "j": -36.6,
+   "psnr": -33.9,
+   "vmaf": -32.1,
+   "ms_ssim": -33.9,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium",
+   "j": -49.6,
+   "psnr": -48.2,
+   "vmaf": -56.7,
+   "ms_ssim": -41.0,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium",
+   "j": -43.2,
+   "psnr": -39.7,
+   "vmaf": -36.1,
+   "ms_ssim": -44.1,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium",
+   "j": -42.4,
+   "psnr": -45.2,
+   "vmaf": -44.9,
+   "ms_ssim": -35.7,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium",
+   "j": -34.3,
+   "psnr": -35.4,
+   "vmaf": -24.8,
+   "ms_ssim": -31.1,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium",
+   "j": -48.4,
+   "psnr": -50.7,
+   "vmaf": -54.0,
+   "ms_ssim": -35.7,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium",
+   "j": -42.2,
+   "psnr": -41.2,
+   "vmaf": -37.7,
+   "ms_ssim": -38.0,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium",
+   "j": -21.4,
+   "psnr": -27.6,
+   "vmaf": -28.6,
+   "ms_ssim": -13.3,
+   "clips": 8
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium",
+   "j": -6.5,
+   "psnr": -8.4,
+   "vmaf": -2.8,
+   "ms_ssim": -4.1,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium~psnr",
+   "j": -41.4,
+   "psnr": -44.0,
+   "vmaf": -37.1,
+   "ms_ssim": -37.3,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium~psnr",
+   "j": -35.9,
+   "psnr": -34.2,
+   "vmaf": -32.2,
+   "ms_ssim": -31.7,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium~psnr",
+   "j": -40.2,
+   "psnr": -38.8,
+   "vmaf": -37.6,
+   "ms_ssim": -39.0,
+   "clips": 10
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium~psnr",
+   "j": -33.4,
+   "psnr": -32.9,
+   "vmaf": -30.1,
+   "ms_ssim": -30.7,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium~psnr",
+   "j": -44.6,
+   "psnr": -42.0,
+   "vmaf": -42.5,
+   "ms_ssim": -43.0,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium~psnr",
+   "j": -42.1,
+   "psnr": -38.6,
+   "vmaf": -37.1,
+   "ms_ssim": -40.5,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium~psnr",
+   "j": -40.2,
+   "psnr": -40.7,
+   "vmaf": -34.3,
+   "ms_ssim": -36.5,
+   "clips": 11
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium~psnr",
+   "j": -30.4,
+   "psnr": -34.2,
+   "vmaf": -22.1,
+   "ms_ssim": -27.5,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium~psnr",
+   "j": -43.0,
+   "psnr": -43.4,
+   "vmaf": -40.9,
+   "ms_ssim": -37.4,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium~psnr",
+   "j": -41.0,
+   "psnr": -39.9,
+   "vmaf": -38.6,
+   "ms_ssim": -35.0,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium~psnr",
+   "j": -18.2,
+   "psnr": -17.6,
+   "vmaf": -17.3,
+   "ms_ssim": -13.0,
+   "clips": 11
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium~psnr",
+   "j": -4.3,
+   "psnr": -6.4,
+   "vmaf": -3.3,
+   "ms_ssim": 0.4,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-av1",
+   "anchor": "nanocodec-av1",
+   "j": 13.9,
+   "psnr": 9.4,
+   "vmaf": 11.6,
+   "ms_ssim": 13.1,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-hevc",
+   "anchor": "nanocodec-hevc",
+   "j": 21.7,
+   "psnr": 17.5,
+   "vmaf": 14.3,
+   "ms_ssim": 20.9,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-vvc",
+   "anchor": "nanocodec-vvc",
+   "j": 15.4,
+   "psnr": 12.1,
+   "vmaf": 9.9,
+   "ms_ssim": 15.2,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-vp9",
+   "anchor": "nanocodec-vp9",
+   "j": 15.7,
+   "psnr": 10.5,
+   "vmaf": 11.3,
+   "ms_ssim": 15.6,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-av2",
+   "anchor": "nanocodec-av2",
+   "j": 14.7,
+   "psnr": 9.7,
+   "vmaf": 9.2,
+   "ms_ssim": 15.9,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-h264",
+   "anchor": "nanocodec-h264",
+   "j": 9.3,
+   "psnr": 6.8,
+   "vmaf": 7.6,
+   "ms_ssim": 9.1,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "x264-medium",
+   "anchor": "x264-medium",
+   "j": 70.5,
+   "psnr": 62.7,
+   "vmaf": 106.2,
+   "ms_ssim": 40.0,
+   "clips": 10
+  },
+  {
+   "line": "rc_cost",
+   "test": "x264-medium~psnr",
+   "anchor": "x264-medium~psnr",
+   "j": 48.6,
+   "psnr": 37.8,
+   "vmaf": 46.0,
+   "ms_ssim": 50.5,
+   "clips": 11
+  }
+ ]
+}

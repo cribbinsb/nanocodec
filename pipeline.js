@@ -75,8 +75,10 @@ class View {
    */
   initDecoder(port, wasmModule, warmUp = true) {
     this.analysing = this.analysisWanted;
-    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port, analysis: this.analysing, warmUp,
-      wasmModule, operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
+    const { codec, link, spatialLayers = 1, temporalLayers = 1, fps } = this.panel.current;
+    this.decoder.postMessage({ type: 'init', codec, port, analysis: this.analysing, warmUp,
+      wasmModule, operatingPoint: +(this.panel.operatingPoint?.value ?? 0),
+      link, layers: { spatialLayers, temporalLayers }, frameMs: 1000 / fps }, [port]);
   }
   /**
    * Replace the decode worker with one recording analysis as the view now wants, and
@@ -127,6 +129,8 @@ class View {
   requestKeyframe() {}
   /** Apply the panel's current rate settings (only a live encoder has any). */
   updateRate() {}
+  /** Apply the panel's current network settings (only a live view over RTP has any). */
+  updateNetwork() {}
   terminate() { for (const worker of this.workers) worker.terminate(); }
 }
 
@@ -162,6 +166,7 @@ class LiveView extends View {
   codes(tick) { return codesTick(this.panel.current.step, tick); }
   requestKeyframe() { this.encoder.postMessage({ type: 'keyframe' }); }
   updateRate() { this.encoder.postMessage({ type: 'rate', config: this.panel.current }); }
+  updateNetwork() { this.decoder.postMessage({ type: 'network', network: this.panel.current.link.network }); }
   /** Keep a decoded result's coded frames (frame holds code nothing) for `replayFrames`. */
   retain({ earlier = [], ...shown }) {
     for (const coded of [...earlier, shown]) {
@@ -173,7 +178,12 @@ class LiveView extends View {
       else this.sinceKey.push({ packet: coded.packet, key: coded.key });
     }
   }
-  get replayable() { return this.sinceKey !== null; }
+  /**
+   * Over an RTP link the decoder's state is the link's too (what was lost, what the
+   * receiver holds): a new decoder cannot take over in place, so analysis restarts.
+   */
+  get replayable() { return this.sinceKey !== null && !this.overRtp; }
+  get overRtp() { return Boolean(this.panel.current.link && this.panel.current.link.mode !== 'bitstream'); }
   replayFrames() { return this.sinceKey; }
   /**
    * The encoder posts its packets to the new decoder from its next frame on;
@@ -332,6 +342,8 @@ export class Comparison {
   requestKeyframes() { for (const view of this.views) view.requestKeyframe(); }
   /** Apply view `index`'s current rate settings from its next frame on. */
   updateRate(index) { this.views[index].updateRate(); }
+  /** Apply view `index`'s current network settings (its RTP link) from its next capture on. */
+  updateNetwork(index) { this.views[index].updateNetwork(); }
   /** Give view `index`'s decode worker back a displayed pixel buffer. */
   recycle(index, buffer) { this.views[index].decoder.postMessage({ type: 'recycle', buffer }, [buffer]); }
   terminate() {

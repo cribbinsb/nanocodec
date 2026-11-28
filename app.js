@@ -38,12 +38,14 @@ import { parseDemoQuery, parseSceneQuery } from './deep-link.js';
 import { trace, traceTail } from './trace.js';
 import { buildReport, clipSeconds, formatReport, sha256 } from './debug-report.js';
 import { download } from './streams.js';
-import { RELAXED_SIMD } from './wasm.js';
+import { BUILD, SIMD128 } from './wasm.js';
 import { SpeedHint } from './speed-hint.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause'), stepButton = $('#step');
 const video = $('#input-video'), notice = $('#notice');
+// The scalar module (wasm.js) works everywhere but is much slower: say why the page is slow.
+$('#build-note').hidden = SIMD128;
 // A change restarts the comparison this long after the last change of a burst.
 const RESTART_DELAY_MS = 300;
 // The opening comparison: a pre-encoded x264 stream in A, and B matched to it
@@ -118,7 +120,7 @@ async function downloadReport(includeStreams) {
   const text = selector => $(selector).textContent;
   const report = await buildReport({
     build: { commit: build.commit ?? 'unknown', dirty: Boolean(build.dirty), profile: build.profile ?? 'unknown',
-      module: RELAXED_SIMD ? 'SIMD128 + relaxed SIMD (pkg/relaxed)' : 'SIMD128 (pkg)' },
+      module: BUILD.name },
     page: { url: location.href, time: new Date().toISOString(), userAgent: navigator.userAgent, hardwareConcurrency: navigator.hardwareConcurrency },
     source: await sourceState(loopLength),
     state: { playback: paused ? 'paused' : running ? 'playing' : preparing ? 'starting' : 'stopped', tick: lastTick,
@@ -347,6 +349,15 @@ function scheduleRestart(reason) {
 function settingsChanged(change, panel) {
   trace('settings', change ?? 'restart', panel?.letter, running ? 'running' : preparing ? 'starting' : 'stopped');
   if (change === 'rate' && running) { pendingRateChange = true; describeViews(); return; }
+  if (change === 'network') {
+    // An RTP link's network settings apply live; with no link running they wait for the next start.
+    if (!running || !panel.overRtp) return;
+    panel.current = { ...panel.current, link: panel.networkSettings() };
+    panel.intervene('network', lastTick, panel.current.link.network);
+    comparison.updateNetwork(panels.indexOf(panel));
+    describeViews();
+    return;
+  }
   if (change === 'reference' && panel.reference && (kind !== 'clip' || panel.reference.clip !== clip.id)) {
     clip = clipById(panel.reference.clip); clipPicker.value = clip.id;
     sourceChanged('clip'); return;

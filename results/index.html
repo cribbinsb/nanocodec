@@ -3,39 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex">
+  <meta name="description" content="nanocodec results: bitrate saving against encode speed for every preset and reference encoder, selectable by clip set, rate mode, metric, platform, codec and preset.">
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
-  <title>nanocodec benchmark results</title>
+  <title>nanocodec results</title>
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="site.css">
-  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; } .disclosures, .limitations { overflow-wrap: anywhere; }</style>
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
-<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
 <div class="results-bar">
   <nav class="results-nav" aria-label="Results pages">
     <a href="./" aria-current="page">Overview</a>
     <a href="codecs.html">By codec</a>
-    <a href="history.html">History</a>
-    <a href="compliance.html">Rate control</a>
-    <a href="svc.html">SVC</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="fixed-qp.html">Fixed QP</a>
     <a href="clips.html">Clips</a>
-    <a href="decoders.html">Decoders</a>
+    <a href="svc.html">SVC</a>
     <a href="method.html">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
   </nav>
-  <div class="machine-picker"></div>
 </div>
 <main>
   <h1>Bits against speed</h1>
-  <p class="lede">Every nanocodec preset and every reference encoder of the benchmark procedure, each timed on one machine (x86 or Arm, at half load; the 30-clip fast subset also on an Apple M4 Mac mini and a Jetson Orin Nano, each under its own conditions), compared with one zero line, in CBR. Lower is fewer bits for the same quality; right is faster. Pick the timing machine, the dataset and the metric.</p>
-  <div class="disclaimer results-banner" role="note"></div>
+  <p class="lede">Every nanocodec preset and every reference encoder, each in its own real-time rate control on
+    one CPU core, compared with one zero line. Lower is fewer bits for the same quality; right is faster.
+    Pick the clip set, the rate mode, the metric and the machine. How full each encoder's buffer gets in the CBR
+    charts, ours and the references', is measured on <a href="buffer.html">Rate control and the buffer</a>.</p>
+
   <div class="disclaimer">
-    <strong>Our own measurements.</strong> BD-J is the mean of the BD-rates on PSNR-YUV, VMAF v1 and MS-SSIM, each
-    against x264 medium (--tune zerolatency) tuned for that metric: --tune psnr for PSNR-YUV, VMAF v1 and BD-J,
-    --tune ssim for MS-SSIM (the reports' zero line); no subjective test was run. Every BD averages every family over the
-    same clips (the common set), except the +drop rows, each over its own clips; the table also gives each
-    family's own anchor-valid clip count. The references are measured only at
-    the low-delay, one-thread settings of the procedure; their other modes may do better.
+    <strong>Our own measurements.</strong> The score is BD-rate on PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds
+    (J); no subjective test was run. The held-out clips are videos none of our tuning used (most come from the same public collections as the
+    development clips); the development
+    clips are the ones we tune beside and flatter most of our presets.<span class="datasets-note"></span> The references are mature, general-purpose
+    encoders measured only at their low-delay, one-thread settings; their other modes may do better. 8-bit 4:2:0
+    only. The Slow presets are on all three clip sets: both held-out sets measured on 2026-11-15 at build
+    bad14976; the development set at the builds the caption lists. <a href="method.html">How it is measured, versions and command lines</a>.
   </div>
 
   <section id="explorer" aria-label="Results explorer">
@@ -49,32 +53,29 @@
       <div class="tooltip" role="tooltip" hidden></div>
     </div>
     <div class="detail-slot"></div>
-    <details class="table-view" open>
+    <details class="table-view">
       <summary>This view as a table</summary>
       <div class="table-slot"></div>
     </details>
   </section>
 
-  <h2 id="disclosures">Read beside this view</h2>
-  <div class="disclosures"></div>
-  <h2 id="limitations">Known limitations</h2>
-  <p class="note">The benchmark procedure's own list (docs/benchmark-procedure.md section 16), published with every result.</p>
-  <div class="limitations"></div>
-
   <h2>More detail</h2>
   <div class="cards">
-    <a class="card" href="codecs.html"><strong>By codec</strong><span>Each format's presets beside the references for that format, in every view.</span></a>
-    <a class="card" href="compliance.html"><strong>Rate control</strong><span>How every encoder's CBR streams fill the one 1 s buffer, and the exclusion check.</span></a>
-    <a class="card" href="svc.html"><strong>SVC</strong><span>AV1 and VP9 spatial scalability on 0.7.0 against simulcast and the libaom and libvpx SVC examples.</span></a>
-    <a class="card" href="clips.html"><strong>Clips</strong><span>Every dataset's clips: sizes, rates, rungs and which curves were malformed.</span></a>
-    <a class="card" href="decoders.html"><strong>Decoders</strong><span>Our decoders against FFmpeg, dav1d, libvpx, VVdeC and dav2d, natively and in the browser.</span></a>
-    <a class="card" href="method.html"><strong>Method</strong><span>What each report records: commits, phase, clips, zero lines, refusals, binaries.</span></a>
+    <a class="card" href="codecs.html"><strong>By codec</strong><span>Each format's presets beside the references for that format.</span></a>
+    <a class="card" href="speed.html"><strong>Speed</strong><span>Encode on Arm and x86, the browser build, hardware encoders.</span></a>
+    <a class="card" href="rate-control.html"><strong>Rate control</strong><span>Coding efficiency at fixed QP against what real-time CBR costs.</span></a>
+    <a class="card" href="fixed-qp.html"><strong>Fixed QP</strong><span>Every encoder at fixed quantizers on 12 of the AOM CTC's 8-bit sequences, at its quantizer points.</span></a>
+    <a class="card" href="svc.html"><strong>Spatial scalability</strong><span>AV1 and VP9 SVC against simulcast and libaom / libvpx.</span></a>
+    <a class="card" href="history.html"><strong>History</strong><span>Our presets and Pareto frontier on this chart, one build per day from 2026-11-07 to 2026-11-23, re-measured with one protocol.</span></a>
+    <a class="card" href="method.html"><strong>Method</strong><span>Clips, settings, versions, command lines, window length.</span></a>
+    <a class="card" href="yardsticks.html"><strong>Yardsticks</strong><span>Which independent implementation each speed claim is checked against.</span></a>
   </div>
 </main>
 <footer>
   <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
-    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264
-    and Kvazaar are its comparison points here (VVenC is not charted: it has no real-time CBR mode). With thanks to all of them.</p>
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
 </footer>
 <script type="module" src="explorer.js"></script>
 </body>

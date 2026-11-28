@@ -3,56 +3,127 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex">
+  <meta name="description" content="How the nanocodec results are measured: score, clip sets, rates, settings, machines, versions and command lines.">
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
-  <title>nanocodec benchmark method</title>
+  <title>nanocodec method</title>
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="site.css">
-  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; }</style>
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
-<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./">Results</a><a href="method.html" aria-current="page">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./">Results</a><a href="method.html" aria-current="page">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
 <div class="results-bar">
   <nav class="results-nav" aria-label="Results pages">
     <a href="./">Overview</a>
     <a href="codecs.html">By codec</a>
-    <a href="history.html">History</a>
-    <a href="compliance.html">Rate control</a>
-    <a href="svc.html">SVC</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="fixed-qp.html">Fixed QP</a>
     <a href="clips.html">Clips</a>
-    <a href="decoders.html">Decoders</a>
+    <a href="svc.html">SVC</a>
     <a href="method.html" aria-current="page">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
   </nav>
-  <div class="machine-picker"></div>
 </div>
 <main>
-  <h1>What each view records</h1>
-  <p class="lede">The provenance each benchmark report carries. The procedure itself is docs/benchmark-procedure.md in the repository.</p>
-  <div class="disclaimer results-banner" role="note"></div>
-  <div id="method"></div>
-  <h2>How streams are decoded for scoring</h2>
-  <ul class="prose">
-    <li>Every scored stream is decoded; no score is taken from an encoder's own reconstruction.</li>
-    <li>Our own decoder (the frozen 23c962d8b build) decoded the streams of every family, the references' included. Where it exited with an error, the codec's standard decoder decoded the stream instead (the pinned FFmpeg 8.0.1, with dav1d for AV1; avmdec for AV2), and the score record names it; AV1 streams whose frames change size were decoded by aomdec. A silent difference would not be caught by this fallback, so its identity with the standard decoders was checked separately.</li>
-    <li>Identity evidence: a sample of the series' real streams (26 AV1, 6 AV2, 36 H.264, 24 HEVC and 12 VP9; bench/decode-identity-2026-11-26.md) decoded identically by ours and the standard decoders. That sample had no x265 stream, one SVT-AV1 preset and no VVC stream, so the benchmark integrity audit of 2026-11-27 decoded 13 more reference streams (x265 ultrafast, superfast, veryfast, faster and medium; SVT-AV1 M8, M12 and M13; openh264 CABAC; x264 ultrafast and faster; Kvazaar veryfast; libaom cpu10): every one bit-identical to the pinned FFmpeg 8.0.1. Every VVC stream of the series is ours, and the landing check proves ours bit-exact against VVdeC and FFmpeg on every shipped preset.</li>
-    <li>Metrics for every family alike: VMAF v1 (vmaf_v1.0.16_3d0h), MS-SSIM and PSNR-YUV (6:1:1), on every frame, at the clip's own size.</li>
-  </ul>
-  <h2>Not shown here</h2>
-  <ul class="prose">
-    <li>The earlier pages' figures (an older measurement procedure) are withdrawn and are not shown here.</li>
-    <li>Speed on other machines (AMD Zen), the browser build and hardware encoders: these reports time every dataset on two machines, x86 (c8i) and Arm (c8g), and the 30-clip fast subset also on an Apple M4 Mac mini and a Jetson Orin Nano, each under its own timing conditions (stated with each machine above), so speeds compare only within one machine.</li>
-    <li>Frames per second: the reports give megapixels per CPU-second over each dataset's own clip sizes.</li>
-    <li>XPSNR, luma-only PSNR, the AOM CTC weighted PSNR and the per-rate-regime BD-J: not in the reports.</li>
-    <li>Fixed QP: removed from the procedure (BP-4 measures CBR only). Buffer use is on the Rate control page; the history of the front is on the History page, which is withdrawn while it fails its tracking check; spatial scalability is measured separately (the SVC page states its own conditions).</li>
-    <li>Per-clip tables and per-class means: the report JSON carries set means only.</li>
-    <li>Command lines per encoder: the procedure document's fairness record (section 17) lists each flag with its reason.</li>
-    <li>Our re-coded share (CBR): ours holds the buffer by re-coding a frame that would overflow it (--strict-buffer), so its compliance is "compliant by re-coding"; the BP-4 runs do not record how many frames were re-coded.</li>
-  </ul>
+  <h1>How it is measured</h1>
+  <p class="lede">Everything on these pages is our own measurement, made with the project's evaluation harness
+    (<code>eval/nceval</code>) and generated from the result files in the repository. This page states the
+    method, the clip sets, the machines, the versions and the exact command lines.</p>
+  <div id="method">
+    <h2 id="score">The score</h2>
+    <ul>
+      <li><strong>BD-rate</strong> (Bjøntegaard) on each encoder's achieved-rate curve against the zero line's, for
+        the same quality: negative is fewer bits. Curves are interpolated (PCHIP) and only their reliable overlap
+        counts; nothing is extrapolated.</li>
+      <li><strong>J</strong> is PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds, averaged over content classes. In
+        charts rendered before 2026-11-23 (release 0.6.0's) it is also the mean of the full curve and its
+        lower-rate half, so low rates count twice; charts rendered since use the whole overlap and show the BD
+        by rate regime beside it. PSNR-YUV and VMAF v1 alone are shown too; MS-SSIM alone only
+        where the run recorded it. PSNR-YUV weights Y:U:V 6:1:1. VMAF is libvmaf's model <code>vmaf_v1.0.16_3d0h</code> (the model file of Netflix/vmaf <span class="version">v3.2.1</span>), scored on every frame at each clip's own size (no rescaling to 1080p) and averaged
+        over frames. The model is calibrated for a 1080p display, so these values are relative and are not
+        comparable with published 1080p-protocol VMAF. Points scored on our PC use VMAFx, a GPU (CUDA) build of
+        libvmaf; points scored on rented machines use libvmaf <span class="version">3.2.1</span> on the CPU. On 143 stored chart points
+        (240p to 720p, 12 encoders) the two gave identical per-frame VMAF at libvmaf's six printed decimals and
+        identical BD-VMAF on 9 encoder pairs; MS-SSIM agreed within 2.1e-5 per frame
+        (<a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/metric-validation-2026-11-23.md">validation</a>).
+        PSNR is computed per plane and per frame from exact squared-error sums, capped at 60 dB, averaged over
+        frames.</li>
+      <li>No subjective test was run. x264 and x265 default to psychovisual tuning these metrics cannot judge,
+        so the headline zero line is x264's own metric tuning (<code>--tune zerolatency,psnr</code>), and the
+        default-tuned x264 is shown beside it. Our presets were tuned on this metric mix.</li>
+      <li>The reference encoders' points are always scored on a standard decoder's output. Ours scored on rented
+        machines (the held-out and VC-1K charts and, since 2026-11-21, the chart refreshes) are scored on the
+        first standard decoder's output, checked equal to the encoder's reconstruction frame by frame; ours scored
+        on our PC are scored on the encoder's reconstruction, with PSNR from the encoder's own squared-error log
+        (on 65 re-encoded points it matched libvmaf's PSNR within 5e-7 dB per plane per frame). Every build behind
+        these numbers also passed the landing conformance check: short purpose-made streams of every shipped
+        preset decoded bit-exactly by two standard decoders per format and by ours.</li>
+    </ul>
+    <h2 id="clips">Clips and rates</h2>
+    <ul class="clipsets"></ul>
+    <p class="ladder"></p>
+    <p>Clips are encoded only at rates at most half their source's bitrate, as many are already compressed. Our
+      savings are largest at these low rates, and so are the references'; over a higher range (up to a few
+      megabits at 720p) every gap shrinks, ours included, on the small subset with room for those rates
+      (<a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/rate-control-audit-2026-11-13.md#5-rate-ladder-the-low-rungs-favour-everyone-against-x264-higher-rates-shrink-every-gap">rate-control audit</a>).</p>
+    <h2 id="buffer">Rate control and the buffer</h2>
+    <p class="buffer-text"></p>
+    <p>Each encoder's buffer use on every chart, measured at the target and at its own rate, and the buffer we keep:
+      <a href="buffer.html">Rate control and the buffer</a>.</p>
+    <h2 id="settings">Settings</h2>
+    <ul>
+      <li><strong>Low delay:</strong> every encoder in its own real-time rate control at the same
+        targets, forward prediction only (no B-frames, no lookahead), one key frame, one thread, <span class="buffer"></span>.</li>
+      <li><strong>openh264</strong> runs through our harness (<code>tools/openh264-harness</code>, a small C
+        program over its API, as its own command-line tool cannot set every parameter): Constrained Baseline with
+        CAVLC, medium complexity, camera real-time usage, adaptive quantization off, scene-change detection off,
+        frame skipping off, one thread. With CABAC on it needed fewer bits on every clip of a five-clip probe; a CABAC, high-complexity openh264 row
+        is not yet measured on these charts.</li>
+      <li><strong>libvpx and libaom</strong> run real-time CBR without cyclic-refresh AQ (their default,
+        <code>--aq-mode=0</code>); cyclic refresh, their usual real-time setting, needed fewer bits on average in a
+        five-clip probe, with mixed signs by clip
+        (<a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/analysis/results-audit-2026-11-23.md#3-reference-settings">audit</a>).</li>
+      <li><strong>x265</strong> runs at its default AVX2 dispatch (AVX-512 off by its own default):
+        <code>--asm avx512</code> changes its stream on AVX-512 machines, so the same command would code different
+        streams on the quality and timing machines.</li>
+      <li><strong>Builds:</strong> ours is a PGO, LTO build for <code>x86-64-v3</code>; the references are their
+        projects' stock release builds.</li>
+      <li><strong>8-bit 4:2:0 only.</strong> No 10-bit, no other chroma formats.</li>
+      <li><strong>Ours do not code repeated frames</strong> that would not change the picture (holds); the
+        references code every frame. Holds are rare on these clips.</li>
+      <li>The references are mature, general-purpose, multi-threaded encoders for many more uses; we measured
+        only these settings, and their other modes may do better. Full rules (rate validity, chaining, flagged
+        points): <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/bd-vs-speed.md#method">chart method</a>.</li>
+    </ul>
+    <h2 id="machines">Machines</h2>
+    <ul class="machines"></ul>
+    <p>Speed is measured at a fixed quantizer near the middle rung on three development clips, which a CBR
+      encode costs our encoders slightly more than. The x86 machine is a rented AMD EPYC 9R45 (Zen 5; its SIMD extensions are listed under Machines),
+      timing one encode pair at a time on a core of its own. Our times there are scaled per clip to an earlier
+      session's x264 medium time (the raw times are kept in the timing file), and the references keep their own
+      earlier sessions' times, so points from different sessions share one axis. The timing clips are not the
+      clips the quality is measured on.</p>
+    <h2 id="versions">Builds and versions</h2>
+    <div class="versions"></div>
+    <h2 id="commands">Command lines</h2>
+    <p>Each encoder's real-time CBR command at the example rung (the harness writes these; tool paths shortened
+      to program names), and the fixed-QP command its speed was timed with.</p>
+    <div class="commands"></div>
+    <h2 id="window">Window length</h2>
+    <p>The headline windows are 150 frames with one key frame (5 s at 30 fps), and our presets were tuned on such
+      windows. A short window favours an encoder that invests in its first key frame, as ours do. The same build
+      was therefore also measured over 600 frames with a key frame every 10 s, on held-out sources long enough
+      for it. In brackets, 95% bootstrap intervals.</p>
+    <div class="controls window-controls"></div>
+    <div class="window"></div>
+  </div>
 </main>
 <footer>
   <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
-    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264
-    and Kvazaar are its comparison points here (VVenC is not charted: it has no real-time CBR mode). With thanks to all of them.</p>
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
 </footer>
 <script type="module" src="method.js"></script>
 </body>

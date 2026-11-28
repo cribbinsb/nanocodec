@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Which independent implementation each nanocodec speed claim is measured against.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec yardsticks</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+  <script src="../page-views.js" defer></script>
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="fixed-qp.html">Fixed QP</a>
+    <a href="clips.html">Clips</a>
+    <a href="svc.html">SVC</a>
+    <a href="method.html">Method</a>
+    <a href="yardsticks.html" aria-current="page">Yardsticks</a>
+  </nav>
+</div>
+<main>
+  <h1>Yardsticks</h1>
+  <p class="lede">A speed figure compared only with our own build says little. Each speed claim on these pages is
+    checked against an independent implementation, named here, and the gaps that check found are listed in the
+    full write-up, worst first.</p>
+  <div class="prose">
+    <h2>Which implementation each claim is measured against</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Claim</th><th scope="col">Yardstick</th></tr></thead>
+        <tbody>
+          <tr><td>Native encode speed per preset, Arm and x86</td><td>x264, x265, SVT-AV1, libaom, libvpx and openh264 at their real-time settings, on the same machines (references timed in earlier sessions than ours; see the method page); NVENC for scale</td></tr>
+          <tr><td>H.264 and HEVC decode</td><td>FFmpeg's decoders</td></tr>
+          <tr><td>AV1 decode</td><td>dav1d (VideoLAN), through libavcodec, timed in process</td></tr>
+          <tr><td>VP9 decode</td><td>FFmpeg's VP9 decoder, timed in process (vpxdec has no in-process harness yet)</td></tr>
+          <tr><td>VVC decode</td><td>FFmpeg's VVC decoder, timed in process (VVdeC has no in-process harness yet)</td></tr>
+          <tr><td>AV2 decode</td><td>avmdec, the research reference decoder (not built for speed)</td></tr>
+          <tr><td>WebAssembly decode and encode</td><td>the official single-thread ffmpeg.wasm <span class="version">0.12.10</span> (a weak yardstick: FFmpeg <span class="version">5.1.4</span> built without its hand-written SIMD kernels, and with no AV1 or VVC decoder)</td></tr>
+          <tr><td>Colour conversion and the demo's display path</td><td>libyuv</td></tr>
+          <tr><td>Time to the first packet, memory</td><td>the same reference encoders and decoders, measured the same way</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h2>Rules of the comparison</h2>
+    <ul>
+      <li>Every decoder and encoder runs with one thread, including the references, which are normally run
+        multi-threaded and are faster that way.</li>
+      <li>x86 encode times come from a rented AWS c8a.large (AMD EPYC 9R45), one session per batch of points;
+        ours are scaled per clip to an earlier session's x264 <code>medium</code> time, so points of different
+        sessions share one axis. The Jetson runs on one core at a locked clock.</li>
+      <li>Our decoders are first checked to produce the same pictures as the reference decoder on every
+        third-party stream used.</li>
+      <li>Where no measurement exists, the write-up says so rather than estimating.</li>
+    </ul>
+    <h2>Read the measurements</h2>
+    <ul>
+      <li><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/competitor-yardsticks.md">Speed claims against independent yardsticks</a>: every claim, its yardstick, the measurements and the worst gaps.</li>
+      <li><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/decoder-speed-2026-11-23/README.md">Decoder speed</a>: our decoders against FFmpeg and dav1d, timed in process on x86, natively and in the browser (2026-11-23).</li>
+      <li><a href="speed.html">Speed</a>: the encode, browser, decoder and hardware tables, generated from the repository's data.</li>
+    </ul>
+    <p>We thank the FFmpeg, dav1d, libvpx, VVdeC, AVM, libyuv, x264, x265, SVT-AV1, libaom and openh264 projects:
+      their implementations are the bar these numbers are held to.</p>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
+</footer>
+</body>
+</html>

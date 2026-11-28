@@ -260,6 +260,26 @@ export class BrowserEncoder {
    */
   set_rate_control(target_kbps: number, peak_kbps: number, buffer_ms: number): void;
   /**
+   * Loss feedback: the receiver decoded layer picture `frame_number`,
+   * which acknowledges a long-term reference marked on it
+   * (`Encoder::acknowledge_layer`).
+   * # Errors
+   * Rejects numbers that are not non-negative integers.
+   */
+  acknowledge_frame(frame_number: number): void;
+  /**
+   * Loss feedback: the receiver is missing layer picture `frame_number`
+   * (the 16-bit number `RtpReceiver` reports, `RtpReceiver::lost_frames`,
+   * matched against the encoder's recent frames). The
+   * next frame repairs it from the acknowledged long-term reference, or
+   * is a key frame (a lost enhancement layer: an enhancement repair);
+   * a lost top-temporal-layer picture needs nothing
+   * (`Encoder::report_loss`, `Encoder::report_layer_loss`).
+   * # Errors
+   * Rejects numbers that are not non-negative integers.
+   */
+  report_lost_frame(frame_number: number): void;
+  /**
    * Return to the fixed quantizer supplied at construction.
    */
   disable_rate_control(): void;
@@ -368,6 +388,139 @@ export class DecodeOutcome {
   readonly decoded: boolean;
 }
 /**
+ * Forwards the packets of one decode target, as a selective forwarding
+ * server does (by the Dependency Descriptor alone).
+ */
+export class RtpLayerFilter {
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Forward spatial layers up to `spatial` and temporal layers up to
+   * `temporal`, reading the descriptor at `dependency_descriptor_id`.
+   */
+  constructor(dependency_descriptor_id: number, spatial: number, temporal: number);
+  /**
+   * The packet to forward (renumbered), or `None` to drop it.
+   * # Errors
+   * A packet that does not parse.
+   */
+  filter(packet: Uint8Array): Uint8Array | undefined;
+}
+/**
+ * Turns RTP packets into units for `BrowserDecoder::decode`.
+ */
+export class RtpReceiver {
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Frames found lost or undecodable since the last call, by frame
+   * number, for loss reports to the encoder.
+   */
+  lost_frames(): Float64Array;
+  /**
+   * True once after decoding stopped for want of a key frame: ask the
+   * sender for one (a PLI or FIR).
+   */
+  keyframe_needed(): boolean;
+  /**
+   * Playout deadline (the page's jitter buffer): packets of RTP
+   * timestamp `timestamp` or older are due, and a gap before one of
+   * them is loss now.
+   */
+  set_playout_deadline(timestamp: number): void;
+  /**
+   * Whether the last popped unit is a key unit.
+   */
+  key(): boolean;
+  /**
+   * A receiver for `codec` ("h264", "hevc", "vvc", "av1", "vp9").
+   * `dependency_descriptor_id`: the negotiated extension id of the
+   * Dependency Descriptor (0: none). `deliver_after_loss`: keep
+   * delivering after a loss instead of waiting for a key frame.
+   * # Errors
+   * Rejects other codec names.
+   */
+  constructor(codec: string, dependency_descriptor_id: number, deliver_after_loss: boolean);
+  /**
+   * The next unit for `BrowserDecoder::decode`, if one is ready.
+   */
+  pop(): Uint8Array | undefined;
+  /**
+   * Take one RTP packet (header included), in any order.
+   * # Errors
+   * A malformed packet (it is dropped; the stream goes on).
+   */
+  push(packet: Uint8Array): void;
+  /**
+   * End of stream: release what is held for reordering.
+   */
+  flush(): void;
+  /**
+   * The frame numbers of the last popped unit's layer frames, when its
+   * packets carry them (the Dependency Descriptor's 16-bit numbers): the
+   * encoder's frame numbers modulo 2^16, which a receiver acknowledges
+   * (`BrowserEncoder::acknowledge_frame`).
+   */
+  frame_ids(): Float64Array;
+  /**
+   * RTP timestamp of the last popped unit.
+   */
+  timestamp(): number;
+  /**
+   * Packets that arrived after their place was given up.
+   */
+  readonly late_packets: number;
+  /**
+   * Packets declared lost (their gap outlived the reorder window).
+   */
+  readonly lost_packets: number;
+  /**
+   * Units (or their layer frames) not delivered.
+   */
+  readonly dropped_units: number;
+  /**
+   * Packets accepted so far.
+   */
+  readonly packets: number;
+}
+/**
+ * Turns a `BrowserEncoder`'s units into RTP packets.
+ */
+export class RtpSender {
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Spatial id of packet `index`'s frame.
+   */
+  packet_spatial_id(index: number): number;
+  /**
+   * Temporal id of packet `index`'s frame.
+   */
+  packet_temporal_id(index: number): number;
+  /**
+   * A sender for `codec` ("h264", "hevc", "vvc", "av1", "vp9"), with
+   * RTP packets of at most `mtu` bytes. `dependency_descriptor_id`: the
+   * extension id of the Dependency Descriptor (0: none; any format may
+   * carry it, which gives every codec frame numbers and dependencies).
+   * # Errors
+   * Other codec names, an extension id outside 1-14, a tiny MTU.
+   */
+  constructor(codec: string, mtu: number, dependency_descriptor_id: number);
+  /**
+   * Packet `index` of the latest [`Self::packetize`] (empty past the end).
+   */
+  packet(index: number): Uint8Array;
+  /**
+   * Packetize `unit`, the packet `encoder` just returned for a frame
+   * captured at `timestamp_us` (microseconds), with the encoder's layer
+   * information; returns the packet count (0 for a held or dropped
+   * frame), read with [`Self::packet`].
+   * # Errors
+   * A unit that does not parse as its format.
+   */
+  packetize(encoder: BrowserEncoder, unit: Uint8Array, timestamp_us: number): number;
+}
+/**
  * A source frame converted for one view: the encoder's input picture
  * (`BrowserEncoder::encode`) and, packed, the reference the decode worker
  * scores and the page shows as the original.
@@ -422,6 +575,9 @@ export interface InitOutput {
   readonly __wbg_browserdecoder_free: (a: number, b: number) => void;
   readonly __wbg_browserencoder_free: (a: number, b: number) => void;
   readonly __wbg_decodeoutcome_free: (a: number, b: number) => void;
+  readonly __wbg_rtplayerfilter_free: (a: number, b: number) => void;
+  readonly __wbg_rtpreceiver_free: (a: number, b: number) => void;
+  readonly __wbg_rtpsender_free: (a: number, b: number) => void;
   readonly __wbg_sourceframe_free: (a: number, b: number) => void;
   readonly browserdecoder_analysis_frame: (a: number) => number;
   readonly browserdecoder_analysis_halfwords: (a: number) => number;
@@ -451,6 +607,7 @@ export interface InitOutput {
   readonly browserdecoder_stream_height: (a: number) => number;
   readonly browserdecoder_stream_width: (a: number) => number;
   readonly browserdecoder_width: (a: number) => number;
+  readonly browserencoder_acknowledge_frame: (a: number, b: number, c: number) => void;
   readonly browserencoder_buffer_fullness: (a: number) => number;
   readonly browserencoder_buffer_overflows: (a: number) => number;
   readonly browserencoder_colour: (a: number, b: number) => void;
@@ -462,6 +619,7 @@ export interface InitOutput {
   readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number) => void;
   readonly browserencoder_quantizer: (a: number) => number;
   readonly browserencoder_repeat: (a: number) => number;
+  readonly browserencoder_report_lost_frame: (a: number, b: number, c: number) => void;
   readonly browserencoder_request_keyframe: (a: number) => void;
   readonly browserencoder_set_rate_control: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly browserencoder_temporal_layer: (a: number) => number;
@@ -473,6 +631,27 @@ export interface InitOutput {
   readonly decodeoutcome_report_index: (a: number) => number;
   readonly ms_ssim_luma: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
   readonly parameter_registry: (a: number, b: number, c: number) => void;
+  readonly rtplayerfilter_filter: (a: number, b: number, c: number, d: number) => void;
+  readonly rtplayerfilter_new: (a: number, b: number, c: number) => number;
+  readonly rtpreceiver_dropped_units: (a: number) => number;
+  readonly rtpreceiver_flush: (a: number) => void;
+  readonly rtpreceiver_frame_ids: (a: number, b: number) => void;
+  readonly rtpreceiver_key: (a: number) => number;
+  readonly rtpreceiver_keyframe_needed: (a: number) => number;
+  readonly rtpreceiver_late_packets: (a: number) => number;
+  readonly rtpreceiver_lost_frames: (a: number, b: number) => void;
+  readonly rtpreceiver_lost_packets: (a: number) => number;
+  readonly rtpreceiver_new: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly rtpreceiver_packets: (a: number) => number;
+  readonly rtpreceiver_pop: (a: number, b: number) => void;
+  readonly rtpreceiver_push: (a: number, b: number, c: number, d: number) => void;
+  readonly rtpreceiver_set_playout_deadline: (a: number, b: number) => void;
+  readonly rtpreceiver_timestamp: (a: number) => number;
+  readonly rtpsender_new: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly rtpsender_packet: (a: number, b: number, c: number) => void;
+  readonly rtpsender_packet_spatial_id: (a: number, b: number) => number;
+  readonly rtpsender_packet_temporal_id: (a: number, b: number) => number;
+  readonly rtpsender_packetize: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly sourceframe_colour: (a: number, b: number) => void;
   readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
   readonly sourceframe_from_rgba: (a: number, b: number, c: number, d: number) => void;
